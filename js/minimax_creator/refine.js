@@ -9,6 +9,8 @@ const DEFAULTS = {
   provider: "comfy",
   ollamaUrl: "http://localhost:11434",
   openaiUrl: "http://localhost:1234/v1",
+  openrouterUrl: "https://openrouter.ai/api/v1",
+  openrouterKey: "",
   model: "",
   temperature: 0.3,
   seed: -1,
@@ -55,11 +57,11 @@ export function chosenModel(current = settings()) {
 
 let modelCache = { key: "", at: 0, names: [], error: null };
 
-export async function listModels({ provider = "comfy", url = "", force = false } = {}) {
-  const key = `${provider}:${url}`;
+export async function listModels({ provider = "comfy", url = "", apiKey = "", force = false } = {}) {
+  const key = `${provider}:${url}:${apiKey}`;
   if (!force && modelCache.key === key && Date.now() - modelCache.at < 20000) return modelCache.names;
   try {
-    const query = new URLSearchParams({ provider, url });
+    const query = new URLSearchParams({ provider, url, api_key: apiKey });
     const response = await api.fetchApi(`/minimax_creator/refine/models?${query}`);
     const body = await response.json();
     const names = body.models ?? [];
@@ -91,7 +93,15 @@ export async function listSkills({ force = false } = {}) {
 export async function refine(payload) {
   const current = settings();
   const provider = current.provider || "comfy";
-  const url = provider === "ollama" ? current.ollamaUrl : provider === "openai" ? current.openaiUrl : "";
+  let url = "";
+  let apiKey = "";
+  if (provider === "ollama") url = current.ollamaUrl;
+  else if (provider === "openai") url = current.openaiUrl;
+  else if (provider === "openrouter") {
+    url = current.openrouterUrl;
+    apiKey = current.openrouterKey;
+  }
+
   const response = await api.fetchApi("/minimax_creator/refine", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
@@ -99,6 +109,7 @@ export async function refine(payload) {
       ...payload,
       provider,
       url,
+      api_key: apiKey,
       model: current.model,
       temperature: current.temperature,
       seed: current.seed,
@@ -127,6 +138,7 @@ export function openSettings(anchor, onChange) {
     ["comfy", "ComfyUI Text Encoder", "Local Qwen3-VL model loaded in ComfyUI memory"],
     ["ollama", "Ollama Server", "Ollama API server (e.g. http://localhost:11434)"],
     ["openai", "LM Studio / OpenAI", "LM Studio or OpenAI-compatible server (e.g. http://localhost:1234/v1)"],
+    ["openrouter", "OpenRouter", "OpenRouter API (https://openrouter.ai/api/v1)"],
   ];
 
   function drawProvider() {
@@ -178,6 +190,39 @@ export function openSettings(anchor, onChange) {
         el("span", { class: "mmc-note-key", text: t("server url") }),
         urlInput,
       ]));
+    } else if (activeProvider === "openrouter") {
+      const urlInput = el("input", {
+        class: "mmc-out-field",
+        type: "text",
+        value: current.openrouterUrl || "https://openrouter.ai/api/v1",
+        placeholder: "https://openrouter.ai/api/v1",
+        onchange: (e) => {
+          saveSettings({ openrouterUrl: e.target.value.trim() });
+          changed();
+          drawModels(true);
+        },
+      });
+      const keyInput = el("input", {
+        class: "mmc-out-field",
+        type: "password",
+        value: current.openrouterKey || "",
+        placeholder: "sk-or-v1-...",
+        onchange: (e) => {
+          saveSettings({ openrouterKey: e.target.value.trim() });
+          changed();
+          drawModels(true);
+        },
+      });
+      urlRow.push(
+        el("div", { class: "mmc-refine-group", style: { marginTop: "6px" } }, [
+          el("span", { class: "mmc-note-key", text: t("server url") }),
+          urlInput,
+        ]),
+        el("div", { class: "mmc-refine-group", style: { marginTop: "6px" } }, [
+          el("span", { class: "mmc-note-key", text: t("api key") }),
+          keyInput,
+        ])
+      );
     }
 
     providerHost.replaceChildren(
@@ -251,10 +296,17 @@ export function openSettings(anchor, onChange) {
   async function drawModels(force = false) {
     const current = settings();
     const provider = current.provider || "comfy";
-    const url = provider === "ollama" ? current.ollamaUrl : provider === "openai" ? current.openaiUrl : "";
+    let url = "";
+    let apiKey = "";
+    if (provider === "ollama") url = current.ollamaUrl;
+    else if (provider === "openai") url = current.openaiUrl;
+    else if (provider === "openrouter") {
+      url = current.openrouterUrl;
+      apiKey = current.openrouterKey;
+    }
 
     modelHost.replaceChildren(el("div", { class: "mmc-refine-hint", text: t("Detecting models…") }));
-    const names = await listModels({ provider, url, force });
+    const names = await listModels({ provider, url, apiKey, force });
 
     if (names.error || !names.length) {
       modelHost.replaceChildren(el("div", { class: "mmc-refine-empty" }, [
@@ -264,16 +316,45 @@ export function openSettings(anchor, onChange) {
       return;
     }
 
-    const chosen = chosenModel();
-    modelHost.replaceChildren(...names.map((name) => el("button", {
-      class: "mmc-opt",
-      "aria-checked": name === chosen,
-      title: name,
-      onclick: () => { saveSettings({ model: name }); changed(); drawModels(); },
-    }, [
-      el("span", { class: "mmc-opt-label mmc-refine-name", text: name }),
-      el("span", { class: "mmc-radio" }),
-    ])));
+    const filterInput = el("input", {
+      class: "mmc-out-field",
+      type: "search",
+      placeholder: t("Search model name..."),
+      style: { marginBottom: "8px", width: "100%", boxSizing: "border-box" },
+      oninput: (e) => {
+        const query = e.target.value.toLowerCase().trim();
+        renderList(query);
+      },
+      onpointerdown: (e) => e.stopPropagation(),
+      onkeydown: (e) => e.stopPropagation(),
+    });
+
+    const listContainer = el("div", { class: "mmc-refine-models" });
+
+    const renderList = (filterQuery = "") => {
+      const chosen = chosenModel();
+      const filtered = filterQuery
+        ? names.filter((n) => n.toLowerCase().includes(filterQuery))
+        : names;
+
+      if (!filtered.length) {
+        listContainer.replaceChildren(el("div", { class: "mmc-refine-hint", text: t("No matching models.") }));
+        return;
+      }
+
+      listContainer.replaceChildren(...filtered.map((name) => el("button", {
+        class: "mmc-opt",
+        "aria-checked": name === chosen,
+        title: name,
+        onclick: () => { saveSettings({ model: name }); changed(); drawModels(); },
+      }, [
+        el("span", { class: "mmc-opt-label mmc-refine-name", text: name }),
+        el("span", { class: "mmc-radio" }),
+      ])));
+    };
+
+    modelHost.replaceChildren(filterInput, listContainer);
+    renderList();
   }
 
   function drawMore() {
@@ -515,7 +596,7 @@ export class RefinePanel {
 
       if (refined.sections) {
         const sections = el("div", { class: "mmc-refined-sections" });
-        for (const name of REF_SECTIONS) {
+        for (const name of ["subject_definitions", "summary", "retention_analysis"]) {
           sections.append(el("label", { class: "mmc-refined-section" }, [
             el("span", { class: "mmc-tl-field-name", text: name }),
             this.textarea(

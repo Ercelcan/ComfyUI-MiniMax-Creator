@@ -44,6 +44,31 @@ def fetch_models_openai(url):
         raise RuntimeError(f"Could not connect to LM Studio/OpenAI at {url}: {exc}") from exc
 
 
+def fetch_models_openrouter(url, api_key=""):
+    base = (url or "https://openrouter.ai/api/v1").rstrip("/")
+    if base.endswith("/v1"):
+        endpoint = f"{base}/models"
+    else:
+        endpoint = f"{base}/v1/models"
+    
+    headers = {
+        "User-Agent": "MiniMaxCreator",
+        "HTTP-Referer": "https://github.com/roadmaus/ComfyUI-MiniMax-Creator",
+        "X-Title": "ComfyUI-MiniMax-Creator",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(endpoint, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=10) as resp:
+            data = json.loads(resp.read().decode("utf-8"))
+            models = [m.get("id") for m in data.get("data", []) if m.get("id")]
+            return sorted(models)
+    except Exception as exc:
+        raise RuntimeError(f"Could not connect to OpenRouter at {url}: {exc}") from exc
+
+
 def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
     base = (url or "http://localhost:11434").rstrip("/")
     if base.endswith("/api"):
@@ -148,3 +173,65 @@ def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1
         raise refine.RefineError(f"LM Studio/OpenAI API error ({exc.code}): {err_body}") from exc
     except Exception as exc:
         raise refine.RefineError(f"LM Studio/OpenAI connection error: {exc}") from exc
+
+
+def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key=""):
+    base = (url or "https://openrouter.ai/api/v1").rstrip("/")
+    if base.endswith("/v1"):
+        endpoint = f"{base}/chat/completions"
+    else:
+        endpoint = f"{base}/v1/chat/completions"
+
+    user_content = [{"type": "text", "text": message}]
+    for img in images:
+        b64_img = pil_to_base64(img)
+        user_content.append({
+            "type": "image_url",
+            "image_url": {"url": f"data:image/jpeg;base64,{b64_img}"},
+        })
+
+    messages = [
+        {"role": "system", "content": system},
+        {"role": "user", "content": user_content if images else message},
+    ]
+
+    payload = {
+        "model": model,
+        "messages": messages,
+        "temperature": max(float(temperature), 0.01),
+    }
+    if seed >= 0:
+        payload["seed"] = int(seed)
+    if max_tokens:
+        payload["max_tokens"] = int(max_tokens)
+
+    headers = {
+        "Content-Type": "application/json",
+        "User-Agent": "MiniMaxCreator",
+        "HTTP-Referer": "https://github.com/roadmaus/ComfyUI-MiniMax-Creator",
+        "X-Title": "ComfyUI-MiniMax-Creator",
+    }
+    if api_key:
+        headers["Authorization"] = f"Bearer {api_key}"
+
+    req = urllib.request.Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers=headers,
+    )
+
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            res_data = json.loads(resp.read().decode("utf-8"))
+            choices = res_data.get("choices", [])
+            if not choices:
+                raise refine.RefineError("OpenRouter returned no completion choices.")
+            content = choices[0].get("message", {}).get("content", "")
+            if not content.strip():
+                raise refine.RefineError("OpenRouter returned an empty response.")
+            return content
+    except urllib.error.HTTPError as exc:
+        err_body = exc.read().decode("utf-8", errors="replace")
+        raise refine.RefineError(f"OpenRouter API error ({exc.code}): {err_body}") from exc
+    except Exception as exc:
+        raise refine.RefineError(f"OpenRouter connection error: {exc}") from exc

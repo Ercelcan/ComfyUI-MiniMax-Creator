@@ -237,6 +237,7 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
     provider = body.get("provider", "comfy")
     url = body.get("url", "")
     model = body.get("model") or ""
+    api_key = body.get("api_key", "")
 
     if provider == "ollama":
         content = refine_api.chat_ollama(
@@ -261,6 +262,19 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
             temperature=body.get("temperature", 0.7),
             seed=body.get("seed", -1),
             max_tokens=body.get("max_tokens"),
+        )
+    elif provider == "openrouter":
+        content = refine_api.chat_openrouter(
+            url=url or "https://openrouter.ai/api/v1",
+            model=model,
+            system=refine_skill.system_prompt(skill),
+            message=refine_skill.user_message(shot, seconds=seconds, images=len(pictures),
+                                              mode=mode, language=body.get("language")),
+            images=pictures,
+            temperature=body.get("temperature", 0.7),
+            seed=body.get("seed", -1),
+            max_tokens=body.get("max_tokens"),
+            api_key=api_key,
         )
     else:
         content = refine_local.chat(
@@ -355,6 +369,7 @@ def _run(body):
     provider = body.get("provider", "comfy")
     url = body.get("url", "")
     model = body.get("model") or ""
+    api_key = body.get("api_key", "")
 
     if provider == "ollama":
         content = refine_api.chat_ollama(
@@ -377,6 +392,18 @@ def _run(body):
             temperature=body.get("temperature", 0.3),
             seed=body.get("seed", -1),
             max_tokens=body.get("max_tokens"),
+        )
+    elif provider == "openrouter":
+        content = refine_api.chat_openrouter(
+            url=url or "https://openrouter.ai/api/v1",
+            model=model,
+            system=system,
+            message=message,
+            images=pictures,
+            temperature=body.get("temperature", 0.3),
+            seed=body.get("seed", -1),
+            max_tokens=body.get("max_tokens"),
+            api_key=api_key,
         )
     else:
         content = refine_local.chat(
@@ -517,6 +544,7 @@ def _run(body):
 async def refine_models(request):
     provider = request.query.get("provider", "comfy")
     url = request.query.get("url", "")
+    api_key = request.query.get("api_key", "")
     loop = asyncio.get_running_loop()
     try:
         if provider == "ollama":
@@ -524,6 +552,9 @@ async def refine_models(request):
             return web.json_response({"models": models_list})
         elif provider == "openai":
             models_list = await loop.run_in_executor(None, refine_api.fetch_models_openai, url or "http://localhost:1234/v1")
+            return web.json_response({"models": models_list})
+        elif provider == "openrouter":
+            models_list = await loop.run_in_executor(None, refine_api.fetch_models_openrouter, url or "https://openrouter.ai/api/v1", api_key)
             return web.json_response({"models": models_list})
         else:
             names = await loop.run_in_executor(None, refine_local.list_models)

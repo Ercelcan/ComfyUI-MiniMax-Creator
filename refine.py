@@ -433,7 +433,7 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
                 which = ", ".join(f"[image {n}]" for n in shown)
                 lines.append(
                     f"Look at {which} before writing this shot. What you write has "
-                    f"to match what is in {'them' if len(shown) > 1 else 'it'} — the "
+                    f"to match what is actually in {'them' if len(shown) > 1 else 'it'} — the "
                     f"subjects and their appearance, the clothing, the objects, the "
                     f"setting, the colours, the light, the framing — and not merely "
                     f"what the request below implies."
@@ -518,29 +518,6 @@ def uncited(text, handles, labels):
         if own & written_labels:
             continue
         missing.append(handle)
-    return missing
-
-
-_QUOTED_RE = re.compile(r'"([^"\n]{2,120})"|“([^”\n]{2,120})”')
-
-
-def _plain(text):
-    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    return re.sub(r"\s+", " ", text).lower()
-
-
-def quoted(text):
-    return [a or b for a, b in _QUOTED_RE.findall(text or "")]
-
-
-def dropped_quotes(requests, written):
-    haystack = _plain(written or "")
-    missing = []
-    for request in requests:
-        for span in quoted(request):
-            needle = _plain(span).strip(" .!?,;:")
-            if needle and needle not in haystack and span not in missing:
-                missing.append(span)
     return missing
 
 
@@ -629,3 +606,69 @@ def _number(groups, images, limit, shared=frozenset()):
             if handle in shared:
                 seen[handle] = len(kept)
     return dropped, kept
+
+
+_QUOTED_RE = re.compile(r'"([^"\n]{2,120})"|“([^”\n]{2,120})”')
+
+
+def _plain(text):
+    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    return re.sub(r"\s+", " ", text).lower()
+
+
+def quoted(text):
+    return [a or b for a, b in _QUOTED_RE.findall(text or "")]
+
+
+def _lcs_length(a, b):
+    """Length of longest common subsequence between two word lists."""
+    if not a or not b:
+        return 0
+    m, n = len(a), len(b)
+    dp = [0] * (n + 1)
+    for i in range(1, m + 1):
+        prev = 0
+        for j in range(1, n + 1):
+            temp = dp[j]
+            if a[i - 1] == b[j - 1]:
+                dp[j] = prev + 1
+            else:
+                dp[j] = max(dp[j], dp[j - 1])
+            prev = temp
+    return dp[n]
+
+
+def dropped_quotes(requests, written):
+    haystack = _plain(written or "")
+    haystack_words = re.findall(r"\w+", haystack)
+    haystack_clean = " ".join(haystack_words)
+    missing = []
+
+    for request in requests:
+        for span in quoted(request):
+            needle = _plain(span).strip(" .!?,;:")
+            if not needle:
+                continue
+
+            # 1. Exact substring check
+            if needle in haystack:
+                continue
+
+            # 2. Punctuation-insensitive word sequence check
+            needle_words = re.findall(r"\w+", needle)
+            if not needle_words:
+                continue
+            needle_clean = " ".join(needle_words)
+            if needle_clean in haystack_clean:
+                continue
+
+            # 3. Subsequence word match (allows minor LLM grammar fixes, punctuation, or dropped filler words)
+            lcs = _lcs_length(needle_words, haystack_words)
+            threshold = max(2, int(len(needle_words) * 0.65))
+            if lcs >= threshold:
+                continue
+
+            if span not in missing:
+                missing.append(span)
+
+    return missing
