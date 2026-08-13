@@ -1,4 +1,4 @@
-import { el, icon } from "./dom.js";
+import { el, icon, floatAbove } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
@@ -53,9 +53,9 @@ export class PromptBox {
     this.root.addEventListener("input", () => this.onEdit());
     this.root.addEventListener("keydown", (event) => this.onKeyDown(event), true);
     this.root.addEventListener("paste", (event) => this.onPaste(event));
-    this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 120));
+    this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 150));
 
-    for (const name of ["keyup", "pointerdown", "pointerup", "wheel"]) {
+    for (const name of ["keyup", "keydown", "copy", "cut", "paste", "pointerdown", "pointerup", "wheel"]) {
       this.root.addEventListener(name, (event) => event.stopPropagation());
     }
 
@@ -114,8 +114,9 @@ export class PromptBox {
   }
 
   build(text) {
+    const state = this.hooks.getState?.() ?? {};
     const known = new Set([
-      ...this.hooks.getState().assets.map((a) => a.handle),
+      ...(state.assets ?? []).map((a) => a.handle),
       ...(this.hooks.getPool?.() ?? []).map((a) => a.handle),
     ]);
     const out = [];
@@ -151,7 +152,7 @@ export class PromptBox {
 
   refresh() {
     if (document.activeElement === this.root) return;
-    this.root.replaceChildren(...this.build(this.hooks.getState().prompt ?? ""));
+    this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
   }
 
   onEdit() {
@@ -162,6 +163,7 @@ export class PromptBox {
   }
 
   onPaste(event) {
+    event.stopPropagation();
     event.preventDefault();
     const text = event.clipboardData?.getData("text/plain") ?? "";
     this.insertTextAtCursor(text.replace(/\r\n?/g, "\n"));
@@ -251,6 +253,7 @@ export class PromptBox {
       document.body.appendChild(this.menu);
       this.active = 0;
     }
+    floatAbove(this.menu);
     this.place();
     this.renderMenu();
     try {
@@ -282,21 +285,22 @@ export class PromptBox {
   }
 
   options() {
-    const state = this.hooks.getState();
-    const attached = state.assets
+    const state = this.hooks.getState?.() ?? {};
+    const attachedAssets = state.assets ?? [];
+    const attached = attachedAssets
       .filter((asset) => !this.query || asset.handle.toLowerCase().includes(this.query)
         || asset.filename.toLowerCase().includes(this.query))
       .map((asset) => ({ kind: "attached", handle: asset.handle, path: asset.filename, mediaKind: asset.kind }));
 
-    const own = new Set(state.assets.map((a) => a.handle));
-    const pool = this.hooks.attachBlocked("reference") ? []
+    const own = new Set(attachedAssets.map((a) => a.handle));
+    const pool = this.hooks.attachBlocked?.("reference") ? []
       : (this.hooks.getPool?.() ?? [])
         .filter((asset) => !own.has(asset.handle))
         .filter((asset) => !this.query || asset.handle.toLowerCase().includes(this.query)
           || asset.filename.toLowerCase().includes(this.query))
         .map((asset) => ({ kind: "pool", handle: asset.handle, path: asset.filename, mediaKind: asset.kind }));
 
-    const used = new Set(state.assets.map((a) => a.filename));
+    const used = new Set(attachedAssets.map((a) => a.filename));
     const library = (this.library ?? [])
       .filter((row) => !used.has(row.path))
       .filter((row) => !this.query || row.path.toLowerCase().includes(this.query))
@@ -363,7 +367,7 @@ export class PromptBox {
       for (const option of pool) this.menu.appendChild(row(option));
     }
     if (library.length) {
-      const blocked = this.hooks.attachBlocked("reference");
+      const blocked = this.hooks.attachBlocked?.("reference");
       this.menu.appendChild(el("div", {
         class: "mmc-mention-head",
         text: blocked ? t("Input folder — unavailable while a start/end frame is set") : t("Input folder"),

@@ -105,7 +105,7 @@ export const css = `
 }
 
 .mmc-mention {
-  position: fixed; z-index: 1350; width: 330px; max-height: 300px; overflow-y: auto;
+  position: fixed; z-index: 2000; width: 330px; max-height: 300px; overflow-y: auto;
   background: #212121; border: 1px solid var(--mmc-line); border-radius: 14px;
   padding: 6px; box-shadow: 0 20px 50px rgba(0,0,0,.65);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;

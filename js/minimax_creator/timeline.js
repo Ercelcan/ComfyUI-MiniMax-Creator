@@ -5,6 +5,7 @@ import { t } from "./i18n.js";
 import { openLoras } from "./loras.js";
 import { openPicker } from "./picker.js";
 import { openAspectPopover, openResolutionPopover, openChoicePopover, stepperPill, aspectGlyph, PILL_GLYPH } from "./pills.js";
+import { PromptBox } from "./prompt.js";
 import { refine, refineButton, chosenModel as refineModel } from "./refine.js";
 import { samplingBar } from "./sampling.js";
 import { Stage } from "./stage.js";
@@ -94,10 +95,39 @@ class Timeline {
     return box;
   }
 
+  attachPoolFromMention(row) {
+    const entry = {
+      handle: S.nextPoolHandle(this.timeline),
+      kind: row.kind,
+      role: "reference",
+      filename: row.path,
+      ref_size: "max",
+    };
+    if (row.kind === "video") entry.track = row.track ?? S.DEFAULT_TRACK;
+    if (row.trim) entry.trim = row.trim;
+    this.timeline.assets = this.timeline.assets ?? [];
+    this.timeline.assets.push(entry);
+    this.commit();
+    return entry.handle;
+  }
+
   mount() {
-    this.promptBox = this.textBox("prompt", {
-      placeholder: t("The whole piece: setting, look, who is in it. Added in front of every segment's own prompt."),
+    this.prompt = new PromptBox({
+      getState: () => ({
+        prompt: this.timeline.prompt ?? "",
+        assets: this.timeline.assets ?? [],
+      }),
+      onInput: (text) => {
+        this.timeline.prompt = text;
+        this.onCommit?.();
+        this.renderBar();
+        this.renderPool();
+      },
+      onAttach: (row) => this.attachPoolFromMention(row),
+      attachBlocked: () => null,
+      getPool: () => this.timeline.assets ?? [],
     });
+    this.prompt.setValue(this.timeline.prompt ?? "");
 
     this.soundscapeBox = this.textBox("soundscape", {
       className: "mmc-tl-prompt mmc-tl-small", rows: 3,
@@ -131,7 +161,12 @@ class Timeline {
         el("button", { class: "mmc-close", text: "✕", title: t("Close"), onclick: () => this.close() }),
       ]),
       el("div", { class: "mmc-tl-body" }, [
-        this.promptBox, this.audioHost, this.poolHost, this.barHost, this.stripHost,
+        this.prompt.chipsBar,
+        this.prompt.root,
+        this.audioHost,
+        this.poolHost,
+        this.barHost,
+        this.stripHost,
       ]),
     ]);
 
@@ -150,9 +185,7 @@ class Timeline {
   }
 
   render() {
-    this.promptBox.placeholder = S.isSingle(this.timeline)
-      ? t("The whole piece: setting, look, who is in it. Opens Shot 1's description, so write it as the start of one.")
-      : t("The whole piece: setting, look, who is in it. Added in front of every segment's own prompt.");
+    this.prompt.setValue(this.timeline.prompt ?? "");
     this.renderPool();
     this.renderBar();
     this.renderStrip();
@@ -233,7 +266,7 @@ class Timeline {
     const current = this.timeline.prompt ?? "";
     const joiner = current && !/\s$/.test(current) ? " " : "";
     this.timeline.prompt = `${current}${joiner}@${asset.handle} `;
-    this.promptBox.value = this.timeline.prompt;
+    this.prompt.setValue(this.timeline.prompt);
     this.commit();
   }
 
@@ -480,7 +513,7 @@ class Timeline {
           : t("Hard cut into segment {n}. Click to start it on segment {prev}'s last frame.",
               { n: index + 1, prev: index })),
         onclick: blocked ? undefined : () => { segment.continue = !on; this.commit(); },
-      }, [el("span", { text: on ? "↝" : "✂" }), el("span", { text: on ? t("continues") : t("cut") })]),
+      }, [el("span", { text: on ? "m" : "✂" }), el("span", { text: on ? t("continues") : t("cut") })]),
       el("button", {
         class: `mmc-tl-join mmc-tl-join-sound${sound ? " on" : ""}`,
         disabled: soundBlocked ? true : undefined,
@@ -670,7 +703,7 @@ class Timeline {
     if (result.piece) {
       if (replaced.prompt === undefined) replaced.prompt = this.timeline.prompt ?? "";
       this.timeline.prompt = result.piece;
-      if (this.promptBox) this.promptBox.value = result.piece;
+      this.prompt.setValue(result.piece);
     }
     if (result.soundscape) this.timeline.soundscape = result.soundscape;
     if (result.music) this.timeline.music = result.music;
@@ -698,7 +731,7 @@ class Timeline {
       this.timeline.music = replaced.music ?? "";
       if (replaced.prompt !== undefined) {
         this.timeline.prompt = replaced.prompt;
-        if (this.promptBox) this.promptBox.value = this.timeline.prompt;
+        this.prompt.setValue(replaced.prompt);
       }
       if (this.soundscapeBox) this.soundscapeBox.value = this.timeline.soundscape;
       if (this.musicBox) this.musicBox.value = this.timeline.music;
