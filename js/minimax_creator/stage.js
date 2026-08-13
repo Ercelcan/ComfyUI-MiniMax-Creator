@@ -1,5 +1,5 @@
 import { api } from "../../../scripts/api.js";
-import { el, mountOverlay } from "./dom.js";
+import { el, mountOverlay, stopAllMediaGlobally } from "./dom.js";
 import { listAssets, deleteAsset, outputUrl } from "./api.js";
 import { t } from "./i18n.js";
 
@@ -39,7 +39,7 @@ export class Stage {
 
   destroy() {
     for (const name of EVENTS) api.removeEventListener(name, this.onEvent);
-    this.muteAndPauseAllMedia();
+    stopAllMediaGlobally();
     this.stopMedia();
     this.releaseFrame();
     clearInterval(this.ticker);
@@ -80,33 +80,9 @@ export class Stage {
     this.frameUrl = null;
   }
 
-  muteAndPauseAllMedia() {
-    try {
-      const mediaElements = document.querySelectorAll(".mmc-stage-video, .mmc-stage-media video, .mmc-stage-media audio");
-      mediaElements.forEach((m) => {
-        try {
-          m.muted = true;
-          m.pause();
-        } catch {}
-      });
-    } catch {}
-  }
-
   stopMedia() {
-    try {
-      const mediaElements = document.querySelectorAll(".mmc-stage-video, .mmc-stage-media video, .mmc-stage-media audio");
-      mediaElements.forEach((m) => {
-        try {
-          m.pause();
-          m.muted = true;
-          m.currentTime = 0;
-          m.removeAttribute("src");
-          m.load();
-          m.remove();
-        } catch {}
-      });
-      if (this.media) this.media.replaceChildren();
-    } catch {}
+    stopAllMediaGlobally();
+    if (this.media) this.media.replaceChildren();
     this.currentMediaSrc = null;
   }
 
@@ -195,7 +171,7 @@ export class Stage {
     const item = this.historyList[nextIdx];
     if (!item) return;
 
-    this.muteAndPauseAllMedia();
+    stopAllMediaGlobally();
     this.stopMedia();
     const saved = { filename: item.name, subfolder: item.subfolder, type: "output" };
     this.result = {
@@ -254,7 +230,7 @@ export class Stage {
     if (!detail) return;
     switch (type) {
       case "execution_start":
-        this.muteAndPauseAllMedia();
+        stopAllMediaGlobally();
         this.progress = null;
         this.segment = null;
         this.error = null;
@@ -329,7 +305,7 @@ export class Stage {
         if (String(detail.display_node) !== String(this.getId() ?? "")) break;
         const saved = detail.output?.mmc_video?.[0] ?? detail.output?.mmc_image?.[0] ?? detail.output?.videos?.[0] ?? detail.output?.gifs?.[0] ?? detail.output?.images?.[0];
         if (!saved) break;
-        this.muteAndPauseAllMedia();
+        stopAllMediaGlobally();
         this.stopMedia();
         this.state = "done";
         this.progress = null;
@@ -373,7 +349,7 @@ export class Stage {
       } catch {}
     }
     clearInterval(this.ticker);
-    this.muteAndPauseAllMedia();
+    stopAllMediaGlobally();
     this.stopMedia();
     this.metaFrameAt = 0;
     this.state = "idle";
@@ -389,7 +365,7 @@ export class Stage {
 
   begin() {
     if (this.state === "sampling") return;
-    this.muteAndPauseAllMedia();
+    stopAllMediaGlobally();
     this.stopMedia();
     this.state = "sampling";
     this.startedAt = Date.now();
@@ -402,7 +378,7 @@ export class Stage {
     if (src && this.currentMediaSrc === src && this.media?.firstElementChild) {
       return;
     }
-    this.muteAndPauseAllMedia();
+    stopAllMediaGlobally();
     this.stopMedia();
     this.currentMediaSrc = src;
     if (this.media && element) {
@@ -416,7 +392,7 @@ export class Stage {
     this.root.dataset.state = this.state;
     this.onVisibility?.(showing);
     if (!showing) {
-      this.muteAndPauseAllMedia();
+      stopAllMediaGlobally();
       this.stopMedia();
       return;
     }
@@ -434,7 +410,7 @@ export class Stage {
       this.setMediaContent(this.result.isImage ? this.still() : this.video());
     }
     else {
-      this.muteAndPauseAllMedia();
+      stopAllMediaGlobally();
       this.stopMedia();
     }
 
@@ -579,11 +555,14 @@ export class Stage {
       controls: true, autoplay: true, loop: true, muted: true, playsinline: true,
       onmouseenter: (event) => {
         if (this.state === "done") {
+          stopAllMediaGlobally(event.currentTarget);
           event.currentTarget.muted = false;
+          event.currentTarget.play().catch(() => {});
         }
       },
       onmouseleave: (event) => {
         event.currentTarget.muted = true;
+        event.currentTarget.pause();
       },
       onpointerdown: (event) => event.stopPropagation(),
     });

@@ -1,3 +1,40 @@
+export function stopAllMediaGlobally(except = null) {
+  try {
+    document.querySelectorAll("video, audio").forEach((m) => {
+      if (m !== except) {
+        try {
+          m.muted = true;
+          m.pause();
+          if (m.src) {
+            m.currentTime = 0;
+          }
+        } catch {}
+      }
+    });
+  } catch {}
+}
+
+export function registerGlobalMediaHandler() {
+  if (globalThis.__mmc_media_handler_installed) return;
+  globalThis.__mmc_media_handler_installed = true;
+
+  document.addEventListener("play", (event) => {
+    const target = event.target;
+    if (target && (target.tagName === "VIDEO" || target.tagName === "AUDIO")) {
+      stopAllMediaGlobally(target);
+    }
+  }, true);
+
+  document.addEventListener("volumechange", (event) => {
+    const target = event.target;
+    if (target && (target.tagName === "VIDEO" || target.tagName === "AUDIO") && !target.muted) {
+      stopAllMediaGlobally(target);
+    }
+  }, true);
+}
+
+registerGlobalMediaHandler();
+
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {

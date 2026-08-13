@@ -14,7 +14,6 @@ export class Satellite {
 
     if (stage) {
       stage.onVisibility = (showing) => {
-        if (!showing) stage.muteAndPauseAllMedia?.();
         if (!showing) stage.stopMedia?.();
         this.setShowing(showing);
       };
@@ -126,7 +125,6 @@ export class Satellite {
     cancelAnimationFrame(this.raf);
     if (showing) this.follow();
     else if (this.stage) {
-      this.stage.muteAndPauseAllMedia?.();
       this.stage.stopMedia?.();
     }
   }
@@ -142,7 +140,6 @@ export class Satellite {
     const away = canvas.graph !== node.graph || Boolean(node.flags?.collapsed);
     this.root.style.visibility = away ? "hidden" : "";
     if (away && this.stage) {
-      this.stage.muteAndPauseAllMedia?.();
       this.stage.stopMedia?.();
     }
 
