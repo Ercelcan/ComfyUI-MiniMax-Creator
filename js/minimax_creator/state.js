@@ -151,6 +151,7 @@ export const turboStrength = (name) => (/lightx2v/i.test(name || "") ? 0.6 : 1.0
 export function emptyTurbo() {
   return {
     lora: "",
+    ref_lora: "",
     merged: false,
     quality: "medium",
     on: false,
@@ -162,6 +163,7 @@ export function parseTurbo(raw) {
   const out = emptyTurbo();
   if (!raw || typeof raw !== "object") return out;
   if (typeof raw.lora === "string") out.lora = raw.lora.trim();
+  if (typeof raw.ref_lora === "string") out.ref_lora = raw.ref_lora.trim();
   out.merged = raw.merged === true;
   if (TURBO_QUALITIES.includes(raw.quality)) out.quality = raw.quality;
   out.on = raw.on === true;
@@ -179,8 +181,10 @@ export function parseTurbo(raw) {
 
 export function serializeTurbo(turbo) {
   const picked = parseTurbo(turbo);
-  if (!picked.lora && !picked.merged && !picked.on) return {};
-  const out = { lora: picked.lora };
+  if (!picked.lora && !picked.ref_lora && !picked.merged && !picked.on) return {};
+  const out = {};
+  if (picked.lora) out.lora = picked.lora;
+  if (picked.ref_lora) out.ref_lora = picked.ref_lora;
   if (picked.merged) out.merged = true;
   if (picked.quality !== "medium") out.quality = picked.quality;
   if (picked.on) out.on = true;
