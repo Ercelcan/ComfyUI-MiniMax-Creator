@@ -68,10 +68,27 @@ export const css = `
   width: 6px; height: 6px; border-right: 2px solid #fff; border-bottom: 2px solid #fff;
 }
 
-.mmc-confirm-modal { width: min(420px, 90vw); height: auto; padding: 0; }
-.mmc-confirm-body { padding: 20px 24px; display: flex; flex-direction: column; gap: 8px; }
+.mmc-confirm-modal {
+  width: min(420px, 90vw) !important;
+  height: auto !important;
+  min-height: 0 !important;
+  padding: 0 !important;
+  position: relative !important;
+}
+.mmc-confirm-body { padding: 20px 24px 12px; display: flex; flex-direction: column; gap: 8px; }
 .mmc-confirm-msg { font-size: 14px; color: var(--mmc-text); font-weight: 500; word-break: break-all; }
 .mmc-confirm-sub { font-size: 12px; color: #e0743c; }
+.mmc-confirm-modal .mmc-modal-foot {
+  position: static !important;
+  display: flex !important;
+  justify-content: flex-end !important;
+  align-items: center !important;
+  gap: 12px !important;
+  padding: 12px 20px 20px !important;
+  background: none !important;
+  border: 0 !important;
+  box-shadow: none !important;
+}
 
 .mmc-weight-row {
   display: flex; align-items: center; gap: 8px; width: 100%;
