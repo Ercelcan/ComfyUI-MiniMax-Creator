@@ -10,12 +10,10 @@ Local open weights supported natively through core's `comfy_extras/nodes_minimax
 
 ## 📸 Overview & Previews
 
-<!-- SCREENSHOT PLACEHOLDER 1: Main Creator Node UI -->
-![MiniMax H3 Creator Node](docs/img/ui_simple.png)
+
 <img width="2045" height="693" alt="image" src="https://github.com/user-attachments/assets/a7115091-9479-44dd-b692-7cdd1d4d71ce" />
 
-<!-- SCREENSHOT PLACEHOLDER 2: Satellite Preview Box -->
-![Satellite Preview Box](docs/img/satellite_preview.png)
+
 <img width="837" height="680" alt="image" src="https://github.com/user-attachments/assets/b5317ef8-eaee-4fb1-b1e2-9738b42927e1" />
 
 
