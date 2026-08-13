@@ -124,9 +124,7 @@ export class Satellite {
     this.root.classList.toggle("showing", Boolean(showing));
     cancelAnimationFrame(this.raf);
     if (showing) this.follow();
-    else if (this.stage) {
-      this.stage.stopMedia?.();
-    }
+    else if (this.stage) this.stage.stopMedia?.();
   }
 
   follow() {
@@ -184,7 +182,8 @@ export class Satellite {
           this.root.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
         }
 
-        const autoH = (currentSide === "bottom" || currentSide === "top") ? size[1] : size[1] + title;
+        const defaultMaxH = Math.min(Math.round(window.innerHeight * 0.6), 480);
+        const autoH = Math.min(defaultMaxH, (currentSide === "bottom" || currentSide === "top") ? size[1] : size[1] + title);
         this.root.style.height = `${customH ?? autoH}px`;
         if (customW) {
           this.root.style.width = `${customW}px`;

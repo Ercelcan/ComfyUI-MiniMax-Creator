@@ -240,6 +240,10 @@ function attach(node, build) {
         try { satellite?.destroy(); } catch {}
       };
 
+      node.onResize = function (size) {
+        try { node.setDirtyCanvas?.(true, true); } catch {}
+      };
+
       try { node.setDirtyCanvas?.(true, true); } catch {}
       return body;
     } catch (err) {

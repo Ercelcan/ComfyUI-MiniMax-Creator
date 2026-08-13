@@ -58,11 +58,13 @@ export class PreStageEditor {
     this.noticeHost = el("div");
     this.samplingHost = el("div");
 
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [this.promptBox]);
+
     this.root = el("div", { class: "mmc-root mmc-prestage" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      el("div", { class: "mmc-panel" }, [this.promptBox, this.pillsHost]),
+      el("div", { class: "mmc-panel" }, [this.promptScroll, this.pillsHost]),
       this.noticeHost,
       this.samplingHost,
     ]);

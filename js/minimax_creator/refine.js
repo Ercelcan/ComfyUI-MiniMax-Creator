@@ -454,6 +454,7 @@ export class RefinePanel {
     this.onRevert = onRevert;
     this.problems = [];
     this.seen = "";
+    this.collapsed = false;
     this.root = el("div", { class: "mmc-refined" });
     this.bodyBox = null;
     this.render();
@@ -568,6 +569,15 @@ export class RefinePanel {
         })] : []),
         el("span", { style: { flex: "1" } }),
         el("button", {
+          class: "mmc-ghost",
+          text: this.collapsed ? t("Expand") : t("Collapse"),
+          title: this.collapsed ? t("Expand the refined text box") : t("Collapse the refined text box"),
+          onclick: () => {
+            this.collapsed = !this.collapsed;
+            this.render();
+          },
+        }),
+        el("button", {
           class: "mmc-ghost", text: t("Revert"),
           title: t("Throw the rewrite away and go back to your own prompt. The soundscape and score it wrote go with it."),
           onclick: () => this.clear(),
@@ -581,36 +591,38 @@ export class RefinePanel {
           : t("Off — the prompt above is queued as you wrote it."),
       }));
 
-      if (this.seen) {
-        parts.push(el("details", { class: "mmc-refined-fold" }, [
-          el("summary", { text: t("what the model saw in your images") }),
-          el("div", { class: "mmc-refine-hint mmc-refined-seen", text: this.seen }),
-        ]));
-      }
-
-      this.bodyBox = this.textarea(
-        () => refined.body,
-        (value) => { refined.body = value; },
-        { rows: 8, placeholder: t("The rewritten description.") });
-      parts.push(this.bodyBox);
-
-      if (refined.sections) {
-        const sections = el("div", { class: "mmc-refined-sections" });
-        for (const name of ["subject_definitions", "summary", "retention_analysis"]) {
-          sections.append(el("label", { class: "mmc-refined-section" }, [
-            el("span", { class: "mmc-tl-field-name", text: name }),
-            this.textarea(
-              () => refined.sections[name],
-              (value) => { refined.sections[name] = value; },
-              { rows: 3, className: "mmc-refined-box mmc-tl-small" }),
+      if (!this.collapsed) {
+        if (this.seen) {
+          parts.push(el("details", { class: "mmc-refined-fold" }, [
+            el("summary", { text: t("what the model saw in your images") }),
+            el("div", { class: "mmc-refine-hint mmc-refined-seen", text: this.seen }),
           ]));
         }
-        const fold = el("details", { class: "mmc-refined-fold" }, [
-          el("summary", { text: t("reference analysis — where your @references are defined") }),
-          sections,
-        ]);
-        fold.open = true;
-        parts.push(fold);
+
+        this.bodyBox = this.textarea(
+          () => refined.body,
+          (value) => { refined.body = value; },
+          { rows: 5, placeholder: t("The rewritten description.") });
+        parts.push(this.bodyBox);
+
+        if (refined.sections) {
+          const sections = el("div", { class: "mmc-refined-sections" });
+          for (const name of ["subject_definitions", "summary", "retention_analysis"]) {
+            sections.append(el("label", { class: "mmc-refined-section" }, [
+              el("span", { class: "mmc-tl-field-name", text: name }),
+              this.textarea(
+                () => refined.sections[name],
+                (value) => { refined.sections[name] = value; },
+                { rows: 3, className: "mmc-refined-box mmc-tl-small" }),
+            ]));
+          }
+          const fold = el("details", { class: "mmc-refined-fold" }, [
+            el("summary", { text: t("reference analysis — where your @references are defined") }),
+            sections,
+          ]);
+          fold.open = true;
+          parts.push(fold);
+        }
       }
     }
 

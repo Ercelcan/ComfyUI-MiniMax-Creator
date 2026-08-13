@@ -14,9 +14,6 @@ import * as Turbo from "./turbo.js";
 import { viewUrl, probeAudio } from "./api.js";
 import * as S from "./state.js";
 import { MIN_SECONDS, MAX_SECONDS, describeRatio, isTrainedLength } from "./canvas.js";
-import { app } from "../../../scripts/app.js";
-
-const HANDLE_RE = /@([A-Za-z]+-\d+)/g;
 
 const TRACK_CHIP = {
   "picture+sound": { text: "sound on", next: "picture" },
@@ -82,14 +79,18 @@ export class CreatorEditor {
     }) : null);
     this.ownsStage = !stage;
 
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [
+      this.prompt.root,
+      this.refinePanel.root,
+    ]);
+
     this.root = el("div", { class: "mmc-root" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
       el("div", { class: "mmc-panel" }, [
         this.prompt.chipsBar,
-        this.prompt.root,
-        this.refinePanel.root,
+        this.promptScroll,
         this.pillsHost,
       ]),
       this.noticeHost,
@@ -728,7 +729,7 @@ export class CreatorEditor {
       ...this.state.assets.map((a) => a.handle),
       ...(this.state.pool ?? []).map((a) => a.handle),
     ]);
-    const missing = [...new Set(Array.from(this.state.prompt.matchAll(HANDLE_RE), (m) => m[1]))]
+    const missing = [...new Set(Array.from(this.state.prompt.matchAll(S.HANDLE_RE), (m) => m[1]))]
       .filter((handle) => !known.has(handle));
     if (!missing.length) return null;
     return [el("div", {

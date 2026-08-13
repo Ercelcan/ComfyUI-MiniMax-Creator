@@ -1,3 +1,4 @@
+import { api } from "../../../scripts/api.js";
 import { viewUrl } from "./api.js";
 import { el, icon, mountOverlay } from "./dom.js";
 import { CreatorEditor } from "./editor.js";
@@ -155,16 +156,20 @@ class Timeline {
     this.barHost = el("div", { class: "mmc-tl-bar" });
     this.stripHost = el("div", { class: "mmc-tl-strip" });
 
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [
+      this.prompt.chipsBar,
+      this.prompt.root,
+      this.audioHost,
+      this.poolHost,
+    ]);
+
     this.modal = el("div", { class: "mmc-modal mmc-tl-modal" }, [
       el("div", { class: "mmc-modal-head" }, [
         el("span", { class: "mmc-tab", "aria-selected": "true", text: t("Timeline") }),
         el("button", { class: "mmc-close", text: "✕", title: t("Close"), onclick: () => this.close() }),
       ]),
       el("div", { class: "mmc-tl-body" }, [
-        this.prompt.chipsBar,
-        this.prompt.root,
-        this.audioHost,
-        this.poolHost,
+        this.promptScroll,
         this.barHost,
         this.stripHost,
       ]),
@@ -513,7 +518,7 @@ class Timeline {
           : t("Hard cut into segment {n}. Click to start it on segment {prev}'s last frame.",
               { n: index + 1, prev: index })),
         onclick: blocked ? undefined : () => { segment.continue = !on; this.commit(); },
-      }, [el("span", { text: on ? "m" : "✂" }), el("span", { text: on ? t("continues") : t("cut") })]),
+      }, [el("span", { text: on ? "↝" : "✂" }), el("span", { text: on ? t("continues") : t("cut") })]),
       el("button", {
         class: `mmc-tl-join mmc-tl-join-sound${sound ? " on" : ""}`,
         disabled: soundBlocked ? true : undefined,
@@ -599,6 +604,7 @@ class Timeline {
     const rewrite = segment.refined?.body?.trim();
     const using = rewrite && segment.refined.enabled !== false;
     const prompt = typed || rewrite || "";
+    const isGenerating = (index + 1) === this.activeSegment;
 
     const meta = [];
     if (refs) meta.push(t(refs === 1 ? "{count} ref" : "{count} refs", { count: refs }));
@@ -606,7 +612,7 @@ class Timeline {
     if (rewrite) meta.push(using ? t("refined") : t("refined (off)"));
 
     return el("div", {
-      class: "mmc-tl-card",
+      class: `mmc-tl-card${isGenerating ? " generating" : ""}`,
       style: { width: `${cardWidth(seconds)}px` },
       ondblclick: () => this.edit(index),
     }, [
@@ -814,6 +820,7 @@ export class TimelineBody {
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.preStage = preStage;
+    this.activeSegment = null;
     this.timeline = S.parseTimeline(read());
 
     this.root = el("div", { class: "mmc-root" });
@@ -828,12 +835,56 @@ export class TimelineBody {
         capacity: () => ({ used: 0, max: 0, filesLeft: 0 }),
       }),
     });
+
+    this.onApiEvent = (event) => this.handleApiEvent(event.type, event.detail);
+    const events = ["mmc_segment", "execution_start", "executed", "execution_error"];
+    for (const name of events) api.addEventListener(name, this.onApiEvent);
+
     loadCatalog(() => this.adoptWeights());
     this.render();
   }
 
   destroy() {
+    const events = ["mmc_segment", "execution_start", "executed", "execution_error"];
+    for (const name of events) api.removeEventListener(name, this.onApiEvent);
     this.stage?.destroy();
+  }
+
+  getId() {
+    if (typeof this.nodeId === "function") {
+      try { return this.nodeId(); } catch { return null; }
+    }
+    return this.nodeId;
+  }
+
+  ours(id) {
+    if (id === null || id === undefined) return false;
+    const mine = String(this.getId() ?? "");
+    const other = String(id);
+    return other === mine || (mine && other.startsWith(`${mine}.`));
+  }
+
+  handleApiEvent(type, detail) {
+    if (!detail) return;
+    if (type === "mmc_segment") {
+      if (this.ours(detail.node)) {
+        this.activeSegment = detail.index ?? null;
+        this.render();
+      }
+    } else if (type === "execution_start") {
+      this.activeSegment = null;
+      this.render();
+    } else if (type === "executed") {
+      if (String(detail.display_node) === String(this.getId() ?? "")) {
+        this.activeSegment = null;
+        this.render();
+      }
+    } else if (type === "execution_error") {
+      if (this.ours(detail.node_id)) {
+        this.activeSegment = null;
+        this.render();
+      }
+    }
   }
 
   adoptWeights() {
@@ -912,9 +963,10 @@ export class TimelineBody {
       }),
       el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, segments.map((segment, index) => {
         const continues = !single && S.continues(segment);
+        const isGenerating = (index + 1) === this.activeSegment;
         const { at } = S.cutTimes(this.timeline);
         return el("div", {
-          class: `mmc-tl-tick${continues ? " on" : ""}`,
+          class: `mmc-tl-tick${continues ? " on" : ""}${isGenerating ? " generating" : ""}`,
           style: { flexGrow: String(Math.max(1, segment.duration_s)) },
           title: single
             ? (index
