@@ -127,6 +127,20 @@ def _stamps(data):
     return tuple(out)
 
 
+def _labels(runs):
+    """What to call each payload in an error raised about it.
+
+    A pass holding one segment is that segment, and is named the way it always
+    was — most timelines are nothing but these. A pass holding several is named
+    by the cards it covers, because that is what the user would go and look at.
+    A timeline that is one pass end to end has no card worth singling out.
+    """
+    if len(runs) == 1 and runs[0][1] - runs[0][0] > 1:
+        return ["This one-pass render"]
+    return [f"Segment {start + 1}" if end - start == 1 else f"Segments {start + 1}-{end}"
+            for start, end in runs]
+
+
 class MiniMaxH3Timeline(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -199,18 +213,13 @@ class MiniMaxH3Timeline(io.ComfyNode):
                 block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
         data = _parse(timeline_data)
 
-        # The two render modes differ entirely in how the timeline is *compiled*
-        # and not at all in what is built from the result. Chained gives one
-        # payload per segment and `render.emit` wires them together; single gives
-        # exactly one payload holding the whole timeline as a multi-shot
-        # description, and the same loop runs once — no seam, so no last-frame or
-        # audio-tail node, and no join, because there is nothing to join to.
-        single = compiler.render_mode(data) == "single"
-        payloads = ([compiler.single_payload(data)]
-                    if single else
-                    compiler.timeline_payloads(data, image_size_lookup=media.image_size))
-        labels = (["This one-pass render"] if single else
-                  [f"Segment {i + 1}" for i in range(len(payloads))])
+        # One payload per pass, and a pass is a run of merged segments — usually
+        # one segment long. How the timeline is *compiled* is the only thing the
+        # merging changes; what is built from the result is the same loop either
+        # way. `render.emit` wires each payload to the one before it, and a pass
+        # holding several segments simply has no seam inside it to wire.
+        payloads = compiler.timeline_payloads(data, image_size_lookup=media.image_size)
+        labels = _labels(compiler.timeline_runs(data))
 
         graph = render.emit(
             payloads, labels,

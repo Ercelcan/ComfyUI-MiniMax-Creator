@@ -117,6 +117,18 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
     FL2VA weights read even though their documented inputs are text and frames.
     See `payload.py` for the one core line that has to be worked around to send
     it alongside a keyframe.
+
+    Every keyframe here carries its real pixel index under `FRAME_INDEX_KEY`,
+    including the ones stock would place correctly. A sound seam is a
+    `ref_audio` block, and a reference block advances the cursor the target
+    clip then starts at — so the moment sound crosses a seam, stock's "frame 0"
+    lands `ref_audio_t` time units *before* the clip's opening rather than on
+    it, and the model reads the inherited frame as something from a second ago
+    instead of as this clip's first frame. Keyed rows are repositioned onto the
+    target's own origin by `payload.py`; with no references in the layout the
+    rewrite reproduces stock's arithmetic exactly, so nothing that was already
+    right moves. `_encode_references` has keyed its seam for the same reason
+    since references existed — this is the same repair on the FL2VA road.
     """
     latent, frame_count = _empty_av_latent(compiled.width, compiled.height, compiled.frames)
 
@@ -136,13 +148,14 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
         if compiled.feather > 1:
             keyframes.extend(_context_keyframes(vae, tail[-compiled.feather:], compiled.feather))
         else:
-            keyframes.append({"resolved_frame_index": 0, "image": tail[-1:]})
+            keyframes.append({"resolved_frame_index": 0, FRAME_INDEX_KEY: 0,
+                              "image": tail[-1:]})
     elif compiled.first_frame is not None:
         # Geometry anchor: plain stretch, because the canvas was derived from
         # this image's own aspect ratio and already matches it.
         image = _resize(loaded[compiled.first_frame.handle]["image"], compiled.width, compiled.height, "disabled")
         images.append(image)
-        keyframes.append({"resolved_frame_index": 0, "image": image})
+        keyframes.append({"resolved_frame_index": 0, FRAME_INDEX_KEY: 0, "image": image})
 
     if compiled.last_frame is not None:
         # Follower: cover-crop onto whatever canvas the first frame established.
@@ -151,7 +164,8 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
         crop = "center" if (compiled.first_frame is not None or compiled.continues) else "disabled"
         image = _resize(loaded[compiled.last_frame.handle]["image"], compiled.width, compiled.height, crop)
         images.append(image)
-        keyframes.append({"resolved_frame_index": frame_count - 1, "image": image})
+        keyframes.append({"resolved_frame_index": frame_count - 1,
+                          FRAME_INDEX_KEY: frame_count - 1, "image": image})
 
     if compiled.continues_audio and compiled.feather == 1:
         # The tokenizer's `images=` branch is an `else` on `minimax_ref_items`:

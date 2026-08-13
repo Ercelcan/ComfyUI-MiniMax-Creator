@@ -121,7 +121,50 @@ export async function refine(payload) {
   });
   const body = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(body.error || t("the refiner failed ({status})", { status: response.status }));
-  return body;
+  return await collect(body.job);
+}
+
+/**
+ * Wait for a started job and hand back its result.
+ *
+ * A rewrite runs for many minutes with nothing on the wire, and no browser
+ * holds a silent HTTP request open that long — Chromium drops one flat at five
+ * minutes, a proxy in between usually sooner. So the POST above only starts
+ * the job; the server announces the end on the websocket, and the result is
+ * collected here with a GET. The event is just the nudge — a slow poll backs
+ * it up, so a dropped websocket costs seconds, not the rewrite.
+ */
+function collect(job) {
+  return new Promise((resolve, reject) => {
+    let timer = null;
+    let inFlight = false;
+    const settle = (fn, value) => {
+      clearInterval(timer);
+      api.removeEventListener("minimax_creator.refine.done", nudge);
+      fn(value);
+    };
+    const check = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const response = await api.fetchApi(`/minimax_creator/refine/job/${job}`);
+        const body = await response.json().catch(() => ({}));
+        if (response.status === 404) {
+          settle(reject, new Error(body.error || t("the refine was lost — the server may have restarted")));
+        } else if (body.done && body.error) {
+          settle(reject, new Error(body.error));
+        } else if (body.done) {
+          settle(resolve, body.result);
+        }
+        // Anything else is "still writing", or a blip the next poll retries.
+      } catch { /* a network blip; the next poll retries */ }
+      inFlight = false;
+    };
+    const nudge = ({ detail }) => { if (detail?.job === job) check(); };
+    api.addEventListener("minimax_creator.refine.done", nudge);
+    timer = setInterval(check, 5000);
+    check(); // it may have finished before the listener existed
+  });
 }
 
 export function openSettings(anchor, onChange) {
@@ -657,6 +700,14 @@ export class RefinePanel {
 export function refineButton({ run, label = "Refine", title, className = "mmc-tool" }) {
   let busy = false;
   const text = el("span", { text: t(label) });
+  // The generation ticks ComfyUI's own progress channel once per token, under
+  // the refiner's id — `refine_local.PROGRESS_ID` — so the button can count
+  // tokens instead of promising vaguely. Best effort: with no event the label
+  // just stays "Refining…".
+  const onProgress = ({ detail }) => {
+    if (detail?.prompt_id !== "minimax-creator-refine") return;
+    text.textContent = `${t("Refining…")} ${detail.value}/${detail.max}`;
+  };
   const button = el("button", {
     class: className,
     title: title || t("Rewrite this prompt into the expanded description H3 was trained to read, keeping everything you wrote and expanding it."),
@@ -665,11 +716,13 @@ export function refineButton({ run, label = "Refine", title, className = "mmc-to
       busy = true;
       button.classList.add("busy");
       text.textContent = t("Refining…");
+      api.addEventListener("progress", onProgress);
       try {
         await run();
       } finally {
         busy = false;
         button.classList.remove("busy");
+        api.removeEventListener("progress", onProgress);
         text.textContent = t(label);
       }
     },

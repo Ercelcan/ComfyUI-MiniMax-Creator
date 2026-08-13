@@ -76,15 +76,19 @@ export const css = `
   display: flex; gap: 2px; padding: 2px; border-radius: 10px;
   background: var(--mmc-surface-3); border: 1px solid var(--mmc-line);
 }
+/* Laid out rather than left to the button's own centring, because the middle
+   position is a span and an inline box would sit its text a couple of pixels
+   above the two buttons' — which is exactly what it looked like. */
 .mmc-tl-render-opt {
+  display: flex; align-items: center; justify-content: center;
   height: 24px; padding: 0 10px; border: 0; border-radius: 8px; background: none;
-  color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;
+  color: var(--mmc-dim); font-family: inherit; font-size: 12px; line-height: 1; cursor: pointer;
 }
 .mmc-tl-render-opt:hover { color: var(--mmc-text); }
 .mmc-tl-render-opt.on { background: var(--mmc-surface); color: var(--mmc-text); }
 
 .mmc-tl-problem {
-  display: flex; gap: 8px; align-items: baseline; flex-basis: 100%;
+  display: flex; gap: 8px; align-items: baseline;
   font-size: 11px; line-height: 1.4; color: #e0743c;
 }
 .mmc-tl-problem .mmc-note-key { color: inherit; opacity: .8; }
@@ -93,6 +97,9 @@ export const css = `
   display: flex; align-items: stretch; gap: 0;
   overflow-x: auto; padding-bottom: 8px; min-height: 170px; flex-shrink: 0;
 }
+/* The cards row, which is all a seam or the add button occupies: they have no
+   rail above them and nothing to say underneath. */
+.mmc-tl-seam, .mmc-tl-add { grid-row: 2; }
 .mmc-tl-card {
   flex: 0 0 auto; box-sizing: border-box;
   display: flex; flex-direction: column; gap: 8px;
@@ -142,13 +149,13 @@ export const css = `
 .mmc-tl-cut span:first-child { font-size: 15px; }
 
 .mmc-tl-join {
-  flex: 0 0 auto; align-self: center; width: 62px;
   display: flex; flex-direction: column; align-items: center; gap: 2px;
   background: none; border: 0; color: var(--mmc-off); cursor: pointer;
-  font-family: inherit; font-size: 10px; padding: 4px 0;
+  font-family: inherit; font-size: 10px; line-height: 1.25; padding: 4px 2px;
+  border-radius: 8px;
 }
-.mmc-tl-join span:first-child { font-size: 15px; }
-.mmc-tl-join:hover:not(:disabled) { color: var(--mmc-text); }
+.mmc-tl-join span:first-child { font-size: 15px; line-height: 1; }
+.mmc-tl-join:hover:not(:disabled) { color: var(--mmc-text); background: var(--mmc-surface-2); }
 .mmc-tl-join.on { color: var(--mmc-accent); }
 .mmc-tl-join:disabled { cursor: not-allowed; opacity: .5; }
 
@@ -164,7 +171,7 @@ export const css = `
 .mmc-tl-join-from span:first-child { font-size: 10px; }
 
 .mmc-tl-add {
-  flex: 0 0 auto; align-self: stretch; width: 108px; margin-left: 12px;
+  width: 108px; box-sizing: border-box; margin: 6px 0 6px 12px;
   display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 4px;
   background: none; border: 1px dashed var(--mmc-line); border-radius: 14px;
   color: var(--mmc-dim); font-family: inherit; font-size: 12px; cursor: pointer;

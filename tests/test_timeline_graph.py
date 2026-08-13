@@ -653,6 +653,39 @@ expect_error("a missing pack is refused up front",
              lambda: build(spectrum=True),
              "xmarre/ComfyUI-Spectrum-MiniMax-H3")
 
+# ---- passes -----------------------------------------------------------------
+#
+# A run of merged segments is one generation, and the timeline is those runs
+# chained. What is worth checking here is that the two halves of that sentence
+# hold at once: the merged run expands to a single segment node with cuts in its
+# description, and the seam to the next run still gets everything a seam gets.
+
+mixed = build(blob(prompt="a red room", segments=[
+    {"prompt": "wide", "duration_s": 5},
+    {"prompt": "the camera cuts in closer", "duration_s": 5, "merge": True},
+    {"prompt": "somewhere else entirely", "duration_s": 6, "continue": True},
+])).expand
+made = {}
+for node_id, node in mixed.items():
+    made.setdefault(node["class_type"], []).append((node_id, node["inputs"]))
+
+check("two passes expand to two segment nodes", len(made["MiniMaxH3TimelineSegment"]), 2)
+check("...and two samplers", len(made["KSampler"]), 2)
+check("the seam between the passes survives", len(made["MiniMaxH3TimelineJoin"]), 1)
+check("...and takes the first pass's last frame", len(made["MiniMaxH3LastFrame"]), 1)
+
+first, second = (json.loads(i["segment_data"]) for _, i in made["MiniMaxH3TimelineSegment"])
+check("the merged pass is one description with a cut in it",
+      first["request"]["prompt"],
+      "[Shot 1] a red room. wide [Shot 2] At 00:05.000, the camera cuts in closer")
+check("...counted as two shots", first["shots"], 2)
+check("...and generated as one 10 s clip", first["request"]["duration_s"], 10)
+check("the unmerged segment is untouched",
+      second["request"]["prompt"], "a red room\nsomewhere else entirely")
+check("...and still continues from the pass in front of it", second["continue"], True)
+check("both passes are held to one canvas",
+      first["canvas"] == second["canvas"], True)
+
 if FAILURES:
     print(f"{len(FAILURES)} failure(s):")
     for failure in FAILURES:

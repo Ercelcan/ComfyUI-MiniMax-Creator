@@ -368,6 +368,19 @@ export function emptySegment() {
   return state;
 }
 
+/** A segment added behind another. A strip is usually one continuous piece, so
+ *  the seam opens live on both tracks with a medium blend of motion across the
+ *  cut — the settings a hard cut would make the user click on every card. The
+ *  first segment has no seam and stays `emptySegment`, and a loaded timeline
+ *  keeps exactly what it stored. */
+export function continuingSegment() {
+  const state = emptySegment();
+  state.continue = true;
+  state.continue_audio = true;
+  state.feather = FEATHER_GRID[2]; // Medium — 0.9 s of motion at 24 fps
+  return state;
+}
+
 export function emptyTimeline() {
   return {
     version: 2,
@@ -407,6 +420,16 @@ function syncCanvas(timeline) {
   if (timeline.segments.length) {
     timeline.segments[0].continue = false;
     timeline.segments[0].continue_audio = false;
+    delete timeline.segments[0].merge;
+  }
+  // `render` is derived, not set: it is the name for a strip that turned out to
+  // be one pass end to end, which is a fact about the merge flags. Everything
+  // that asks `isSingle` is asking exactly that. A lone segment keeps whatever
+  // it was told — with no seam in the strip there is nothing to derive from,
+  // and the answer only decides whether the card is called a shot.
+  if (timeline.segments.length > 1) {
+    timeline.render = timeline.segments.every((segment, index) => !index || merged(segment))
+      ? "single" : "chained";
   }
   timeline.segments.forEach((segment, index) => {
     const from = segment.continue_from;
@@ -511,7 +534,7 @@ export function cloneSegment(segment) {
 export function cutTimes(timeline) {
   const at = [];
   let total = 0;
-  for (const segment of timeline.segments) {
+  for (const segment of segments) {
     at.push(total);
     total += Number(segment.duration_s) || 0;
   }
@@ -933,20 +956,24 @@ export function singleMode(timeline) {
 export function singleProblem(timeline) {
   const shots = timeline.segments;
   const globalPrompt = (timeline.prompt || "").trim();
+  const number = (index) => pass.start + index + 1;
 
   for (const [index, shot] of shots.entries()) {
     const text = (refinedBody(shot) || shot.prompt || "").trim();
+    // The global prompt opens the first shot of every pass, so it is that
+    // shot's text when the box under it is empty.
     if (!text && !(index === 0 && globalPrompt)) {
-      return t("Shot {shot} has no prompt. In one pass the shots are one description "
+      return t("Shot {shot} has no prompt. The shots of a pass are one description "
              + "with cuts in it, so an empty one leaves a cut with nothing on the far side.",
-             { shot: index + 1 });
+             { shot: number(index) });
     }
     if (frameAsset(shot, "first_frame") && index !== 0) {
-      return t("Shot {shot} has a start frame, but one pass opens on shot 1.", { shot: index + 1 });
+      return t("Shot {shot} has a start frame, but this pass opens on shot {first}.",
+               { shot: number(index), first: number(0) });
     }
     if (frameAsset(shot, "last_frame") && index !== shots.length - 1) {
-      return t("Shot {shot} has an end frame, but one pass ends on shot {last}.",
-               { shot: index + 1, last: shots.length });
+      return t("Shot {shot} has an end frame, but this pass ends on shot {last}.",
+               { shot: number(index), last: number(shots.length - 1) });
     }
   }
 
@@ -954,8 +981,8 @@ export function singleProblem(timeline) {
   const withFrames = shots.findIndex((s) => frameAsset(s, "first_frame") || frameAsset(s, "last_frame"));
   if (withRefs >= 0 && withFrames >= 0) {
     return t("Shot {frames} has a start/end frame and shot {refs} has references. "
-           + "Those are different checkpoints and one pass runs on one of them.",
-           { frames: withFrames + 1, refs: withRefs + 1 });
+           + "Those are different checkpoints and one generation runs on one of them.",
+           { frames: number(withFrames), refs: number(withRefs) });
   }
 
   for (const [key, what] of [["checkpoint", "the checkpoint"], ["soundscape", "the soundscape"],
