@@ -1,196 +1,88 @@
+// The satellite: a second card beside the node that exists only while there is
+// a picture.
+//
+// It looks like a sibling node and is nothing of the sort. A real second node
+// would be a thing the user has to add, wire, arrange and not delete; this is a
+// DOM element on document.body that re-derives its screen position from the
+// node's graph position every frame, so it pans, zooms and drags as if it were
+// on the canvas without ever being in the graph. Nothing about it serializes.
+//
+// It hosts the Stage unchanged — the stage already knows how to be absent until
+// a frame arrives, and its onVisibility hook is exactly the "appear beside the
+// node now" signal. While the stage is hidden the satellite is display:none and
+// the follow loop is off, so an idle canvas pays nothing for this.
+
 import { app } from "../../../scripts/app.js";
 import { el } from "./dom.js";
 
+/** Gap between the node's right edge and the card, in graph units. */
 const GAP = 14;
 
 export class Satellite {
+  /**
+   * @param {object} spec
+   * @param {import("../../../scripts/app.js").LGraphNode} spec.node  followed by
+   *   position and height; the card mirrors the node's full height, title
+   *   included, so the two read as a pair.
+   * @param {import("./stage.js").Stage} spec.stage  already built by the node
+   *   body, which keeps owning its gallery callback and its destroy.
+   * @param {"right"|"left"} [spec.side]  which edge of the node the card hangs
+   *   off. The PreStage puts its result on the left so the desk reads
+   *   *still ← pre-stage · creator → video* and the two cards never collide.
+   */
   constructor({ node, stage, side = "right" }) {
     this.node = node;
     this.stage = stage;
-    this.defaultSide = side;
+    this.side = side;
     this.raf = 0;
-    this.root = el("div", { class: "mmc-satellite" }, [stage?.root].filter(Boolean));
+    this.root = el("div", { class: `mmc-satellite${side === "left" ? " mmc-satellite-left" : ""}` }, [stage.root]);
     document.body.appendChild(this.root);
 
-    if (stage) {
-      stage.onVisibility = (showing) => {
-        if (!showing) stage.stopMedia?.();
-        this.setShowing(showing);
-      };
-      stage.onCyclePosition = () => this.cycleSide();
-      this.setShowing(stage.showing());
-      this.setupResize(stage.resizeHandle);
-    }
-  }
-
-  get side() {
-    try {
-      return localStorage.getItem("mmc-satellite-side") || this.defaultSide;
-    } catch {
-      return this.defaultSide;
-    }
-  }
-
-  get customSize() {
-    try {
-      const w = Number(localStorage.getItem("mmc-satellite-w"));
-      const h = Number(localStorage.getItem("mmc-satellite-h"));
-      return {
-        w: Number.isFinite(w) && w >= 200 ? w : null,
-        h: Number.isFinite(h) && h >= 150 ? h : null,
-      };
-    } catch {
-      return { w: null, h: null };
-    }
-  }
-
-  setupResize(resizeEl) {
-    if (!resizeEl) return;
-    resizeEl.addEventListener("pointerdown", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const canvas = app?.canvas;
-      const scale = canvas?.ds?.scale ?? 1;
-      const startX = e.clientX;
-      const startY = e.clientY;
-      const startW = this.root.offsetWidth / scale;
-      const startH = this.root.offsetHeight / scale;
-      const side = this.side;
-
-      try {
-        resizeEl.setPointerCapture(e.pointerId);
-      } catch {}
-
-      const onMove = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        let dx = (ev.clientX - startX) / scale;
-        let dy = (ev.clientY - startY) / scale;
-        let newW = side === "left" ? startW - dx : startW + dx;
-        let newH = side === "top" ? startH - dy : startH + dy;
-        newW = Math.max(200, Math.round(newW));
-        newH = Math.max(150, Math.round(newH));
-        try {
-          localStorage.setItem("mmc-satellite-w", String(newW));
-          localStorage.setItem("mmc-satellite-h", String(newH));
-        } catch {}
-        this.follow();
-      };
-
-      const onUp = (ev) => {
-        ev.preventDefault();
-        ev.stopPropagation();
-        try {
-          if (resizeEl.hasPointerCapture(ev.pointerId)) {
-            resizeEl.releasePointerCapture(ev.pointerId);
-          }
-        } catch {}
-        resizeEl.removeEventListener("pointermove", onMove);
-        resizeEl.removeEventListener("pointerup", onUp);
-        resizeEl.removeEventListener("pointercancel", onUp);
-        window.removeEventListener("pointermove", onMove);
-        window.removeEventListener("pointerup", onUp);
-        window.removeEventListener("pointercancel", onUp);
-      };
-
-      resizeEl.addEventListener("pointermove", onMove);
-      resizeEl.addEventListener("pointerup", onUp);
-      resizeEl.addEventListener("pointercancel", onUp);
-      window.addEventListener("pointermove", onMove);
-      window.addEventListener("pointerup", onUp);
-      window.addEventListener("pointercancel", onUp);
-    });
-
-    resizeEl.addEventListener("dblclick", (e) => {
-      e.preventDefault();
-      e.stopPropagation();
-      try {
-        localStorage.removeItem("mmc-satellite-w");
-        localStorage.removeItem("mmc-satellite-h");
-      } catch {}
-      this.follow();
-    });
-  }
-
-  cycleSide() {
-    const order = ["right", "bottom", "left", "top"];
-    const current = this.side;
-    const next = order[(order.indexOf(current) + 1) % order.length];
-    try { localStorage.setItem("mmc-satellite-side", next); } catch {}
-    this.follow();
+    // The stage tells its owner when it has something to show; out here that
+    // owner is the satellite, not the node body.
+    stage.onVisibility = (showing) => this.setShowing(showing);
+    this.setShowing(stage.showing());
   }
 
   setShowing(showing) {
-    this.root.classList.toggle("showing", Boolean(showing));
+    // Collapsed and subgraph checks live in follow(): both can change without
+    // anything telling us, so they are re-read every frame rather than here.
+    this.root.classList.toggle("showing", showing);
     cancelAnimationFrame(this.raf);
     if (showing) this.follow();
-    else if (this.stage) this.stage.stopMedia?.();
   }
 
+  /** One frame of shadowing the node. Reading the transform beats hooking every
+   *  way a canvas can move — drag, pan, zoom, arrange — none of which report. */
   follow() {
-    const canvas = app?.canvas;
+    const canvas = app.canvas;
     const node = this.node;
-    if (!node || !canvas || !canvas.canvas || !canvas.ds) {
-      this.raf = requestAnimationFrame(() => this.follow());
-      return;
-    }
-
-    const away = canvas.graph !== node.graph || Boolean(node.flags?.collapsed);
+    // Inside a subgraph view, or with the node collapsed, there is no card to
+    // sit beside. Keep looping: both states end without an event we can hear.
+    const away = canvas.graph !== node.graph || node.flags?.collapsed;
     this.root.style.visibility = away ? "hidden" : "";
-    if (away && this.stage) {
-      this.stage.stopMedia?.();
-    }
-
-    if (!away && this.stage?.showing()) {
-      try {
-        const rect = canvas.canvas.getBoundingClientRect();
-        const scale = canvas.ds.scale ?? 1;
-        const offset = canvas.ds.offset ?? [0, 0];
-        const ox = offset[0];
-        const oy = offset[1];
-        const title = globalThis.LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
-
-        const currentSide = this.side;
-        this.root.classList.toggle("mmc-satellite-left", currentSide === "left");
-        this.root.classList.toggle("mmc-satellite-bottom", currentSide === "bottom");
-        this.root.classList.toggle("mmc-satellite-top", currentSide === "top");
-
-        const pos = node.pos ?? [0, 0];
-        const size = node.size ?? [400, 300];
-        const { w: customW, h: customH } = this.customSize;
-
-        let x, y;
-        if (currentSide === "left") {
-          x = (pos[0] - GAP + ox) * scale + rect.left;
-          y = (pos[1] - title + oy) * scale + rect.top;
-          this.root.style.transformOrigin = "top right";
-          this.root.style.transform = `translate(${x}px, ${y}px) translateX(-100%) scale(${scale})`;
-        } else if (currentSide === "bottom") {
-          x = (pos[0] + ox) * scale + rect.left;
-          y = (pos[1] + size[1] + GAP + oy) * scale + rect.top;
-          this.root.style.transformOrigin = "top left";
-          this.root.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-        } else if (currentSide === "top") {
-          x = (pos[0] + ox) * scale + rect.left;
-          y = (pos[1] - title - GAP + oy) * scale + rect.top;
-          this.root.style.transformOrigin = "bottom left";
-          this.root.style.transform = `translate(${x}px, ${y}px) translateY(-100%) scale(${scale})`;
-        } else {
-          x = (pos[0] + size[0] + GAP + ox) * scale + rect.left;
-          y = (pos[1] - title + oy) * scale + rect.top;
-          this.root.style.transformOrigin = "top left";
-          this.root.style.transform = `translate(${x}px, ${y}px) scale(${scale})`;
-        }
-
-        const defaultMaxH = Math.min(Math.round(window.innerHeight * 0.6), 480);
-        const autoH = Math.min(defaultMaxH, (currentSide === "bottom" || currentSide === "top") ? size[1] : size[1] + title);
-        this.root.style.height = `${customH ?? autoH}px`;
-        if (customW) {
-          this.root.style.width = `${customW}px`;
-        } else {
-          this.root.style.width = "";
-        }
-      } catch {}
+    if (!away) {
+      const rect = canvas.canvas.getBoundingClientRect();
+      const scale = canvas.ds.scale;
+      const [ox, oy] = canvas.ds.offset;
+      const title = globalThis.LiteGraph?.NODE_TITLE_HEIGHT ?? 30;
+      // Left-side cards anchor on their right edge: the card's width is
+      // content-derived (the picture decides it), so it cannot be subtracted in
+      // graph units here — translateX(-100%) lets the browser do it after
+      // layout, and the transform-origin keeps the scale growing away from the
+      // node rather than through it.
+      const left = this.side === "left";
+      const x = left
+        ? (node.pos[0] - GAP + ox) * scale + rect.left
+        : (node.pos[0] + node.size[0] + GAP + ox) * scale + rect.left;
+      const y = (node.pos[1] - title + oy) * scale + rect.top;
+      // Scaled as a whole rather than sized in screen pixels: every length
+      // inside the card is then a graph unit, exactly like the node beside it.
+      this.root.style.transformOrigin = left ? "top right" : "top left";
+      this.root.style.transform = left
+        ? `translate(${x}px, ${y}px) translateX(-100%) scale(${scale})`
+        : `translate(${x}px, ${y}px) scale(${scale})`;
+      this.root.style.height = `${node.size[1] + title}px`;
     }
     this.raf = requestAnimationFrame(() => this.follow());
   }

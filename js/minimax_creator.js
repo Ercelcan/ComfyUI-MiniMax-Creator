@@ -1,3 +1,7 @@
+// Entry point. ComfyUI auto-imports every js/**/*.js as an extension, so this is
+// the only file in the package allowed to have import side effects — everything
+// under js/minimax_creator/ is a plain module it pulls in.
+
 import { app } from "../../scripts/app.js";
 import { installStyles } from "./minimax_creator/styles.js";
 import { CreatorEditor } from "./minimax_creator/editor.js";
@@ -5,93 +9,38 @@ import { TimelineBody } from "./minimax_creator/timeline.js";
 import { PreStageBody } from "./minimax_creator/prestage.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
-import { handleMediaFiles } from "./minimax_creator/media_drop.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
-
-// Global input guard to prevent ComfyUI node copy/paste and support Image Paste
-function installInputGuard() {
-  if (globalThis._mmcInputGuardInstalled) return;
-  globalThis._mmcInputGuardInstalled = true;
-
-  const isMmcInput = (el) => {
-    if (!el) return false;
-    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
-    }
-    if (el.isContentEditable) {
-      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
-    }
-    return !!el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop");
-  };
-
-  window.addEventListener("keydown", (e) => {
-    if (!isMmcInput(document.activeElement)) return;
-    const key = e.key?.toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "a", "z", "y"].includes(key)) {
-      e.stopImmediatePropagation();
-    }
-  }, true);
-
-  window.addEventListener("copy", (e) => {
-    if (isMmcInput(document.activeElement)) {
-      e.stopImmediatePropagation();
-    }
-  }, true);
-
-  window.addEventListener("cut", (e) => {
-    if (isMmcInput(document.activeElement)) {
-      e.stopImmediatePropagation();
-    }
-  }, true);
-
-  window.addEventListener("paste", async (e) => {
-    const active = document.activeElement;
-    const isMmc = isMmcInput(active);
-
-    // Check if clipboard contains an image or media file
-    const items = Array.from(e.clipboardData?.items ?? []);
-    const fileItem = items.find((item) => item.kind === "file");
-
-    if (fileItem) {
-      const file = fileItem.getAsFile();
-      if (file) {
-        const rootEl = active?.closest?.(".mmc-root");
-        const node = (app?.canvas?.graph?._nodes ?? []).find((n) => n.mmcBody?.root === rootEl || n.mmcBody?.editor?.root === rootEl);
-        const editor = node?.mmcBody?.editor ?? node?.mmcBody;
-        if (editor) {
-          e.stopImmediatePropagation();
-          e.preventDefault();
-          await handleMediaFiles([file], editor);
-          return;
-        }
-      }
-    }
-
-    if (!isMmc) return;
-
-    e.stopImmediatePropagation();
-
-    if (active.classList?.contains("mmc-prompt") || active.isContentEditable) {
-      e.preventDefault();
-      const text = e.clipboardData?.getData("text/plain") ?? "";
-      if (text) {
-        document.execCommand("insertText", false, text.replace(/\r\n?/g, "\n"));
-      }
-    }
-  }, true);
-}
-
-installInputGuard();
 
 const CREATOR = "MiniMaxH3Creator";
 const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";
+// Unchanged by the stage: the picture floats in a satellite card beside the
+// node, so a node with a render is the same size as one without.
 const MIN_SIZE = { [CREATOR]: [620, 520], [TIMELINE]: [620, 360], [PRESTAGE]: [460, 420] };
 const WIDGET = { [CREATOR]: "creator_data", [TIMELINE]: "timeline_data", [PRESTAGE]: "prestage_data" };
+// Which edge of the node the satellite result card hangs off. The PreStage sits
+// to the *left* of its Creator, so its result goes further left — the desk
+// reads *still ← pre-stage · creator → video* and nothing ever overlaps.
 const SIDE = { [PRESTAGE]: "left" };
 
+// ---- the pre-stage pairing --------------------------------------------------
+//
+// The PreStage is spawned by a pill on the Creator/Timeline and sits at its
+// left edge. The pairing is *derived by scan*, never trusted from a stored id:
+// the blob's `peer` field is the primary key, but ids renumber on paste, so a
+// PreStage whose peer no longer exists is adopted by the nearest node it was
+// visibly beside. The pill's on/off state falls out of the same scan, which is
+// why deleting a PreStage by hand needs no bookkeeping at all.
+
+/** Gap between the spawned PreStage's right edge and its peer, in graph units. */
 const SPAWN_GAP = 28;
+
+// Where a closed PreStage's blob waits: a property on the mother node, because
+// node.properties ride the workflow JSON for free while the creator/timeline
+// blobs are strict whitelists compile.py reads at queue time — a UI-only stash
+// does not belong in what gets sent to the server. Toggling the pill back on
+// seeds the new node from here, so closing the pre-stage discards nothing.
 const STASH = "mmc_prestage_stash";
 
 const nodeById = (graph, id) =>
@@ -103,6 +52,9 @@ function findPreStage(node) {
     && String(n.mmcBody.state?.peer) === String(node.id)) ?? null;
 }
 
+/** A PreStage whose peer id resolves to nothing — pasted, or its peer deleted —
+ *  sitting roughly where a spawned one would: claim it rather than let the pill
+ *  spawn a duplicate next to it. */
 function adoptOrphan(node) {
   const orphan = (node.graph?._nodes ?? []).find((n) =>
     n.comfyClass === PRESTAGE && n.mmcBody
@@ -117,6 +69,10 @@ function adoptOrphan(node) {
   return orphan;
 }
 
+/** Mirror the PreStage into its mother's stash — the settings' second home, so
+ *  removing the node never destroys the only copy. Two halves because the node
+ *  keeps them in two places: the blob, and the stock sampler widgets the row
+ *  draws from (steps, cfg, seed — none of which the blob carries). */
 function stashPreStage(mother, pre) {
   const state = pre?.mmcBody?.state;
   if (!mother || !state) return;
@@ -132,18 +88,28 @@ function stashPreStage(mother, pre) {
 function togglePreStage(node) {
   const existing = findPreStage(node) ?? adoptOrphan(node);
   if (existing) {
+    // Not a discard: the settings move into the mother's stash, and the next
+    // toggle puts them back exactly. Configure once, close freely.
     stashPreStage(node, existing);
     node.graph.remove(existing);
     node.graph.setDirtyCanvas(true, true);
     return;
   }
   const spawned = globalThis.LiteGraph?.createNode?.(PRESTAGE);
-  if (!spawned) return;
+  if (!spawned) {
+    // The class is not registered — the backend half of the package did not
+    // load. Nothing to place; the console already carries the import error.
+    return;
+  }
   node.graph.add(spawned);
   spawned.pos = [node.pos[0] - spawned.size[0] - SPAWN_GAP, node.pos[1]];
+  // The body is built by `nodeCreated`, which the frontend runs while the node
+  // is constructed — but a frame late on some builds, so the claim waits for it.
   const claim = () => {
     const body = spawned.mmcBody;
     if (!body) { requestAnimationFrame(claim); return; }
+    // Waited for the body on purpose: `attach` has enforced MIN_SIZE by now,
+    // so matching the mother's height here cannot be clamped back down.
     spawned.size = [spawned.size[0], Math.max(spawned.size[1], node.size[1])];
     const stashed = node.properties?.[STASH];
     if (stashed) {
@@ -156,20 +122,29 @@ function togglePreStage(node) {
           widget.value = value;
           widget.callback?.(value);
         }
-      } catch {}
+      } catch {
+        // An unreadable stash costs nothing but the restore — the node opens
+        // fresh, same as before there was a stash.
+      }
     }
     body.state.peer = node.id;
+    // commit serializes `body.state` back into the blob widget, so the restored
+    // settings (peer id included) land there in one move.
     body.commit();
   };
   claim();
   node.graph.setDirtyCanvas(true, true);
 }
 
+/** What the two host editors hand their pre-stage pill. */
 const preStageControls = (node) => ({
   active: () => !!findPreStage(node),
   toggle: () => togglePreStage(node),
 });
 
+/** What the PreStage's result chips resolve at click time: the peer body and
+ *  its attach entry point. Late, by scan — the peer can be deleted, renumbered
+ *  or replaced between render and click. */
 const peerOf = (node) => () => {
   const id = node.mmcBody?.state?.peer;
   const peer = id == null ? null : nodeById(node.graph, id);
@@ -181,6 +156,22 @@ const peerOf = (node) => () => {
   };
 };
 
+// Both nodes own their sampler, but that is no reason for half of it to be
+// stock widgets and half of it to be the node's own controls. These are hidden
+// and re-drawn as pills by `sampling.js`; they stay in node.widgets because that
+// is where graphToPrompt reads the values from. The list lives beside the row
+// that draws them, so the two cannot fall out of step — a widget drawn but not
+// hidden would appear twice.
+
+/**
+ * Collapse the raw JSON widget. It stays in node.widgets — that is what
+ * graphToPrompt reads the value from — it just stops taking up space.
+ *
+ * Setting `type = "hidden"` is the obvious move and is wrong: it breaks
+ * rendering under Nodes 2.0. A multiline string widget is a DOM textarea, so
+ * hiding it means hiding its element too; computeSize alone leaves the textarea
+ * floating in the node body.
+ */
 function hideWidget(widget) {
   if (!widget) return;
   widget.hidden = true;
@@ -188,15 +179,22 @@ function hideWidget(widget) {
   widget.options.hidden = true;
   widget.computeSize = () => [0, 0];
   if (widget.element) {
+    // A DOM widget: hide its element too, or the textarea floats in the body.
     widget.element.style.display = "none";
-    widget.element.style.visibility = "hidden";
-  }
-  if (widget.type !== "hidden") {
+  } else if (widget.type !== "hidden") {
+    // A canvas-drawn widget (the sampler numbers and combos). `hidden` alone is
+    // honoured by current frontends; the type swap is what older ones read, and
+    // it is the one thing that must not be done to a DOM widget — hiding the
+    // type there stops the element being managed and leaves it on screen.
     widget.origType = widget.type;
     widget.type = "hidden";
   }
 }
 
+/**
+ * Hide the stock sampler widgets and hand them back by name, for `samplingBar`
+ * to re-draw. Shared by both nodes because both declare the same ones.
+ */
 function collectSampling(node) {
   const widgets = {};
   for (const name of SAMPLING_WIDGETS) {
@@ -204,148 +202,56 @@ function collectSampling(node) {
     if (!found) continue;
     widgets[name] = found;
     hideWidget(found);
+    // `control_after_generate` is attached to the seed rather than declared, so
+    // it can also arrive as a linked widget with a name the frontend chose.
+    // Hide whatever hangs off the ones we know.
     for (const linked of found.linkedWidgets || []) {
       widgets.control_after_generate = widgets.control_after_generate || linked;
       hideWidget(linked);
     }
   }
-  requestAnimationFrame(() => {
-    for (const name of SAMPLING_WIDGETS) {
-      const found = node.widgets?.find((w) => w.name === name);
-      if (found) hideWidget(found);
-    }
-  });
+  requestAnimationFrame(() => Object.values(widgets).forEach(hideWidget));
   return widgets;
 }
 
+/** Shared setup: hide the blob, mount a DOM body, give the node room. */
 function attach(node, build) {
   installStyles();
+  const widget = node.widgets?.find((w) => w.name === WIDGET[node.comfyClass]);
+  if (!widget) return null;
 
-  if (!node) return null;
-  if (node.mmcBody) return node.mmcBody;
+  hideWidget(widget);
+  // The textarea element is created lazily, so it may not exist yet on the
+  // first pass — hide it again once the frontend has built it.
+  requestAnimationFrame(() => hideWidget(widget));
 
-  const targetWidgetName = WIDGET[node.comfyClass];
-  if (!targetWidgetName) return null;
+  const body = build(widget);
+  node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
+    serialize: false,
+    hideOnZoom: false,
+    getMinHeight: () => 200,
+  });
+  const [minWidth, minHeight] = MIN_SIZE[node.comfyClass];
+  node.size = [Math.max(node.size?.[0] ?? 0, minWidth), Math.max(node.size?.[1] ?? 0, minHeight)];
 
-  const doAttach = () => {
-    if (node.mmcBody) return node.mmcBody;
-    try {
-      const widget = node.widgets?.find((w) => w.name === targetWidgetName);
-      if (!widget) return null;
+  // The picture lives beside the node, not in it: the body builds the stage
+  // (it owns the gallery), and the satellite floats it at the node's right
+  // edge, absent until a render gives it something to be.
+  const satellite = body.stage
+    ? new Satellite({ node, stage: body.stage, side: SIDE[node.comfyClass] ?? "right" })
+    : null;
 
-      hideWidget(widget);
-      requestAnimationFrame(() => hideWidget(widget));
-
-      const body = build(widget);
-      if (!body) return null;
-      node.mmcBody = body;
-
-      if (body.root) {
-        body.root.style.width = "100%";
-        body.root.style.height = "100%";
-        body.root.style.boxSizing = "border-box";
-        node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
-          serialize: false,
-          hideOnZoom: false,
-          getMinHeight: () => 200,
-        });
-      }
-
-      const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
-      node.size = [Math.max(node.size?.[0] ?? 0, minWidth), Math.max(node.size?.[1] ?? 0, minHeight)];
-
-      const satellite = body.stage
-        ? new Satellite({ node, stage: body.stage, side: SIDE[node.comfyClass] ?? "right" })
-        : null;
-
-      const removed = node.onRemoved;
-      node.onRemoved = function () {
-        try { removed?.apply(this, arguments); } catch {}
-        try { body.destroy?.(); } catch {}
-        try { satellite?.destroy(); } catch {}
-      };
-
-      node.onResize = function (size) {
-        try { node.setDirtyCanvas?.(true, true); } catch {}
-      };
-
-      try { node.setDirtyCanvas?.(true, true); } catch {}
-      return body;
-    } catch (err) {
-      return null;
-    }
+  // The body listens on `api` for its own previews, and those listeners outlive
+  // the DOM: without this, deleting a node leaves it decoding frames for a
+  // stage nobody can see. The satellite's element is on document.body, so it
+  // too outlives the node unless told.
+  const removed = node.onRemoved;
+  node.onRemoved = function () {
+    removed?.apply(this, arguments);
+    body.destroy?.();
+    satellite?.destroy();
   };
-
-  const body = doAttach();
-  if (!body) {
-    const checkInterval = setInterval(() => {
-      if (node.widgets?.find((w) => w.name === targetWidgetName)) {
-        if (doAttach()) clearInterval(checkInterval);
-      }
-    }, 100);
-    setTimeout(() => clearInterval(checkInterval), 5000);
-  }
   return body;
-}
-
-function createCreatorBody(node) {
-  return attach(node, (widget) => {
-    const state = S.parseState(widget.value);
-    let editor;
-    editor = new CreatorEditor({
-      state,
-      onCommit: () => {
-        widget.value = S.serializeState(state);
-        node.graph?.setDirtyCanvas(true, true);
-      },
-      refineTarget: () => ({
-        kind: "creator",
-        data: JSON.parse(S.serializeState(editor.state)),
-      }),
-      samplingWidgets: collectSampling(node),
-      onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
-      nodeId: () => node.id,
-      setRoute: (route) => { editor.state.models.route = route; editor.commit(); },
-      preStage: preStageControls(node),
-    });
-    return editor;
-  });
-}
-
-function createTimelineBody(node) {
-  return attach(node, (widget) => {
-    const widgets = collectSampling(node);
-    return new TimelineBody({
-      read: () => widget.value,
-      write: (raw) => {
-        widget.value = raw;
-        node.graph?.setDirtyCanvas(true, true);
-      },
-      widgets,
-      onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
-      nodeId: () => node.id,
-      preStage: preStageControls(node),
-    });
-  });
-}
-
-function createPrestageBody(node) {
-  return attach(node, (widget) => {
-    const state = S.parsePreStage(widget.value);
-    let body;
-    body = new PreStageBody({
-      state,
-      onCommit: () => {
-        widget.value = S.serializePreStage(body.state);
-        node.graph?.setDirtyCanvas(true, true);
-      },
-      samplingWidgets: collectSampling(node),
-      onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
-      nodeId: () => node.id,
-      peer: peerOf(node),
-    });
-    return body;
-  });
 }
 
 app.registerExtension({
@@ -353,42 +259,104 @@ app.registerExtension({
 
   async nodeCreated(node) {
     if (node.comfyClass === CREATOR) {
-      createCreatorBody(node);
+      node.mmcBody = attach(node, (widget) => {
+        const state = S.parseState(widget.value);
+        // Off `editor.state` rather than off `state`: loading a saved workflow
+        // hands the editor a different object through `setState`, and a closure
+        // over this one would go on refining the blob the node started with.
+        let editor;
+        editor = new CreatorEditor({
+          state,
+          onCommit: () => {
+            widget.value = S.serializeState(state);
+            node.graph?.setDirtyCanvas(true, true);
+          },
+          // The refiner compiles the blob server-side to find out what the
+          // request is, so it is sent the same JSON the node queues with rather
+          // than the live object, which carries UI-only fields.
+          refineTarget: () => ({
+            kind: "creator",
+            data: JSON.parse(S.serializeState(editor.state)),
+          }),
+          // The Creator owns its sampler too, so it draws the same row the
+          // Timeline does rather than a Creator-shaped version of it.
+          samplingWidgets: collectSampling(node),
+          onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
+          // Read late rather than captured: a node pasted from the clipboard is
+          // renumbered after it is built, and the stage matches previews by id.
+          nodeId: () => node.id,
+          // The node owns its route, so the mode badge cycles it here.
+          setRoute: (route) => { editor.state.models.route = route; editor.commit(); },
+          preStage: preStageControls(node),
+        });
+        return editor;
+      });
     } else if (node.comfyClass === TIMELINE) {
-      createTimelineBody(node);
+      node.mmcBody = attach(node, (widget) => {
+        const widgets = collectSampling(node);
+
+        return new TimelineBody({
+          read: () => widget.value,
+          write: (raw) => {
+            widget.value = raw;
+            node.graph?.setDirtyCanvas(true, true);
+          },
+          widgets,
+          onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
+          nodeId: () => node.id,
+          preStage: preStageControls(node),
+        });
+      });
     } else if (node.comfyClass === PRESTAGE) {
-      createPrestageBody(node);
+      node.mmcBody = attach(node, (widget) => {
+        const state = S.parsePreStage(widget.value);
+        let body;
+        body = new PreStageBody({
+          state,
+          onCommit: () => {
+            widget.value = S.serializePreStage(body.state);
+            node.graph?.setDirtyCanvas(true, true);
+          },
+          samplingWidgets: collectSampling(node),
+          onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
+          nodeId: () => node.id,
+          peer: peerOf(node),
+        });
+        return body;
+      });
+      // Deleting the node by hand is closing it too: mirror the blob into the
+      // mother's stash on the way out, same as the pill. Guarded — during a
+      // whole-graph teardown the peer may already be gone, and then there is
+      // nothing to stash onto (the saved workflow keeps its own copy anyway).
+      const removed = node.onRemoved;
+      node.onRemoved = function () {
+        stashPreStage(nodeById(node.graph, node.mmcBody?.state?.peer), node);
+        removed?.apply(this, arguments);
+      };
     }
   },
 
+  // Loading a saved workflow assigns widget values after nodeCreated, so the
+  // body has to re-read its blob once the graph has finished configuring.
   loadedGraphNode(node) {
-    if (WIDGET[node.comfyClass] && !node.mmcBody) {
-      if (node.comfyClass === CREATOR) createCreatorBody(node);
-      else if (node.comfyClass === TIMELINE) createTimelineBody(node);
-      else if (node.comfyClass === PRESTAGE) createPrestageBody(node);
-    }
     const body = node.mmcBody;
     if (!body) return;
     if (node.comfyClass === CREATOR) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[CREATOR]);
-      if (widget) {
-        const state = S.parseState(widget.value);
-        body.onCommit = () => {
-          widget.value = S.serializeState(state);
-          node.graph?.setDirtyCanvas(true, true);
-        };
-        body.setState(state);
-      }
+      const state = S.parseState(widget.value);
+      body.onCommit = () => {
+        widget.value = S.serializeState(state);
+        node.graph?.setDirtyCanvas(true, true);
+      };
+      body.setState(state);
     } else if (node.comfyClass === PRESTAGE) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[PRESTAGE]);
-      if (widget) {
-        const state = S.parsePreStage(widget.value);
-        body.onCommit = () => {
-          widget.value = S.serializePreStage(state);
-          node.graph?.setDirtyCanvas(true, true);
-        };
-        body.setState(state);
-      }
+      const state = S.parsePreStage(widget.value);
+      body.onCommit = () => {
+        widget.value = S.serializePreStage(state);
+        node.graph?.setDirtyCanvas(true, true);
+      };
+      body.setState(state);
     } else {
       body.reload();
     }

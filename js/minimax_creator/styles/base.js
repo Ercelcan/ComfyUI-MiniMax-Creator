@@ -1,4 +1,9 @@
+// Tokens and the pre-stage root body.
+// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
+/* Tokens live on :root, not .mmc-root: popovers and the picker portal to
+   document.body, so anything scoped to the node body would leave them
+   resolving to nothing. */
 :root {
   --mmc-bg: #0e0e0e;
   --mmc-surface: #1c1c1c;
@@ -10,6 +15,11 @@ export const css = `
   --mmc-off: #565656;
   --mmc-accent: #f0a63c;
   --mmc-blue: #2f7bf6;
+  /* Reference identity hues: one per attached asset, worn by its thumbnail
+     ring, its handle in the bar, and its chip in the prompt, so a chip in the
+     sentence can be matched to a picture without reading. Equal perceived
+     lightness on the dark surfaces; the amber zone is skipped so an asset
+     never masquerades as the accent. Index comes from state.tagIndex(). */
   --mmc-tag-0: #5cb8f0;
   --mmc-tag-1: #63c98e;
   --mmc-tag-2: #9d95f5;
@@ -20,6 +30,8 @@ export const css = `
   --mmc-tag-7: #a8c858;
 }
 
+/* Setting --tag is all these do; components read it with an accent fallback,
+   so an untagged element (a LoRA row, a dangling handle) keeps today's look. */
 .mmc-tag-0 { --tag: var(--mmc-tag-0); }
 .mmc-tag-1 { --tag: var(--mmc-tag-1); }
 .mmc-tag-2 { --tag: var(--mmc-tag-2); }
@@ -33,12 +45,13 @@ export const css = `
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   color: var(--mmc-text);
   display: flex; flex-direction: column; gap: 10px;
-  padding: 12px; box-sizing: border-box;
-  height: 100% !important; width: 100% !important;
-  min-width: 100% !important; max-width: 100% !important;
-  overflow: hidden;
+  padding: 12px; box-sizing: border-box; height: 100%; overflow: hidden;
 }
 
-.mmc-prestage-host { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; }
-.mmc-prestage-host > * { flex: 1 1 auto; min-height: 0; width: 100%; }
+/* The pre-stage's outer body. It holds whichever editor the architecture calls
+   for and is swapped when that changes, so it has to be the full height the DOM
+   widget gave it — the .mmc-root inside is what does the layout. */
+.mmc-prestage-host { display: flex; flex-direction: column; height: 100%; min-height: 0; }
+.mmc-prestage-host > * { flex: 1 1 auto; min-height: 0; }
+
 `;

@@ -277,29 +277,10 @@ class LoraDetailSheet {
     this.current = index;
     this.stripCells.forEach((cell, at) => cell.setAttribute("aria-selected", String(at === index)));
     const source = loraShowcaseUrl(this.row.name, item.index);
-
-    if (this.stageMedia) {
-      const oldMedia = this.stageMedia.querySelectorAll("video, audio");
-      oldMedia.forEach((m) => {
-        try { m.pause(); m.muted = true; m.currentTime = 0; m.removeAttribute("src"); m.load(); } catch {}
-      });
-    }
-
     this.stageMedia.replaceChildren(item.kind === "video"
       ? el("video", { src: source, controls: true, loop: true, muted: true, autoplay: true, playsInline: true })
       : el("img", { src: source, alt: "" }));
     this.renderRecipe(item.meta);
-  }
-
-  close() {
-    if (this.stageMedia) {
-      const oldMedia = this.stageMedia.querySelectorAll("video, audio");
-      oldMedia.forEach((m) => {
-        try { m.pause(); m.muted = true; m.currentTime = 0; m.removeAttribute("src"); m.load(); } catch {}
-      });
-    }
-    this.unmount();
-    this.resolve();
   }
 
   /** The generation settings recorded for the shown image — the sheet's whole
