@@ -183,4 +183,17 @@ button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mm
   padding: 0 4px; opacity: .8;
 }
 .mmc-warn { color: #e0743c; font-size: 12px; flex-shrink: 0; }
+.mmc-root { position: relative; }
+.mmc-root.mmc-drag-drop-active::after {
+  content: "📥 Drop media here to attach as reference";
+  position: absolute; inset: 0; z-index: 1000;
+  background: rgba(47, 123, 246, 0.88);
+  color: #ffffff;
+  font-size: 15px; font-weight: 600; font-family: inherit;
+  display: flex; align-items: center; justify-content: center;
+  border: 2px dashed #ffffff; border-radius: 20px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  box-sizing: border-box;
+}
 `;

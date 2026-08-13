@@ -5,10 +5,11 @@ import { TimelineBody } from "./minimax_creator/timeline.js";
 import { PreStageBody } from "./minimax_creator/prestage.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
+import { handleMediaFiles } from "./minimax_creator/media_drop.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
-// Global input guard to prevent ComfyUI node copy/paste when focused in text fields
+// Global input guard to prevent ComfyUI node copy/paste and support Image Paste
 function installInputGuard() {
   if (globalThis._mmcInputGuardInstalled) return;
   globalThis._mmcInputGuardInstalled = true;
@@ -44,9 +45,30 @@ function installInputGuard() {
     }
   }, true);
 
-  window.addEventListener("paste", (e) => {
+  window.addEventListener("paste", async (e) => {
     const active = document.activeElement;
-    if (!isMmcInput(active)) return;
+    const isMmc = isMmcInput(active);
+
+    // Check if clipboard contains an image or media file
+    const items = Array.from(e.clipboardData?.items ?? []);
+    const fileItem = items.find((item) => item.kind === "file");
+
+    if (fileItem) {
+      const file = fileItem.getAsFile();
+      if (file) {
+        const rootEl = active?.closest?.(".mmc-root");
+        const node = (app?.canvas?.graph?._nodes ?? []).find((n) => n.mmcBody?.root === rootEl || n.mmcBody?.editor?.root === rootEl);
+        const editor = node?.mmcBody?.editor ?? node?.mmcBody;
+        if (editor) {
+          e.stopImmediatePropagation();
+          e.preventDefault();
+          await handleMediaFiles([file], editor);
+          return;
+        }
+      }
+    }
+
+    if (!isMmc) return;
 
     e.stopImmediatePropagation();
 
@@ -219,6 +241,9 @@ function attach(node, build) {
       node.mmcBody = body;
 
       if (body.root) {
+        body.root.style.width = "100%";
+        body.root.style.height = "100%";
+        body.root.style.boxSizing = "border-box";
         node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
           serialize: false,
           hideOnZoom: false,

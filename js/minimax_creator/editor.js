@@ -13,6 +13,7 @@ import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as Turbo from "./turbo.js";
 import { viewUrl, probeAudio } from "./api.js";
 import * as S from "./state.js";
+import { setupDragAndDrop } from "./media_drop.js";
 import { MIN_SECONDS, MAX_SECONDS, describeRatio, isTrainedLength } from "./canvas.js";
 
 const TRACK_CHIP = {
@@ -96,6 +97,7 @@ export class CreatorEditor {
       this.noticeHost,
       this.samplingHost,
     ]);
+    setupDragAndDrop(this.root, this);
 
     if (this.nodeId) loadCatalog(() => this.adoptWeights());
 

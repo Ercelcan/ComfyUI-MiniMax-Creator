@@ -13,6 +13,7 @@ import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as S from "./state.js";
 import * as Turbo from "./turbo.js";
+import { setupDragAndDrop } from "./media_drop.js";
 import {
   FPS, framesForSeconds, secondsForFrames, resolveCanvas, ASPECT_PRESETS, describeRatio, isTrainedLength,
 } from "./canvas.js";
@@ -824,6 +825,7 @@ export class TimelineBody {
     this.timeline = S.parseTimeline(read());
 
     this.root = el("div", { class: "mmc-root" });
+    setupDragAndDrop(this.root, this);
     this.stage = new Stage({
       nodeId,
       segmentLabel: (index) => t("Segment {n} of {count}",

@@ -10,7 +10,9 @@ import { loadCatalog, catalogByFolder } from "./models.js";
 import { viewUrl } from "./api.js";
 import { t } from "./i18n.js";
 import * as S from "./state.js";
+import { setupDragAndDrop } from "./media_drop.js";
 import { app } from "../../../scripts/app.js";
+
 
 const QUALITY_TITLE = {
   quality: "48 steps on the tight schedule — the hosted service's 'Quality' tier.",
@@ -68,6 +70,7 @@ export class PreStageEditor {
       this.noticeHost,
       this.samplingHost,
     ]);
+    setupDragAndDrop(this.root, this);
 
     loadCatalog(() => this.adoptWeights());
     this.promptBox.value = this.state.prompt ?? "";
