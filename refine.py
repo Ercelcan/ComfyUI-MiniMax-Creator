@@ -1,3 +1,57 @@
+"""The local stand-in for H3's hosted Context-IR rewriter.
+
+H3 is two models. The hosted half rewrites what the user typed into a labelled,
+sectioned intermediate representation, and the open weights were only ever
+trained on that output. `contextir.py` puts the *skeleton* back — the field
+names, the instruction line, the `[Shot N]` markers, the cut times — because all
+of that is mechanical. What it cannot do is write the prose, and the prose is
+most of what makes a Context-IR prompt work.
+
+This module is the prose. It hands a vision LLM the user's own sentence behind
+a `<request>` fence, a per-mode template distilled from the guides MiniMax
+publish, and pictures of whatever is attached, and asks for the description
+back.
+
+Three things shape the whole design.
+
+**It writes prose, nothing else.** The instruction line, the shot markers, the
+`S.SS` alignment figure and the formatting of cut timestamps are all
+`contextir.py`'s, computed off the real frame-derived duration. So the reply is
+JSON — one body per shot, plus the audio fields — and `contextir.compose`
+assembles it exactly as it assembles a hand-written prompt. The model never sees
+a format it could break. The one field in that object that is not part of the
+prompt is `SEEN_FIELD`, which exists to make the model look at the pictures
+before it writes; see there.
+
+Where the cuts *land* is a different question from how they are written, and in
+a lone generation it is the model's (`cuts=`, see `shot_limit`). A Creator-node
+request is one card with one duration and nothing else to divide it, so without
+this the answer is always a single uncut shot however long the clip is. Given
+the duration the model picks how many shots there are and the second each one
+starts on, and `plan_cuts` makes those numbers monotonic and makes them fit.
+A timeline is not offered the choice: there the cards *are* the shots, their cut
+times are the running sum of the durations the user set, and a model second-
+guessing them would move a cut off the frame the next card starts on.
+
+**It writes `@handles`, not `<Picture N>`.** Ordinals are assigned by
+`compile.plan_references` at queue time and move when an asset is added,
+removed, or switched between tracks; a rewrite with them baked in would go
+quietly stale and point at the wrong tensor. Writing the handle instead means
+`compile._substitute` runs afterwards exactly as it does on a typed prompt, and
+one-pass mode's handle renaming keeps working. The model is shown both forms and
+`normalize_handles` converts anything it wrote as a label back.
+
+**It expands, it does not replace.** The user's sentence is the specification.
+Everything named in it survives into the output with its own visual signature
+added; nothing is swapped for a better idea. That is the difference between a
+refiner and a rewriter, and it is enforced by the system prompt rather than by
+code, so the panel shows both texts and the user is the last check.
+
+No torch, no ComfyUI: the request building and the reply parsing are ordinary
+data and are unit-tested that way. `refine_local.py` is what loads the model and
+`refine_routes.py` is what knows about disk.
+"""
+
 import json
 import re
 from pathlib import Path
@@ -6,33 +60,73 @@ from . import contextir
 
 _PROMPTS = Path(__file__).parent / "prompts"
 
+# How long a reply may run, in tokens. Not a context size: nothing on this
+# backend has one. `Qwen3VLSDTokenizer` is built with `max_length=99999999` and
+# `pad_to_max_length=False`, so the prompt is never truncated however long it
+# gets, and `BaseGenerate.generate` sizes its KV cache as `len(prompt) + this`.
+# So this is purely the output budget — what decides whether a twelve-card
+# rewrite finishes its last body or stops mid-sentence, and how much of the KV
+# cache is reserved for text that has not been written yet.
 NUM_PREDICT = 6144
 
+# What the setting may be moved to. The floor is one short single-shot rewrite;
+# the ceiling is where the cache reservation starts costing real VRAM for a
+# reply no model is going to fill.
 MIN_PREDICT = 1024
 MAX_PREDICT = 32768
 
 
 def reply_tokens(value):
+    """The user's reply-length setting, made usable. Junk falls back to default."""
     try:
         return max(MIN_PREDICT, min(MAX_PREDICT, int(value)))
     except (TypeError, ValueError):
         return NUM_PREDICT
 
-
+# Long side of an image handed to the LLM. It is looking at the picture to say
+# what is in it, not to reproduce it, and a 4000px reference costs seconds of
+# transfer and encode for nothing.
 IMAGE_LONG_EDGE = 1024
 
 
 class RefineError(RuntimeError):
-    pass
+    """The refiner could not produce a usable rewrite."""
 
 
+# ---- the templates ----------------------------------------------------------
+
+# One compact template per mode instead of MiniMax's whole guide. The full
+# guides are four to five thousand tokens each and are written as specifications
+# for a *finished* prompt document — field names, shot markers, label ordinals —
+# none of which this model emits. Embedding one put thousands of tokens of
+# someone else's document between the rules and the request, and a 4B model that
+# has just read all of that treats whatever comes next as conversation. Each
+# template is the same rules distilled to what its mode actually needs, and it
+# ends in one worked request-and-reply pair: the pair is what teaches the
+# transformation — a casual sentence in, a faithful expansion out, no answer to
+# the asker — which no amount of rule prose managed to.
+#
+# The examples are written in the reply's own JSON shape with `@handles`, not in
+# the guides' finished-document form with `<Picture N>` ordinals, so the one
+# thing the model imitates from them is the one thing it is supposed to return.
+# The old worry that an example's content bleeds into the reply (the guide's
+# café, its rain) is handled inside each template: the example is fenced with an
+# ownership sentence, and its scene is deliberately unlike a default request.
 _MODE_DIR = _PROMPTS / "modes"
 
+# The shared writing conventions — camera vocabulary, speaker IDs, `<d>` tags,
+# on-screen text, the two audio fields — distilled once for every mode.
 CRAFT = (_MODE_DIR / "craft.txt").read_text(encoding="utf-8").strip()
 
 MODE_TEMPLATE = {mode: (_MODE_DIR / f"{mode.lower()}.txt").read_text(encoding="utf-8").strip()
                  for mode in ("T2VA", "I2VA", "L2VA", "FL2VA", "REF2VA")}
 
+
+# ---- the instructions -------------------------------------------------------
+#
+# Written as statements of what to do rather than as prohibitions. A rule phrased
+# as "do not X" puts X in front of the model and leaves what to do instead
+# unsaid; the same rule phrased as "write Y" is one instruction rather than two.
 
 _RULES = """\
 You are the prompt pre-processing stage for MiniMax-H3, a video-and-audio \
@@ -159,6 +253,9 @@ and `<cutoff>` tags, the `retention_analysis` markers, and the camera-motion \
 vocabulary. Inside a `<d>` tag the language tag is `[{language}]`.
 """
 
+# What each mode's shots are, said in the mode's own terms. The instruction line
+# that states the alignment formally is written by `contextir.instruction`; this
+# is so the prose knows what it is describing.
 MODE_NOTES = {
     "T2VA": "No reference frames are attached. Describe the video from nothing.",
     "I2VA": "The attached start frame is the video's first frame. Open on exactly "
@@ -166,6 +263,10 @@ MODE_NOTES = {
             "develop forward from it.",
     "L2VA": "The attached end frame is the video's final frame. Open on a state that "
             "could plausibly lead there and arrive at exactly that image at the end.",
+    # No shot-count advice here. FL2VA is a path, not a length, and
+    # `contextir.instruction` writes the end frame against `Shot N` — so a
+    # request with several beats in it may be cut like any other, and saying
+    # "a single shot usually serves this best" only ever pushed against that.
     "FL2VA": "The attached start and end frames are the video's first and last "
              "frames. Describe the continuous path from one to the other, keeping "
              "both exactly as they are; the last shot is the one that arrives at "
@@ -185,6 +286,23 @@ CONTINUES_NOTE = (
 
 
 def choose_template(choice, mode):
+    """Which template the rewrite is written in -> `(template, forced)`.
+
+    `mode` is what `compile._derive_mode` read off the attachments, and `auto` —
+    the default — follows it exactly: the mode *is* the template. A pinned
+    choice replaces it everywhere the prompting looks, which is the same dial
+    the weights pill has, for the same reason: the derivation is usually right,
+    and the day it is not, the override should be visible rather than a code
+    edit.
+
+    REF2VA is pinned in both directions, like the checkpoint it belongs to.
+    A request with references needs the six-section form or its handles have
+    nowhere to be defined; a request without them would have that form writing
+    subject definitions for assets that do not exist. The four base templates
+    swap freely — forcing T2VA on a first-frame request is asking for the
+    describe-from-nothing style on purpose, and the alignment line still binds
+    the frame at queue time.
+    """
     choice = str(choice or "auto").strip().upper()
     if choice in ("", "AUTO"):
         return mode, False
@@ -205,20 +323,59 @@ def choose_template(choice, mode):
     return choice, choice != mode
 
 
+# ---- the JSON contract ------------------------------------------------------
+
 _REF_SECTIONS = ("subject_definitions", "summary", "retention_analysis")
 
+# The first thing the model writes when anything is attached, and the only field
+# here that is not part of the prompt.
+#
+# Reasoning is suppressed and the reply is prefilled with `{`, so without this
+# the very first token generated is already the rewrite: the model can write a
+# whole description having never attended to the pictures, and on a 4B one it
+# does. Asking it to say what is in them first is a grounding pass paid for in
+# about fifty tokens, and it happens *inside* the JSON object rather than before
+# it so the prefill still holds.
+#
+# It is read back and shown in the panel rather than dropped, because "did it
+# actually look at my images" is the question this whole field exists to answer.
 SEEN_FIELD = "what_i_see"
+
+# The piece's standing description, rewritten. Only a whole-timeline refine asks
+# for it: the global prompt is placed ahead of every shot's own description at
+# generation time, so what the shots share — the style, the world, the cast —
+# belongs in it, said once, rather than copied into every body. It is written
+# right after `SEEN_FIELD` so the establishing pass comes before the shots that
+# inherit from it, and it is stored back into the same editable box it came
+# from: the join stays a compile-time fact, not something baked into the prose.
 PIECE_FIELD = "global_prompt"
 
+# The shortest a shot may be, and the most a rewrite may hold. The floor is what
+# turns a duration into a shot ceiling: a six-second clip cannot be five cuts,
+# and saying so in the grammar is better than clamping it afterwards.
 MIN_SHOT_S = 2.0
 MAX_SHOTS = 6
 
 
 def shot_limit(seconds):
+    """How many shots a clip of `seconds` may be cut into. 1 means "do not ask".
+
+    Below two shots' worth of time there is no choice to offer, and the request
+    falls back to the fixed single body every other path uses.
+    """
     return max(1, min(MAX_SHOTS, int(float(seconds or 0) // MIN_SHOT_S)))
 
 
 def plan_cuts(bodies, cuts, seconds):
+    """`([body], [at]), duration -> [(at, body)]` — the model's cuts, made to fit.
+
+    The model picks the times and this fixes them up: the first shot starts at 0
+    whatever it said, every later cut is at least `MIN_SHOT_S` past the one
+    before it, and the last one leaves that much video after it. A shot with no
+    room left is merged into the shot before it rather than dropped, because its
+    prose is the only copy of that part of the description — a truncated rewrite
+    would lose a paragraph the user never sees go.
+    """
     seconds = float(seconds or 0)
     out = []
     for index, body in enumerate(bodies):
@@ -239,6 +396,15 @@ def plan_cuts(bodies, cuts, seconds):
 
 
 def join_shots(bodies, cuts, seconds):
+    """The model's shots -> the one `[Shot n]`-marked description they make.
+
+    The markers and the written cut times are `contextir.shot_body`'s, exactly as
+    they are for a one-pass timeline — the only difference is where the times
+    came from. Anything the model wrote in that format itself is taken back out
+    first: it was asked not to, and a stray `[Shot 2]` inside a body would either
+    be passed through as authoritative or refused outright by `shot_body`, and
+    neither is what a model ignoring a formatting rule should cost.
+    """
     clean, times = [], []
     for index, body in enumerate(bodies):
         body = contextir.SHOT_RE.sub("", body)
@@ -253,6 +419,29 @@ def join_shots(bodies, cuts, seconds):
 
 
 def reply_shape(mode, shots, cuts=0, images=0, piece=False, ref_shots=()):
+    """The JSON contract, written out for the model to read.
+
+    Nothing in ComfyUI's generation loop constrains a reply to a shape —
+    `comfy/text_encoders/llama.py` samples plain logits — so the shape has to be
+    asked for in words, and this is the wording. `parse_reply` is what holds it
+    to the contract afterwards, and `PREFILL` is what removes the place a
+    preamble would have gone.
+
+    `cuts` is the shot ceiling when the model is choosing the cuts, from
+    `shot_limit`; anything below 2 is the fixed-count form.
+
+    `images` is how many pictures ride with the message. Where there are any,
+    the object opens with `SEEN_FIELD` — see there for why it is first.
+
+    `piece` asks for `PIECE_FIELD` — the rewritten global prompt, on a
+    whole-timeline refine.
+
+    `ref_shots` is which shots (0-based) carry their own reference sections.
+    A chained strip is one generation per card, each over its own reference
+    pool, so each reference card needs its own `subject_definitions` and
+    `retention_analysis` — the top-level set, which describes one document,
+    moves inside those entries instead.
+    """
     timed = int(cuts) >= 2
     ref_shots = set(ref_shots or ())
     lines = ["Return exactly this JSON object, and nothing before or after it:", "{"]
@@ -317,6 +506,21 @@ def reply_shape(mode, shots, cuts=0, images=0, piece=False, ref_shots=()):
 
 
 def system_prompt(mode, language="English", shape=None, cuts=0):
+    """The whole instruction: rules, craft, the mode's template, the contract.
+
+    Recency does the heavy lifting on a small model — whatever it read last is
+    what it is still holding when it starts writing — so the order runs from the
+    general to the binding: the rules, then the shared craft, then the mode's
+    own template, whose worked example is the last prose before the contract.
+    An example of the transformation followed immediately by the shape it must
+    take is the strongest anti-chat pairing the prompt has.
+
+    `shape` is the JSON contract in words, from `reply_shape`, and it goes last
+    of all. `cuts` is the shot ceiling when this request lets the model divide
+    the video itself, from `shot_limit`. Below 2 there is nothing to divide and
+    the rule is left out, which is also what a timeline gets: its cuts are the
+    cards'.
+    """
     parts = [_RULES]
     if int(cuts) >= 2:
         parts.append(_CUTS_RULE.format(limit=int(cuts), floor=MIN_SHOT_S))
@@ -330,7 +534,23 @@ def system_prompt(mode, language="English", shape=None, cuts=0):
     return "\n\n".join(parts)
 
 
+# ---- the user message -------------------------------------------------------
+
+
 def describe_slots(slots):
+    """The handle glossary, one line per attached asset.
+
+    Both forms are given — the handle to write and the label it becomes — because
+    the guide the model has just read is written entirely in labels, and a model
+    that reaches for `<Picture 2>` anyway is then at least reaching for the right
+    one. `normalize_handles` converts those back.
+
+    A slot that has a picture in the message carries `image`, its position among
+    them, and says so. Only some assets have one — an audio reference has none, a
+    video taken for its soundtrack alone has none — so "the Nth picture is the
+    Nth line" is wrong the moment one of those is attached, and the number is
+    what ties each picture to the handle it is actually of.
+    """
     lines = []
     for slot in slots:
         label = f" (becomes {slot['label']})" if slot.get("label") else ""
@@ -341,6 +561,31 @@ def describe_slots(slots):
 
 
 def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None):
+    """What to rewrite, and what is attached to rewrite it against.
+
+    `shots` is one entry per body wanted back, in play order:
+    `{"text", "seconds", "continues", "mode", "slots"}`. One shot is a lone
+    generation or a single timeline card; several is a whole-timeline refine,
+    which is the only arrangement in which shot 4 can be written knowing what
+    shot 1 established — the reason it is one call and not one per card.
+
+    `piece` is the timeline's global prompt, `{"text", "rewrite"}` — shown once
+    here rather than joined into every shot's request, because the join is a
+    compile-time fact and a model shown N copies writes N echoes of it. With
+    `rewrite` it is material like the shots and comes back as `PIECE_FIELD`;
+    without — a single-card refine, where the other cards' rewrites were
+    written against it — it is context that the body must not restate.
+
+    `pool` is the timeline's own reference pool as glossary slots — the assets
+    attached to the piece rather than to one card. Listed once, at the top,
+    because their handles are the only ones stable across every shot: writing
+    one into a shot's prose is what attaches it to that shot's generation at
+    queue time, so the model is told it may.
+
+    Each shot's own attachments are listed under it rather than in one glossary
+    at the top, because handles are allocated per segment: two cards both have an
+    `@img-1` and it is a different file in each.
+    """
     many = len(shots) > 1
     lines = []
 
@@ -419,6 +664,8 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
             head += f" — {float(shot['seconds']):.0f} seconds"
         lines.append(head)
 
+        # Only where it differs from the one the system prompt already stated, so
+        # the common case of a strip of plain shots says it once.
         note = MODE_NOTES.get(shot.get("mode"))
         if note and shot.get("mode") != mode:
             lines.append(note)
@@ -428,17 +675,26 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
         if shot.get("slots"):
             lines.append("Attached here:")
             lines.extend("  " + line for line in describe_slots(shot["slots"]))
+            # Said again, here, next to the handles it is about. The count at the
+            # top of the message is thousands of tokens back by the time the
+            # model reaches this shot — behind the whole glossary in a timeline
+            # refine — and the sentence that matters is the one adjacent to the
+            # thing it governs.
             shown = [slot["image"] for slot in shot["slots"] if slot.get("image")]
             if shown:
                 which = ", ".join(f"[image {n}]" for n in shown)
                 lines.append(
                     f"Look at {which} before writing this shot. What you write has "
-                    f"to match what is actually in {'them' if len(shown) > 1 else 'it'} — the "
+                    f"to match what is in {'them' if len(shown) > 1 else 'it'} — the "
                     f"subjects and their appearance, the clothing, the objects, the "
                     f"setting, the colours, the light, the framing — and not merely "
                     f"what the request below implies."
                 )
 
+        # Fenced so the model can tell where the material stops and this harness
+        # resumes. Raw, the request is just the last conversational-looking text
+        # in the turn, and a small model answers it; behind a delimiter the rules
+        # can point at, it is a quotation.
         text = str(shot.get("text") or "").strip()
         if text:
             lines += ["<request>", text, "</request>"]
@@ -455,12 +711,37 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
     return "\n".join(lines).strip()
 
 
+# ---- the ChatML form --------------------------------------------------------
+#
+# `CLIP.tokenize` gets one string, and a Qwen tokenizer that sees it begin with
+# `<|im_start|>` passes it through verbatim rather than wrapping it in the
+# single-user-turn template it would otherwise use. So the turns are written
+# here, which is also what makes room for the two things that template has no
+# slot for: a system turn, and a prefilled reply.
+
 VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
 
+# The reply opens mid-JSON. Nothing constrains the sampler to a shape, and the
+# failure that actually happens is not malformed JSON — it is a model that
+# answers "Here is the rewrite:" first and fences the object afterwards.
+# Starting its turn inside the object removes the place where that goes, and
+# `parse_reply` is handed the brace back.
 PREFILL = "{"
 
 
 def chatml(system, message, images=0, prefill=PREFILL):
+    """system + user + an assistant turn already begun, as one Qwen prompt.
+
+    `images` vision blocks are placed at the head of the user turn, in the order
+    the images are passed alongside it — the tokenizer binds the Nth
+    `<|image_pad|>` to the Nth image, and the glossary in `message` names them in
+    that same order.
+
+    The empty `<think>` block is Qwen3's convention for "answer without
+    reasoning". It has to be written by hand here for the same reason the turns
+    do: skipping the template skips that too, and a reasoning model with no
+    suppression spends the whole token budget thinking and returns nothing.
+    """
     return (
         "<|im_start|>system\n" + system + "<|im_end|>\n"
         "<|im_start|>user\n" + VISION_BLOCK * int(images) + message + "<|im_end|>\n"
@@ -468,11 +749,27 @@ def chatml(system, message, images=0, prefill=PREFILL):
     )
 
 
+# ---- handles and labels -----------------------------------------------------
+
 LABEL_RE = re.compile(r"<\s*(Picture|Video|Audio)\s+(\d+)\s*>")
 HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
 
 
 def normalize_handles(text, labels):
+    """`<Picture 2>` -> `@img-3`, using the label map this request will produce.
+
+    The model is asked for handles and shown the mapping, and mostly complies —
+    but it has just read a guide written entirely in labels, so the other form
+    turns up. Converting it back here means one representation reaches storage
+    and `compile._substitute` stays the only thing that writes an ordinal.
+
+    A label with no asset behind it is left exactly as written: it is a real
+    mistake and `check` is what reports it, so silently deleting it here would
+    hide the one failure that produces a wrong video rather than an error.
+
+    `<Subject N>` is untouched — those are the reference guide's own invention,
+    defined inside the rewrite and pointing at nothing outside it.
+    """
     back = {label: handle for handle, label in (labels or {}).items() if ":" not in handle}
     if not back:
         return text
@@ -486,6 +783,12 @@ def normalize_handles(text, labels):
 
 
 def check(text, handles, labels):
+    """What is wrong with a rewrite, as messages. Empty means nothing is.
+
+    Advisory rather than fatal: the panel shows these next to the text the user
+    can edit, which is a better place to resolve them than a queue-time refusal
+    on prose that is one word away from being right.
+    """
     problems = []
 
     unknown = sorted({h for h in HANDLE_RE.findall(text) if h not in handles})
@@ -495,6 +798,8 @@ def check(text, handles, labels):
             + ", which is not attached — edit it out before queueing"
         )
 
+    # A video's soundtrack has a label but no handle of its own, so `<Audio 1>`
+    # written for it is correct as it stands and must not be reported.
     known = set((labels or {}).values())
     stray = sorted({f"<{kind} {int(n)}>" for kind, n in
                     (m.groups() for m in LABEL_RE.finditer(text))} - known)
@@ -506,6 +811,18 @@ def check(text, handles, labels):
 
 
 def uncited(text, handles, labels):
+    """Attached references the rewrite never cites, as handles. Empty means none.
+
+    `text` is everything the model wrote joined together — the bodies, the
+    reference sections, the two audio fields — because a reference legitimately
+    lives in only one of them: the reference form defines an image inside
+    `subject_definitions`, folds it into a `<Subject N>`, and never names it
+    again. A handle counts as cited when it appears as `@handle` or as any label
+    it will be given, a video's soundtrack label included.
+
+    Only for the references: a keyframe is bound by the instruction line, so a
+    body that never says `@img-1` about its own start frame is correct.
+    """
     written_handles = set(HANDLE_RE.findall(text))
     written_labels = {f"<{kind} {int(n)}>" for kind, n in
                       (m.groups() for m in LABEL_RE.finditer(text))}
@@ -521,11 +838,68 @@ def uncited(text, handles, labels):
     return missing
 
 
+_QUOTED_RE = re.compile(r'"([^"\n]{2,120})"|“([^”\n]{2,120})”')
+
+
+def _plain(text):
+    """Text made comparable: one spacing, one apostrophe, one case."""
+    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
+    return re.sub(r"\s+", " ", text).lower()
+
+
+def quoted(text):
+    """The spans the request itself puts in quotation marks, in order."""
+    return [a or b for a, b in _QUOTED_RE.findall(text or "")]
+
+
+def dropped_quotes(requests, written):
+    """Quoted request text the rewrite does not carry, verbatim-ish. Empty is good.
+
+    Quotation marks in a request are the user dictating exact words — a spoken
+    line, an on-screen sign — and both rules and guide demand they survive
+    letter for letter. This is the code-side check on the one fidelity promise
+    that *can* be checked mechanically: prose fidelity is a judgement, but a
+    quoted span either appears in the rewrite or it does not. Advisory like
+    `check`, because the panel beside editable text is the right place for it.
+
+    The comparison forgives what the craft rules themselves change — casing,
+    curly quotes, spacing, terminal punctuation — and nothing else.
+    """
+    haystack = _plain(written or "")
+    missing = []
+    for request in requests:
+        for span in quoted(request):
+            needle = _plain(span).strip(" .!?,;:")
+            if needle and needle not in haystack and span not in missing:
+                missing.append(span)
+    return missing
+
+
+# ---- the reply --------------------------------------------------------------
+
 _FENCE_RE = re.compile(r"^```(?:\w+)?\s*(.*?)\s*```$", re.DOTALL)
 _THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
 
 
 def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
+    """The model's content string -> `{"shots": [str], "soundscape", "music", ...}`.
+
+    Tolerant on the way in — reasoning models leak a `<think>` block, chat models
+    wrap JSON in a fence — and strict about the shape once parsed, because a
+    short `shots` array means a timeline card would silently keep its old text.
+
+    `cuts` (from `shot_limit`) relaxes exactly that count check, and only where
+    the count was the model's to pick: 1 to `cuts` bodies, with the seconds they
+    start on returned alongside them under `"cuts"`. The times are taken as
+    written here and made monotonic by `plan_cuts`, so a model that numbers them
+    backwards is a mangled ordering rather than a failed refine.
+
+    `piece` and `ref_shots` mirror `reply_shape`: with `piece` the rewritten
+    global prompt is read back under `"piece"`, and with `ref_shots` each shot's
+    own reference sections come back under `"shot_sections"`, aligned with the
+    bodies — a shot that was not asked for any, or skipped its own, holds None
+    there, which the caller reports rather than papers over.
+    """
     text = _THINK_RE.sub("", content).strip()
     fenced = _FENCE_RE.match(text)
     if fenced:
@@ -571,6 +945,9 @@ def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
         "shots": bodies,
         "soundscape": str(data.get("overall_soundscape") or "").strip(),
         "music": str(data.get("non_diegetic_music") or "").strip(),
+        # Never part of the prompt — see `SEEN_FIELD`. Absent where nothing was
+        # attached, and absent where the model skipped it, which is itself worth
+        # seeing rather than papering over.
         "seen": str(data.get(SEEN_FIELD) or "").strip(),
     }
     if timed:
@@ -582,93 +959,3 @@ def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
     elif mode == "REF2VA":
         out["sections"] = {name: str(data.get(name) or "").strip() for name in _REF_SECTIONS}
     return out
-
-
-def _number(groups, images, limit, shared=frozenset()):
-    kept, seen, dropped, position = [], {}, 0, 0
-    for slots in groups:
-        for slot in slots:
-            if not slot.pop("picture", False):
-                continue
-            picture = images[position]
-            position += 1
-            handle = slot.get("handle")
-            if handle in seen:
-                slot["image"] = seen[handle]
-                continue
-            if len(kept) >= limit:
-                dropped += 1
-                slot["note"] = (f"not shown to the model — one call looks at at most "
-                                f"{limit} images")
-                continue
-            kept.append(picture)
-            slot["image"] = len(kept)
-            if handle in shared:
-                seen[handle] = len(kept)
-    return dropped, kept
-
-
-_QUOTED_RE = re.compile(r'"([^"\n]{2,120})"|“([^”\n]{2,120})”')
-
-
-def _plain(text):
-    text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
-    return re.sub(r"\s+", " ", text).lower()
-
-
-def quoted(text):
-    return [a or b for a, b in _QUOTED_RE.findall(text or "")]
-
-
-def _lcs_length(a, b):
-    """Length of longest common subsequence between two word lists."""
-    if not a or not b:
-        return 0
-    m, n = len(a), len(b)
-    dp = [0] * (n + 1)
-    for i in range(1, m + 1):
-        prev = 0
-        for j in range(1, n + 1):
-            temp = dp[j]
-            if a[i - 1] == b[j - 1]:
-                dp[j] = prev + 1
-            else:
-                dp[j] = max(dp[j], dp[j - 1])
-            prev = temp
-    return dp[n]
-
-
-def dropped_quotes(requests, written):
-    haystack = _plain(written or "")
-    haystack_words = re.findall(r"\w+", haystack)
-    haystack_clean = " ".join(haystack_words)
-    missing = []
-
-    for request in requests:
-        for span in quoted(request):
-            needle = _plain(span).strip(" .!?,;:")
-            if not needle:
-                continue
-
-            # 1. Exact substring check
-            if needle in haystack:
-                continue
-
-            # 2. Punctuation-insensitive word sequence check
-            needle_words = re.findall(r"\w+", needle)
-            if not needle_words:
-                continue
-            needle_clean = " ".join(needle_words)
-            if needle_clean in haystack_clean:
-                continue
-
-            # 3. Subsequence word match (allows minor LLM grammar fixes, punctuation, or dropped filler words)
-            lcs = _lcs_length(needle_words, haystack_words)
-            threshold = max(2, int(len(needle_words) * 0.65))
-            if lcs >= threshold:
-                continue
-
-            if span not in missing:
-                missing.append(span)
-
-    return missing

@@ -1,19 +1,30 @@
+// Tool rail, attached assets, prompt + pills, @ mention menu.
+// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
+/* --- tool rail ------------------------------------------------------------ */
+/* Every icon comes from ICONS, and every path in there is drawn rather than
+   filled. Set once, before any component rule, because forgetting it renders a
+   stroke-only path as a solid black blob — which is what a missing per-component
+   rule looks like, not a missing icon. Components still override the size and
+   weight; equal specificity, so the later rule wins. */
 .mmc-root svg, .mmc-overlay svg, .mmc-pop svg {
   fill: none; stroke: currentColor; stroke-width: 1.6;
   stroke-linecap: round; stroke-linejoin: round;
 }
 
-.mmc-rail { display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: space-between; flex-shrink: 0; }
-.mmc-rail-group { display: flex; gap: 8px; flex-wrap: wrap; }
+/* Two clusters: generation tools left, the machine's pair (Gallery, Settings)
+   at the far edge. space-between does the split; on a node too narrow for both,
+   the right cluster wraps under and keeps its edge. */
+.mmc-rail { display: flex; gap: 10px 24px; flex-wrap: wrap; justify-content: space-between; }
+.mmc-rail-group { display: flex; gap: 10px; flex-wrap: wrap; }
 .mmc-rail-group:last-child { margin-left: auto; }
 .mmc-tool {
-  display: flex; flex-direction: column; align-items: center; gap: 4px;
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
   background: none; border: 0; padding: 0; cursor: pointer;
-  color: var(--mmc-dim); font-size: 11px; font-family: inherit;
+  color: var(--mmc-dim); font-size: 12px; font-family: inherit;
 }
 .mmc-tool-icon {
-  width: 50px; height: 50px; border-radius: 13px;
+  width: 56px; height: 56px; border-radius: 14px;
   background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
   display: flex; align-items: center; justify-content: center;
   transition: background .12s ease;
@@ -22,58 +33,41 @@ export const css = `
 .mmc-tool:hover:not(:disabled) { color: var(--mmc-text); }
 .mmc-tool:disabled { cursor: not-allowed; color: var(--mmc-off); }
 .mmc-tool:disabled .mmc-tool-icon { opacity: .45; }
-.mmc-tool svg { width: 20px; height: 20px; stroke: currentColor; fill: none;
+.mmc-tool svg { width: 22px; height: 22px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.mmc-tool.active .mmc-tool-icon { background: var(--mmc-surface-3); border-color: var(--mmc-accent); color: var(--mmc-accent); }
-.mmc-tool.active { color: var(--mmc-accent); }
-.mmc-tool-primary .mmc-tool-icon {
-  background: var(--mmc-accent);
-  border-color: transparent;
-  color: #141414;
-}
-.mmc-tool-primary:hover:not(:disabled) .mmc-tool-icon {
-  background: #f5b85c;
-  color: #141414;
-}
-.mmc-tool-primary:hover:not(:disabled) {
-  color: #fff;
-}
 
-.mmc-prompt-chips-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; flex-shrink: 0; }
-.mmc-chip-toggle {
-  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
-  padding: 4px 10px; border-radius: 12px; background: var(--mmc-surface-2);
-  border: 1px solid var(--mmc-line); color: var(--mmc-dim); font-size: 11px;
-  font-family: inherit; cursor: pointer; transition: all .12s ease;
-}
-.mmc-chip-toggle:hover { color: var(--mmc-text); background: var(--mmc-surface-3); }
-.mmc-chip-toggle.on { color: var(--mmc-accent); border-color: rgba(240,166,60,.4); }
-.mmc-chip-group { display: flex; flex-direction: column; gap: 4px; }
-.mmc-chip-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--mmc-off); }
-.mmc-quick-chip { font-size: 11px; padding: 3px 8px; text-align: left; }
-
-.mmc-assets { display: flex; gap: 6px; flex-wrap: wrap; flex-shrink: 0; }
+/* --- attached assets ------------------------------------------------------ */
+.mmc-assets { display: flex; gap: 8px; flex-wrap: wrap; }
 .mmc-asset {
-  display: flex; align-items: center; gap: 6px; padding: 3px 6px 3px 3px;
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px;
   background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
-  border-radius: 10px; font-size: 11.5px;
+  border-radius: 10px; font-size: 12px;
 }
 .mmc-asset-thumb {
-  width: 28px; height: 28px; border-radius: 6px; object-fit: cover;
+  width: 30px; height: 30px; border-radius: 7px; object-fit: cover;
   background: var(--mmc-surface-3); display: flex; align-items: center; justify-content: center;
   color: var(--mmc-dim); flex: none;
+  /* The identity ring: paints the asset's hue onto the actual picture, which is
+     what the same-hued chip in the prompt points back to. Transparent when the
+     row carries no tag (LoRA chips share this class). */
   box-shadow: 0 0 0 2px var(--tag, transparent);
 }
 .mmc-asset-handle { color: var(--tag, var(--mmc-accent)); font-weight: 500; }
 .mmc-asset-role { color: var(--mmc-dim); }
 .mmc-asset-x {
   background: none; border: 0; color: var(--mmc-off); cursor: pointer;
-  font-size: 14px; line-height: 1; padding: 2px 3px; font-family: inherit;
+  font-size: 15px; line-height: 1; padding: 2px 3px; font-family: inherit;
 }
 .mmc-asset-x:hover { color: var(--mmc-text); }
+/* A LoRA set to the checkpoint this graph does not route to. Still listed —
+   removing it on a mode change would throw the setting away — but visibly
+   out of the run. */
 .mmc-asset.idle { opacity: .5; }
 .mmc-asset.idle .mmc-asset-handle { color: var(--mmc-dim); }
-.mmc-lora-block { display: flex; flex-direction: column; gap: 6px; flex-shrink: 0; }
+.mmc-lora-block { display: flex; flex-direction: column; gap: 6px; }
+/* What the LoRAs add to the front of the prompt. Not a warning — it is working
+   as intended — but it has to be readable, because the prompt box does not
+   show it. */
 .mmc-note {
   display: flex; gap: 8px; font-size: 11px; color: var(--mmc-dim); line-height: 1.4;
 }
@@ -82,30 +76,62 @@ export const css = `
   font-size: 10px; padding-top: 1px; flex: none;
 }
 
+/* --- prompt + pills ------------------------------------------------------- */
 .mmc-panel {
   background: var(--mmc-surface); border: 1px solid var(--mmc-line);
-  border-radius: 20px; padding: 12px 14px; display: flex; flex-direction: column;
-  gap: 10px; flex: 1; min-height: 0; overflow: hidden; position: relative;
+  border-radius: 20px; padding: 14px; display: flex; flex-direction: column;
+  gap: 12px; flex: 1; min-height: 0;
 }
-.mmc-prompt-scroll {
-  flex: 1; min-height: 60px; overflow-y: auto; overflow-x: hidden;
-  display: flex; flex-direction: column; gap: 10px; padding-right: 4px;
-}
-.mmc-prompt-scroll::-webkit-scrollbar { width: 5px; }
-.mmc-prompt-scroll::-webkit-scrollbar-thumb { background: var(--mmc-surface-3); border-radius: 3px; }
-.mmc-prompt-scroll::-webkit-scrollbar-thumb:hover { background: var(--mmc-dim); }
-
+/* contenteditable, not a textarea: @references are atomic chips, and a textarea
+   can only hold flat text. white-space: pre-wrap so the literal "\n" the box
+   inserts on Enter renders as a line break. */
 .mmc-prompt {
-  min-height: 54px; max-height: 200px; resize: vertical;
-  background: none; border: 0; outline: none;
+  flex: 1; min-height: 56px; background: none; border: 0; outline: none;
   color: var(--mmc-text); font-family: inherit; font-size: 15px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; overflow-y: auto;
 }
 .mmc-prompt:empty::before {
   content: attr(data-placeholder); color: #6a6a6a; pointer-events: none;
 }
+/* A rewrite replaces this text rather than joining it, so while one is on the
+   box is holding a draft, not the prompt. Dimmed rather than disabled: it is
+   still where the next rewrite comes from. */
 .mmc-prompt.superseded { opacity: .42; }
 .mmc-prompt.superseded:focus { opacity: .72; }
+
+/* ...and folded away, because dimming alone still gave two full descriptions of
+   the same shot the same room. The wrapper is what grows, so the box inside it
+   goes on filling the panel exactly as it did; closed, it gives its height back
+   to the rewrite that is actually queued. */
+.mmc-prompt-fold { display: flex; flex-direction: column; gap: 8px; flex: 1; min-height: 0; }
+.mmc-prompt-fold:not([open]) { flex: 0 0 auto; }
+/* No disclosure until there is something standing in for the box: with no
+   rewrite this is the prompt, and a prompt does not need announcing. */
+.mmc-prompt-head { display: none; }
+.mmc-prompt-fold.superseded > .mmc-prompt-head {
+  display: flex; align-items: center; gap: 7px; min-width: 0;
+  padding: 4px 6px; margin: -4px -6px; border-radius: 9px;
+  color: var(--mmc-dim); font-size: 12px; cursor: pointer; list-style: none;
+}
+.mmc-prompt-head::-webkit-details-marker { display: none; }
+.mmc-prompt-fold.superseded > .mmc-prompt-head:hover { color: var(--mmc-text); background: var(--mmc-surface-2); }
+.mmc-prompt-head svg {
+  width: 12px; height: 12px; flex: none; stroke: currentColor; fill: none;
+  stroke-width: 2; stroke-linecap: round; stroke-linejoin: round;
+  transform: rotate(-90deg); transition: transform .14s ease;
+}
+.mmc-prompt-fold[open] > .mmc-prompt-head svg { transform: none; }
+.mmc-prompt-head-name { flex: none; }
+/* The sentence's own first line, so the box can be recognised without opening
+   it. Hidden once it is open — the text itself is right underneath. */
+.mmc-prompt-excerpt {
+  min-width: 0; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--mmc-off);
+}
+.mmc-prompt-excerpt.empty { font-style: italic; }
+.mmc-prompt-fold[open] .mmc-prompt-excerpt { display: none; }
+/* .mmc-ref, not .mmc-chip: the refiner's language chips own that name, and the
+   two rules fighting over it is what once turned these gray. */
 .mmc-ref {
   display: inline-block; padding: 1px 7px; margin: 0 1px; border-radius: 7px;
   background: color-mix(in srgb, var(--tag, var(--mmc-accent)) 14%, transparent);
@@ -113,8 +139,9 @@ export const css = `
   font-size: .92em; white-space: nowrap; user-select: all;
 }
 
+/* --- @ mention menu ------------------------------------------------------- */
 .mmc-mention {
-  position: fixed; z-index: 2000; width: 330px; max-height: 300px; overflow-y: auto;
+  position: fixed; z-index: 1350; width: 330px; max-height: 300px; overflow-y: auto;
   background: #212121; border: 1px solid var(--mmc-line); border-radius: 14px;
   padding: 6px; box-shadow: 0 20px 50px rgba(0,0,0,.65);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
@@ -123,6 +150,9 @@ export const css = `
   color: #7d7d7d; font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
   padding: 10px 10px 6px;
 }
+/* min-width:0 all the way down: a flex item defaults to min-content width, so
+   without it a 90-character generated filename forces the row wider than the
+   menu instead of ellipsizing. */
 .mmc-mention-row {
   display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0;
   padding: 7px 8px; background: none; border: 1px solid transparent;
@@ -145,34 +175,33 @@ export const css = `
 }
 .mmc-mention-empty { color: #7d7d7d; font-size: 13px; padding: 14px 10px; }
 
-.mmc-pills {
-  display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex-shrink: 0;
-  padding-top: 8px; border-top: 1px solid var(--mmc-line); margin-top: auto;
-}
+.mmc-pills { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 .mmc-pill {
-  display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
-  border-radius: 17px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
-  color: var(--mmc-text); font-size: 12px; font-family: inherit; cursor: pointer;
-  white-space: nowrap; transition: background .12s ease; max-width: 100%; box-sizing: border-box;
+  display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px;
+  border-radius: 19px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  color: var(--mmc-text); font-size: 13px; font-family: inherit; cursor: pointer;
+  white-space: nowrap; transition: background .12s ease;
 }
 .mmc-pill:hover:not(:disabled) { background: var(--mmc-surface-3); }
 .mmc-pill:disabled { cursor: not-allowed; color: var(--mmc-off); }
-.mmc-pill.on { border-color: var(--mmc-accent); color: var(--mmc-accent); }
-.mmc-pill svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
+.mmc-pill svg { width: 16px; height: 16px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.mmc-pill-sub { color: var(--mmc-dim); font-size: 10.5px; }
-.mmc-pill-group { gap: 0; padding: 0 4px; }
+.mmc-pill-sub { color: var(--mmc-dim); font-size: 11px; }
+.mmc-pill-group { gap: 0; padding: 0 6px; }
 .mmc-step {
   background: none; border: 0; color: var(--mmc-text); cursor: pointer;
-  font-size: 15px; width: 24px; height: 32px; font-family: inherit;
+  font-size: 16px; width: 26px; height: 36px; font-family: inherit;
 }
 .mmc-step:disabled { color: var(--mmc-off); cursor: not-allowed; }
+/* No text-transform: the socket name has to read exactly as it does on the
+   input, and 'model_fl2va' uppercased is not the name of anything. */
 .mmc-mode {
   margin-left: auto; font-size: 11px; letter-spacing: .04em; color: var(--mmc-dim);
-  display: flex; align-items: center; gap: 5px;
+  display: flex; align-items: center; gap: 6px;
   background: none; border: 1px solid transparent; border-radius: 13px;
-  padding: 4px 8px; font-family: inherit;
+  padding: 5px 10px; font-family: inherit;
 }
+/* Only the clickable form gets affordances — as a span it is a plain readout. */
 button.mmc-mode { cursor: pointer; }
 button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mmc-line); }
 .mmc-mode.pinned { border-color: var(--mmc-line); background: var(--mmc-surface-2); }
@@ -180,20 +209,8 @@ button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mm
 .mmc-pin {
   font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
   color: var(--mmc-accent); border: 1px solid currentColor; border-radius: 8px;
-  padding: 0 4px; opacity: .8;
+  padding: 0 5px; opacity: .8;
 }
-.mmc-warn { color: #e0743c; font-size: 12px; flex-shrink: 0; }
-.mmc-root { position: relative; }
-.mmc-root.mmc-drag-drop-active::after {
-  content: "📥 Drop media here to attach as reference";
-  position: absolute; inset: 0; z-index: 1000;
-  background: rgba(47, 123, 246, 0.88);
-  color: #ffffff;
-  font-size: 15px; font-weight: 600; font-family: inherit;
-  display: flex; align-items: center; justify-content: center;
-  border: 2px dashed #ffffff; border-radius: 20px;
-  pointer-events: none;
-  backdrop-filter: blur(4px);
-  box-sizing: border-box;
-}
+.mmc-warn { color: #e0743c; font-size: 12px; }
+
 `;

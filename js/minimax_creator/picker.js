@@ -816,27 +816,13 @@ class Picker {
       : asset.kind === "video"
         ? el("video", { class: "mmc-light-media", src: viewUrl(asset.path), controls: true, autoplay: true, loop: true })
         : el("img", { class: "mmc-light-media", src: viewUrl(asset.path), alt: asset.name });
-
-    const closeMedia = () => {
-      if (media && typeof media.pause === "function") {
-        try {
-          media.pause();
-          media.muted = true;
-          media.currentTime = 0;
-          media.removeAttribute("src");
-          media.load();
-        } catch {}
-      }
-      unmount?.();
-    };
-
     const overlay = el("div", {
       class: "mmc-overlay",
-      onpointerdown: (event) => { if (event.target === overlay) closeMedia(); },
+      onpointerdown: (event) => { if (event.target === overlay) unmount(); },
     }, [
       el("div", { class: "mmc-light" }, [media, el("div", { class: "mmc-light-name", text: asset.name })]),
     ]);
-    unmount = mountOverlay(overlay, () => closeMedia());
+    unmount = mountOverlay(overlay, () => unmount());
   }
 
   toggle(asset) {

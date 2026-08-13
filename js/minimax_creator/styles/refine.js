@@ -1,7 +1,15 @@
+// The refiner and the rewrite.
+// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
+/* --- the refiner ---------------------------------------------------------- */
+/* One press refines; the corner opens the settings. The corner sits inside the
+   tile's own rounded box rather than floating over it, so the rail keeps its
+   alignment and the control cannot be mistaken for a badge on its neighbour. */
 .mmc-refine-split { position: relative; display: flex; }
+/* Anchored off the tile's centre rather than the wrapper's left edge, so a
+   longer label cannot slide it off the corner it belongs in. */
 .mmc-refine-more {
-  position: absolute; top: 32px; left: 50%; margin-left: 8px; width: 18px; height: 18px;
+  position: absolute; top: 36px; left: 50%; margin-left: 8px; width: 18px; height: 18px;
   display: flex; align-items: center; justify-content: center;
   background: none; border: 0; border-radius: 6px; padding: 0;
   color: var(--mmc-off); cursor: pointer; transition: color .12s ease, background .12s ease;
@@ -9,22 +17,29 @@ export const css = `
 .mmc-refine-more svg { width: 12px; height: 12px; }
 .mmc-refine-split:hover .mmc-refine-more { color: var(--mmc-dim); }
 .mmc-refine-more:hover { color: var(--mmc-text); background: var(--mmc-surface-3); }
+/* Only the keyboard gets a ring. Clicking left one sitting on the tile, which
+   is exactly what made the old control read as a notification dot. */
 .mmc-refine-more:focus:not(:focus-visible) { outline: none; }
 
+/* A refine is a round trip to a local model and can take a minute. The pulse is
+   the only thing saying the click landed. */
 .mmc-tool.busy, .mmc-pill.busy { color: var(--mmc-accent); cursor: progress; }
 .mmc-tool.busy .mmc-tool-icon { animation: mmc-pulse 1.4s ease-in-out infinite; }
 .mmc-pill.busy { animation: mmc-pulse 1.4s ease-in-out infinite; }
 @keyframes mmc-pulse { 0%, 100% { opacity: 1; } 50% { opacity: .45; } }
 
+/* On the timeline bar the same control is a pill, so the corner becomes an
+   ordinary chevron at the end of the label. */
 .mmc-tl-refine .mmc-tool-icon {
   width: auto; height: auto; background: none; border: 0; border-radius: 0;
 }
 .mmc-tl-refine svg { width: 15px; height: 15px; }
+/* Beside it, and quieter than it: undoing is the rarer press of the two. */
 .mmc-tl-unrefine { color: var(--mmc-dim); }
 .mmc-tl-unrefine:hover { color: var(--mmc-text); }
 .mmc-refine-split.pill { align-items: stretch; }
 .mmc-refine-split.pill .mmc-refine-more {
-  position: static; width: 24px; height: 34px; border-radius: 0 17px 17px 0;
+  position: static; width: 24px; height: 38px; border-radius: 0 19px 19px 0;
   margin-left: -10px; background: var(--mmc-surface-2);
   border: 1px solid var(--mmc-line); border-left: 0; color: var(--mmc-dim);
 }
@@ -33,10 +48,15 @@ export const css = `
 
 .mmc-refine-pop { width: 264px; padding: 8px; }
 .mmc-refine-models { max-height: 190px; overflow-y: auto; }
+/* Names run to a folder-qualified qwen3vl/qwen3vl_4b_instruct_fp8.safetensors.
+   The row ellipsises and the title carries the whole of it. */
 .mmc-refine-name {
   display: block; min-width: 0; overflow: hidden;
   text-overflow: ellipsis; white-space: nowrap;
 }
+/* What kind of prompting a row is — "prompt" or "skill" — said as a tiny tag
+   between the name and the radio, because the rows otherwise look like two of
+   the same thing and behave like two different ones. */
 .mmc-opt-kind {
   flex: none; margin-left: auto; margin-right: 8px;
   font-size: 10px; color: var(--mmc-dim);
@@ -55,9 +75,10 @@ export const css = `
 }
 .mmc-refine-empty .mmc-ghost { font-size: 12px; }
 
+/* Everything but the model, folded away: it is set once and the model is not. */
 .mmc-refine-fold { font-size: 12px; }
 .mmc-refine-fold > summary {
-  cursor: pointer; color: var(--mmc-dim); padding: 6px 8px;
+  cursor: pointer; color: var(--mmc-dim); padding: 8px 10px;
   border-top: 1px solid var(--mmc-line); list-style-position: inside;
 }
 .mmc-refine-fold > summary:hover { color: var(--mmc-text); }
@@ -68,6 +89,8 @@ export const css = `
 .mmc-refine-row { display: flex; gap: 8px; flex-wrap: wrap; }
 .mmc-refine-seed { font-size: 12px; padding: 0 10px 0 2px; }
 
+/* Eleven languages: chips wrap into three lines and stay scannable, where a
+   list would scroll and a <select> would be the only browser chrome in the node. */
 .mmc-chips { display: flex; flex-wrap: wrap; gap: 5px; }
 .mmc-chip {
   padding: 4px 10px; border-radius: 12px; background: var(--mmc-surface-2);
@@ -79,7 +102,10 @@ export const css = `
   color: var(--mmc-bg); background: var(--mmc-accent); border-color: var(--mmc-accent);
 }
 
-.mmc-refined { display: flex; flex-direction: column; gap: 8px; flex-shrink: 0; }
+/* --- the rewrite ---------------------------------------------------------- */
+/* An editor, not a readout: the rewrite is a draft, and correcting one word of
+   it should not mean running the model again. */
+.mmc-refined { display: flex; flex-direction: column; gap: 8px; }
 .mmc-refined:empty { display: none; }
 .mmc-refined-head { display: flex; align-items: center; gap: 8px; font-size: 12px; }
 .mmc-refined-toggle {
@@ -94,21 +120,24 @@ export const css = `
 .mmc-refined-model { color: var(--mmc-dim); font-size: 11px;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .mmc-refined-stale { color: var(--mmc-accent); font-size: 11px; opacity: .8; }
+/* Said once, next to the dimmed prompt it is talking about. */
 .mmc-refined-lede { color: var(--mmc-dim); font-size: 11px; margin-top: -4px; }
 .mmc-refined-box {
   width: 100%; box-sizing: border-box; resize: vertical;
-  max-height: 180px; min-height: 54px;
   background: var(--mmc-surface); border: 1px solid var(--mmc-line); border-radius: 12px;
   color: var(--mmc-text); font-family: inherit; font-size: 13px; line-height: 1.5;
-  padding: 10px 12px; outline: none; overflow-y: auto;
+  padding: 10px 12px; outline: none;
 }
 .mmc-refined-box:focus { border-color: rgba(255,255,255,.2); }
 .mmc-refined-fold { font-size: 12px; color: var(--mmc-dim); }
 .mmc-refined-fold summary { cursor: pointer; padding: 2px 0; }
-.mmc-refined-sections { display: flex; flex-direction: column; gap: 6px; padding-top: 6px; }
+.mmc-refined-sections { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; }
 .mmc-refined-section { display: flex; flex-direction: column; gap: 4px; }
+/* A readout, not a field: it is the model's own account of the pictures and
+   editing it would change nothing that gets queued. */
 .mmc-refined-seen {
-  padding: 6px 10px; border-left: 2px solid var(--mmc-line);
+  padding: 8px 12px; border-left: 2px solid var(--mmc-line);
   white-space: pre-wrap; user-select: text;
 }
+
 `;
