@@ -8,6 +8,60 @@ import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
+// Global input guard to prevent ComfyUI node copy/paste when focused in text fields
+function installInputGuard() {
+  if (globalThis._mmcInputGuardInstalled) return;
+  globalThis._mmcInputGuardInstalled = true;
+
+  const isMmcInput = (el) => {
+    if (!el) return false;
+    if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
+      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
+    }
+    if (el.isContentEditable) {
+      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
+    }
+    return !!el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop");
+  };
+
+  window.addEventListener("keydown", (e) => {
+    if (!isMmcInput(document.activeElement)) return;
+    const key = e.key?.toLowerCase();
+    if ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "a", "z", "y"].includes(key)) {
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  window.addEventListener("copy", (e) => {
+    if (isMmcInput(document.activeElement)) {
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  window.addEventListener("cut", (e) => {
+    if (isMmcInput(document.activeElement)) {
+      e.stopImmediatePropagation();
+    }
+  }, true);
+
+  window.addEventListener("paste", (e) => {
+    const active = document.activeElement;
+    if (!isMmcInput(active)) return;
+
+    e.stopImmediatePropagation();
+
+    if (active.classList?.contains("mmc-prompt") || active.isContentEditable) {
+      e.preventDefault();
+      const text = e.clipboardData?.getData("text/plain") ?? "";
+      if (text) {
+        document.execCommand("insertText", false, text.replace(/\r\n?/g, "\n"));
+      }
+    }
+  }, true);
+}
+
+installInputGuard();
+
 const CREATOR = "MiniMaxH3Creator";
 const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";

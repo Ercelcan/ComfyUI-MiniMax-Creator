@@ -438,7 +438,9 @@ export class RefinePanel {
       oninput: (event) => { set(event.target.value); this.onCommit?.(); },
     });
     box.value = get() ?? "";
-    box.addEventListener("pointerdown", (event) => event.stopPropagation());
+    for (const name of ["pointerdown", "keydown", "keyup", "paste", "copy", "cut"]) {
+      box.addEventListener(name, (event) => event.stopPropagation());
+    }
     return box;
   }
 

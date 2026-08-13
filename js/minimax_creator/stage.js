@@ -1,5 +1,5 @@
 import { api } from "../../../scripts/api.js";
-import { el, mountOverlay, stopAllMediaGlobally } from "./dom.js";
+import { el, mountOverlay } from "./dom.js";
 import { listAssets, deleteAsset, outputUrl } from "./api.js";
 import { t } from "./i18n.js";
 
@@ -39,7 +39,6 @@ export class Stage {
 
   destroy() {
     for (const name of EVENTS) api.removeEventListener(name, this.onEvent);
-    stopAllMediaGlobally();
     this.stopMedia();
     this.releaseFrame();
     clearInterval(this.ticker);
@@ -81,8 +80,20 @@ export class Stage {
   }
 
   stopMedia() {
-    stopAllMediaGlobally();
-    if (this.media) this.media.replaceChildren();
+    if (!this.media) return;
+    try {
+      const mediaElements = this.media.querySelectorAll("video, audio");
+      mediaElements.forEach((m) => {
+        try {
+          m.pause();
+          m.muted = true;
+          m.currentTime = 0;
+          m.removeAttribute("src");
+          m.load();
+        } catch {}
+      });
+      this.media.replaceChildren();
+    } catch {}
     this.currentMediaSrc = null;
   }
 
@@ -108,6 +119,7 @@ export class Stage {
   toggleKeepVideo() {
     const next = !this.keepLastVideo;
     try { localStorage.setItem("mmc-stage-keep-video", String(next)); } catch {}
+    this.stopMedia();
     this.render();
   }
 
@@ -171,7 +183,6 @@ export class Stage {
     const item = this.historyList[nextIdx];
     if (!item) return;
 
-    stopAllMediaGlobally();
     this.stopMedia();
     const saved = { filename: item.name, subfolder: item.subfolder, type: "output" };
     this.result = {
@@ -230,10 +241,15 @@ export class Stage {
     if (!detail) return;
     switch (type) {
       case "execution_start":
-        stopAllMediaGlobally();
+        this.stopMedia();
         this.progress = null;
         this.segment = null;
         this.error = null;
+        if (this.state === "done" && !this.keepLastVideo) {
+          this.state = "sampling";
+          this.releaseFrame();
+          this.frame = null;
+        }
         this.renderReadout();
         break;
 
@@ -305,7 +321,6 @@ export class Stage {
         if (String(detail.display_node) !== String(this.getId() ?? "")) break;
         const saved = detail.output?.mmc_video?.[0] ?? detail.output?.mmc_image?.[0] ?? detail.output?.videos?.[0] ?? detail.output?.gifs?.[0] ?? detail.output?.images?.[0];
         if (!saved) break;
-        stopAllMediaGlobally();
         this.stopMedia();
         this.state = "done";
         this.progress = null;
@@ -349,7 +364,6 @@ export class Stage {
       } catch {}
     }
     clearInterval(this.ticker);
-    stopAllMediaGlobally();
     this.stopMedia();
     this.metaFrameAt = 0;
     this.state = "idle";
@@ -365,7 +379,6 @@ export class Stage {
 
   begin() {
     if (this.state === "sampling") return;
-    stopAllMediaGlobally();
     this.stopMedia();
     this.state = "sampling";
     this.startedAt = Date.now();
@@ -373,14 +386,13 @@ export class Stage {
     this.ticker = setInterval(() => this.renderReadout(), 1000);
   }
 
-  setMediaContent(element) {
-    const src = element?.src || element?.querySelector?.("source")?.src || null;
-    if (src && this.currentMediaSrc === src && this.media?.firstElementChild) {
+  setMediaContent(elementOrFactory, targetSrc) {
+    if (targetSrc && this.currentMediaSrc === targetSrc && this.media?.firstElementChild) {
       return;
     }
-    stopAllMediaGlobally();
     this.stopMedia();
-    this.currentMediaSrc = src;
+    this.currentMediaSrc = targetSrc;
+    const element = typeof elementOrFactory === "function" ? elementOrFactory() : elementOrFactory;
     if (this.media && element) {
       this.media.replaceChildren(element);
     }
@@ -392,25 +404,23 @@ export class Stage {
     this.root.dataset.state = this.state;
     this.onVisibility?.(showing);
     if (!showing) {
-      stopAllMediaGlobally();
       this.stopMedia();
       return;
     }
 
     if (this.state === "done" && this.result) {
-      this.setMediaContent(this.result.isImage ? this.still() : this.video());
+      this.setMediaContent(() => (this.result.isImage ? this.still() : this.video()), this.result.url);
     }
     else if (this.state === "sampling" && this.keepLastVideo && this.result) {
-      this.setMediaContent(this.result.isImage ? this.still() : this.video());
+      this.setMediaContent(() => (this.result.isImage ? this.still() : this.video()), this.result.url);
     }
     else if (this.frame) {
-      this.setMediaContent(this.previewFrame());
+      this.setMediaContent(() => this.previewFrame(), this.frame);
     }
     else if (this.result) {
-      this.setMediaContent(this.result.isImage ? this.still() : this.video());
+      this.setMediaContent(() => (this.result.isImage ? this.still() : this.video()), this.result.url);
     }
     else {
-      stopAllMediaGlobally();
       this.stopMedia();
     }
 
@@ -553,17 +563,8 @@ export class Stage {
       class: "mmc-stage-video",
       src: this.result.url,
       controls: true, autoplay: true, loop: true, muted: true, playsinline: true,
-      onmouseenter: (event) => {
-        if (this.state === "done") {
-          stopAllMediaGlobally(event.currentTarget);
-          event.currentTarget.muted = false;
-          event.currentTarget.play().catch(() => {});
-        }
-      },
-      onmouseleave: (event) => {
-        event.currentTarget.muted = true;
-        event.currentTarget.pause();
-      },
+      onmouseenter: (event) => { event.currentTarget.muted = false; },
+      onmouseleave: (event) => { event.currentTarget.muted = true; },
       onpointerdown: (event) => event.stopPropagation(),
     });
   }

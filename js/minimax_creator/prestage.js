@@ -43,8 +43,12 @@ export class PreStageEditor {
         this.state.prompt = this.promptBox.value;
         this.onCommit?.();
       },
-      onpointerdown: (event) => event.stopPropagation(),
+      onkeydown: (event) => event.stopPropagation(),
       onkeyup: (event) => event.stopPropagation(),
+      onpaste: (event) => event.stopPropagation(),
+      oncopy: (event) => event.stopPropagation(),
+      oncut: (event) => event.stopPropagation(),
+      onpointerdown: (event) => event.stopPropagation(),
     });
 
     this.railHost = el("div");

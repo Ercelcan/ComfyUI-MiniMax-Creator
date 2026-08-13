@@ -88,7 +88,9 @@ class Timeline {
       },
     });
     box.value = this.timeline[key] ?? "";
-    box.addEventListener("pointerdown", (event) => event.stopPropagation());
+    for (const name of ["pointerdown", "keydown", "keyup", "paste", "copy", "cut"]) {
+      box.addEventListener(name, (event) => event.stopPropagation());
+    }
     return box;
   }
 
