@@ -98,6 +98,7 @@ export class PromptBox {
   }
 
   getValue() {
+    if (!this.root) return "";
     let text = "";
     for (const node of this.root.childNodes) {
       if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue;
@@ -109,7 +110,7 @@ export class PromptBox {
   }
 
   setValue(text) {
-    if (this.getValue() === text) return;
+    if (!this.root || this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
   }
 
@@ -143,6 +144,7 @@ export class PromptBox {
   }
 
   setSuperseded(on) {
+    if (!this.root) return;
     this.root.classList.toggle("superseded", !!on);
     this.root.title = on
       ? t("Not queued while the rewrite below is on — that is what the model reads. "
@@ -151,7 +153,7 @@ export class PromptBox {
   }
 
   refresh() {
-    if (document.activeElement === this.root) return;
+    if (!this.root || document.activeElement === this.root) return;
     this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
   }
 
@@ -200,6 +202,7 @@ export class PromptBox {
   }
 
   insertTextAtCursor(text) {
+    if (!this.root) return;
     this.root.focus();
     const selection = window.getSelection();
     if (!selection?.rangeCount) {
@@ -217,6 +220,7 @@ export class PromptBox {
   }
 
   insertChip(handle) {
+    if (!this.root) return;
     const trigger = this.triggerRange();
     const selection = window.getSelection();
     const range = document.createRange();
@@ -274,7 +278,7 @@ export class PromptBox {
 
   place() {
     const selection = window.getSelection();
-    if (!selection?.rangeCount || !this.menu) return;
+    if (!selection?.rangeCount || !this.menu || !this.root) return;
     const rect = selection.getRangeAt(0).getBoundingClientRect();
     const anchor = rect.width || rect.height ? rect : this.root.getBoundingClientRect();
     const box = this.menu.getBoundingClientRect();
