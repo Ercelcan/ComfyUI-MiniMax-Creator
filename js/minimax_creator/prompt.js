@@ -1,4 +1,17 @@
-import { el, icon, floatAbove } from "./dom.js";
+// The prompt box: rich text where every @reference is an atomic chip.
+//
+// The chip is the whole point of this UI. H3 addresses references by ordinal
+// label — <Picture 2>, <Video 1> — and getting those right by hand is the real
+// difficulty of prompting the model. Typing "@" and picking a file is how a
+// person says "use *this* one for her face" without ever seeing a label.
+//
+// The DOM is kept deliberately flat: only text nodes and chip spans, never the
+// <div>/<br> soup contenteditable produces on its own. Enter inserts a literal
+// "\n" (the box is white-space: pre-wrap) and paste is forced to plain text, so
+// getValue() is a simple walk and round-trips exactly with what compile.py
+// parses.
+
+import { el, floatAbove, icon } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
@@ -6,38 +19,20 @@ import { tagIndex } from "./state.js";
 const TRIGGER = /@([\w-]*)$/;
 const MAX_SUGGESTIONS = 40;
 
-export const QUICK_CHIPS = [
-  { group: "Camera Motion", items: [
-    "The camera pushes in with small amplitude at slow speed",
-    "The camera pulls out with small amplitude at slow speed",
-    "The camera pans left with large amplitude",
-    "The camera pans right with large amplitude",
-    "The camera tilts up at slow speed",
-    "The camera tilts down at slow speed",
-    "The camera holds a static shot",
-    "Tracking shot following the motion",
-    "Arc shot circling the subject",
-    "POV shot from the character's perspective",
-  ]},
-  { group: "Framing", items: [
-    "Wide shot establishing the scene",
-    "Medium shot framing the character from the waist up",
-    "Close-up shot focusing on the details",
-    "Extreme close-up shot",
-  ]},
-  { group: "Style & Lighting", items: [
-    "Cinematic film shot on 35mm anamorphic lens",
-    "1980s retro VHS aesthetic with fine grain",
-    "Bioluminescent neon lighting in dark atmosphere",
-    "Soft warm golden hour lighting",
-  ]},
-];
-
 export class PromptBox {
+  /**
+   * @param {object} hooks
+   * @param {()=>object} hooks.getState      current creator state
+   * @param {(text:string)=>void} hooks.onInput   prompt text changed
+   * @param {(row:object)=>string|null} hooks.onAttach  attach an input-folder file, -> handle
+   * @param {(kind:string)=>string|null} hooks.attachBlocked  why attaching is impossible, or null
+   * @param {()=>object[]} [hooks.getPool]   the piece's reference pool, for a
+   *   timeline segment: citable by handle, never attached — writing the chip is
+   *   what attaches it at queue time
+   */
   constructor(hooks) {
     this.hooks = hooks;
     this.menu = null;
-    this.showChips = false;
 
     this.root = el("div", {
       class: "mmc-prompt",
@@ -48,54 +43,34 @@ export class PromptBox {
       "data-placeholder": t("Describe your video, use @ to reference images, videos, audio, or elements"),
     });
 
-    this.chipsBar = el("div", { class: "mmc-prompt-chips-bar" });
-
     this.root.addEventListener("input", () => this.onEdit());
     this.root.addEventListener("keydown", (event) => this.onKeyDown(event), true);
     this.root.addEventListener("paste", (event) => this.onPaste(event));
-    this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 150));
+    this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 120));
 
-    for (const name of ["keyup", "keydown", "copy", "cut", "paste", "pointerdown", "pointerup", "wheel"]) {
+    // The graph canvas swallows keys and drags otherwise.
+    for (const name of ["keyup", "pointerdown", "pointerup", "wheel"]) {
       this.root.addEventListener(name, (event) => event.stopPropagation());
     }
 
-    this.renderChipsBar();
+    // The box's own disclosure, shown only while a rewrite stands in for it.
+    // `frame` is what a caller mounts; `root` stays the editable, because
+    // everything else in here — the caret, the chips, the @ menu — is about
+    // the editable and nothing about the wrapper.
+    this.superseded = false;
+    this.excerpt = el("span", { class: "mmc-prompt-excerpt" });
+    this.head = el("summary", { class: "mmc-prompt-head" }, [
+      icon("chevron", 12),
+      el("span", { class: "mmc-prompt-head-name", text: t("your prompt") }),
+      this.excerpt,
+    ]);
+    this.frame = el("details", { class: "mmc-prompt-fold" }, [this.head, this.root]);
+    this.frame.open = true;
+    this.frame.addEventListener("toggle", () => this.syncExcerpt());
+    this.frame.addEventListener("pointerdown", (event) => event.stopPropagation());
   }
 
-  renderChipsBar() {
-    const toggleBtn = el("button", {
-      class: `mmc-chip-toggle${this.showChips ? " on" : ""}`,
-      title: t("Toggle camera, framing and style quick chips"),
-      onclick: (e) => {
-        e.stopPropagation();
-        this.showChips = !this.showChips;
-        this.renderChipsBar();
-      },
-      onpointerdown: (e) => e.stopPropagation(),
-    }, [icon("camera", 14), el("span", { text: t("Camera & Style") })]);
-
-    if (!this.showChips) {
-      this.chipsBar.replaceChildren(toggleBtn);
-      return;
-    }
-
-    const groups = QUICK_CHIPS.map((cat) => el("div", { class: "mmc-chip-group" }, [
-      el("span", { class: "mmc-chip-group-label", text: t(cat.group) }),
-      el("div", { class: "mmc-chips" }, cat.items.map((phrase) => el("button", {
-        class: "mmc-chip mmc-quick-chip",
-        text: phrase,
-        title: t("Insert '{text}' at cursor", { text: phrase }),
-        onpointerdown: (e) => e.stopPropagation(),
-        onclick: (e) => {
-          e.stopPropagation();
-          this.insertTextAtCursor(`${phrase}, `);
-          this.onEdit();
-        },
-      }))),
-    ]));
-
-    this.chipsBar.replaceChildren(toggleBtn, ...groups);
-  }
+  // ---- value <-> DOM -------------------------------------------------------
 
   getValue() {
     let text = "";
@@ -114,10 +89,12 @@ export class PromptBox {
     this.syncExcerpt();
   }
 
+  /** Text -> [text nodes, chip spans]. Only handles with a live asset — the
+   *  state's own or the piece's pool — become chips; the rest stay as plain
+   *  text so the dangling-handle warning sees them. */
   build(text) {
-    const state = this.hooks.getState?.() ?? {};
     const known = new Set([
-      ...(state.assets ?? []).map((a) => a.handle),
+      ...this.hooks.getState().assets.map((a) => a.handle),
       ...(this.hooks.getPool?.() ?? []).map((a) => a.handle),
     ]);
     const out = [];
@@ -143,6 +120,23 @@ export class PromptBox {
     });
   }
 
+  /**
+   * Dim the box while a rewrite stands in for it — and fold it away.
+   *
+   * `compile.refined_body` replaces this text outright rather than adding to it,
+   * so with a rewrite switched on the sentence in here is not queued at all —
+   * it is only what the rewrite was written from. Nothing on screen said so, and
+   * a full-brightness box in the middle of the panel reads as the thing being
+   * sent.
+   *
+   * Dimming said it but did not make room for the rewrite that *is* queued: two
+   * full descriptions of the same shot, stacked, doubled the node's height and
+   * pushed the one that matters below the fold. So the box now folds into its
+   * own first line the moment a rewrite takes over, and the chevron opens it
+   * again — it is still editable, because editing it is how you ask for a new
+   * rewrite. Only the transition folds it: a second refine leaves a box you
+   * deliberately opened open.
+   */
   setSuperseded(on) {
     on = !!on;
     const changed = on !== this.superseded;
@@ -170,10 +164,16 @@ export class PromptBox {
     this.excerpt.classList.toggle("empty", !text);
   }
 
+  /** Re-run the text through build(): an asset was added or removed, so some
+   *  chips may need to become plain text or vice versa. Skipped while focused
+   *  so it never yanks the caret mid-sentence. */
   refresh() {
     if (document.activeElement === this.root) return;
-    this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
+    this.root.replaceChildren(...this.build(this.hooks.getState().prompt ?? ""));
+    this.syncExcerpt();
   }
+
+  // ---- editing -------------------------------------------------------------
 
   onEdit() {
     this.hooks.onInput(this.getValue());
@@ -184,10 +184,9 @@ export class PromptBox {
   }
 
   onPaste(event) {
-    event.stopPropagation();
     event.preventDefault();
     const text = event.clipboardData?.getData("text/plain") ?? "";
-    this.insertTextAtCursor(text.replace(/\r\n?/g, "\n"));
+    this.insertText(text.replace(/\r\n?/g, "\n"));
     this.onEdit();
   }
 
@@ -203,12 +202,14 @@ export class PromptBox {
     event.stopPropagation();
 
     if (event.key === "Enter") {
+      // Keep the DOM flat: no <div> wrappers from the browser's own handling.
       event.preventDefault();
-      this.insertTextAtCursor("\n");
+      this.insertText("\n");
       this.onEdit();
     }
   }
 
+  /** The "@query" immediately before the caret, or null. */
   triggerRange() {
     const selection = window.getSelection();
     if (!selection?.rangeCount || !selection.isCollapsed) return null;
@@ -220,13 +221,9 @@ export class PromptBox {
     return { node, start: range.startOffset - match[0].length, end: range.startOffset, query: match[1] };
   }
 
-  insertTextAtCursor(text) {
-    this.root.focus();
+  insertText(text) {
     const selection = window.getSelection();
-    if (!selection?.rangeCount) {
-      this.root.appendChild(document.createTextNode(text));
-      return;
-    }
+    if (!selection?.rangeCount) return;
     const range = selection.getRangeAt(0);
     range.deleteContents();
     const node = document.createTextNode(text);
@@ -237,6 +234,7 @@ export class PromptBox {
     selection.addRange(range);
   }
 
+  /** Swap the typed "@query" for a chip, followed by a space. */
   insertChip(handle) {
     const trigger = this.triggerRange();
     const selection = window.getSelection();
@@ -266,17 +264,20 @@ export class PromptBox {
     this.hooks.onInput(this.getValue());
   }
 
+  // ---- suggestion menu -----------------------------------------------------
+
   async openMenu(query) {
     this.query = query.toLowerCase();
     if (!this.menu) {
       this.menu = el("div", { class: "mmc-mention" });
+      // Above whatever is open: the same prompt box is the node's body and a
+      // timeline segment's editor, and in the second case it is inside a modal.
       floatAbove(this.menu);
       document.body.appendChild(this.menu);
       this.active = 0;
     }
-    floatAbove(this.menu);
     this.place();
-    this.renderMenu();
+    this.renderMenu();          // attached assets are known immediately
     try {
       this.library = await listAssets();
     } catch {
@@ -305,23 +306,27 @@ export class PromptBox {
     this.menu.style.top = `${Math.max(8, Math.min(top, window.innerHeight - height - 8))}px`;
   }
 
+  /** Attached assets first, then the piece's pool, then the input folder. */
   options() {
-    const state = this.hooks.getState?.() ?? {};
-    const attachedAssets = state.assets ?? [];
-    const attached = attachedAssets
+    const state = this.hooks.getState();
+    const attached = state.assets
       .filter((asset) => !this.query || asset.handle.toLowerCase().includes(this.query)
         || asset.filename.toLowerCase().includes(this.query))
       .map((asset) => ({ kind: "attached", handle: asset.handle, path: asset.filename, mediaKind: asset.kind }));
 
-    const own = new Set(attachedAssets.map((a) => a.handle));
-    const pool = this.hooks.attachBlocked?.("reference") ? []
+    // The pool is citable, never attached: choosing one only writes the chip,
+    // and the citation is what carries the file into this generation at queue
+    // time. Hidden while references are blocked here (a start/end frame is
+    // set), because the chip would queue a checkpoint clash.
+    const own = new Set(state.assets.map((a) => a.handle));
+    const pool = this.hooks.attachBlocked("reference") ? []
       : (this.hooks.getPool?.() ?? [])
         .filter((asset) => !own.has(asset.handle))
         .filter((asset) => !this.query || asset.handle.toLowerCase().includes(this.query)
           || asset.filename.toLowerCase().includes(this.query))
         .map((asset) => ({ kind: "pool", handle: asset.handle, path: asset.filename, mediaKind: asset.kind }));
 
-    const used = new Set(attachedAssets.map((a) => a.filename));
+    const used = new Set(state.assets.map((a) => a.filename));
     const library = (this.library ?? [])
       .filter((row) => !used.has(row.path))
       .filter((row) => !this.query || row.path.toLowerCase().includes(this.query))
@@ -337,6 +342,10 @@ export class PromptBox {
     this.flat = [...attached, ...pool, ...library];
     if (this.active >= this.flat.length) this.active = Math.max(0, this.flat.length - 1);
 
+    // openMenu() renders once immediately and again when the library resolves,
+    // and every keystroke re-renders too. Rebuilding identical rows would throw
+    // away the highlight and re-fire mouseenter under a stationary pointer, so
+    // only rebuild when the list actually differs.
     const signature = this.flat.map((option) => option.handle ?? option.path).join("\u0000");
     if (this.rows?.length && signature === this.signature) return;
     this.signature = signature;
@@ -355,6 +364,9 @@ export class PromptBox {
         ? el("img", { class: "mmc-mention-thumb", src: viewUrl(option.path, { preview: true }), alt: "" })
         : el("span", { class: "mmc-mention-thumb", text: option.mediaKind === "video" ? "▶" : "♪" });
 
+      // Attached assets are known by their handle; a library file is known by
+      // its name, and only earns a second line when it lives in a subfolder —
+      // repeating the same string twice told the user nothing.
       const title = option.handle ? `@${option.handle}` : option.path.split("/").pop();
       const subtitle = option.handle ? option.path : (option.row?.subfolder || "");
 
@@ -374,6 +386,8 @@ export class PromptBox {
           ...(subtitle ? [el("span", { class: "mmc-mention-sub", text: subtitle })] : []),
         ]),
       ]);
+      // Keep focus in the box: a blurred contenteditable loses its caret, and
+      // without a caret there is nowhere to insert the chip.
       item.addEventListener("pointerdown", (event) => event.preventDefault());
       this.rows.push(item);
       return item;
@@ -388,7 +402,7 @@ export class PromptBox {
       for (const option of pool) this.menu.appendChild(row(option));
     }
     if (library.length) {
-      const blocked = this.hooks.attachBlocked?.("reference");
+      const blocked = this.hooks.attachBlocked("reference");
       this.menu.appendChild(el("div", {
         class: "mmc-mention-head",
         text: blocked ? t("Input folder — unavailable while a start/end frame is set") : t("Input folder"),
@@ -398,6 +412,14 @@ export class PromptBox {
     this.place();
   }
 
+  /**
+   * Move the highlight without rebuilding the rows.
+   *
+   * Re-rendering here is what broke both arrow keys and clicks: the rebuilt row
+   * under the pointer immediately fired mouseenter and stole the selection
+   * back, and a row replaced between pointerdown and click never fired click at
+   * all.
+   */
   highlight(index, { scroll = false } = {}) {
     if (!this.rows?.length) return;
     this.active = index;
@@ -414,10 +436,13 @@ export class PromptBox {
     const option = this.flat?.[index];
     if (!option) return;
     if (option.kind === "attached" || option.kind === "pool") {
+      // Both already have a handle; for a pool asset the chip *is* the
+      // attachment — the citation carries it into this generation at queue time.
       this.closeMenu();
       this.insertChip(option.handle);
       return;
     }
+    // A library file has no handle yet: attaching it is what creates one.
     const handle = this.hooks.onAttach(option.row);
     this.closeMenu();
     if (handle) this.insertChip(handle);
