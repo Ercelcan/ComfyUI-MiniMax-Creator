@@ -1,106 +1,155 @@
-"""What a typed output prefix is allowed to be.
+```
 
-Runs standalone — `python tests/test_outputs.py` — with no torch and no ComfyUI,
-because `outputs.py` is deliberately free of both: it decides what a prefix may
-say *before* the render starts, which is the whole point of it not living inside
-the save node.
+---
 
-The cases that matter are the refusals. `get_save_image_path` would catch a
-traversal on its own, but only after a clip has been sampled, and it reports it
-as a stack trace against a node nobody put on the canvas.
-"""
+### `js/minimax_creator/styles/editor.js`
 
-import importlib.util
-import os
-import sys
+```javascript
+export const css = `
+.mmc-root svg, .mmc-overlay svg, .mmc-pop svg {
+  fill: none; stroke: currentColor; stroke-width: 1.6;
+  stroke-linecap: round; stroke-linejoin: round;
+}
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+.mmc-rail { display: flex; gap: 10px 24px; flex-wrap: wrap; justify-content: space-between; }
+.mmc-rail-group { display: flex; gap: 10px; flex-wrap: wrap; }
+.mmc-rail-group:last-child { margin-left: auto; }
+.mmc-tool {
+  display: flex; flex-direction: column; align-items: center; gap: 6px;
+  background: none; border: 0; padding: 0; cursor: pointer;
+  color: var(--mmc-dim); font-size: 12px; font-family: inherit;
+}
+.mmc-tool-icon {
+  width: 56px; height: 56px; border-radius: 14px;
+  background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  display: flex; align-items: center; justify-content: center;
+  transition: background .12s ease;
+}
+.mmc-tool:hover:not(:disabled) .mmc-tool-icon { background: var(--mmc-surface-3); }
+.mmc-tool:hover:not(:disabled) { color: var(--mmc-text); }
+.mmc-tool:disabled { cursor: not-allowed; color: var(--mmc-off); }
+.mmc-tool:disabled .mmc-tool-icon { opacity: .45; }
+.mmc-tool svg { width: 22px; height: 22px; stroke: currentColor; fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mmc-tool.active .mmc-tool-icon { background: var(--mmc-surface-3); border-color: var(--mmc-accent); color: var(--mmc-accent); }
+.mmc-tool.active { color: var(--mmc-accent); }
 
-spec = importlib.util.spec_from_file_location("mmc_outputs", os.path.join(ROOT, "outputs.py"))
-outputs = importlib.util.module_from_spec(spec)
-spec.loader.exec_module(outputs)
+.mmc-assets { display: flex; gap: 8px; flex-wrap: wrap; }
+.mmc-asset {
+  display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px;
+  background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  border-radius: 10px; font-size: 12px;
+}
+.mmc-asset-thumb {
+  width: 30px; height: 30px; border-radius: 7px; object-fit: cover;
+  background: var(--mmc-surface-3); display: flex; align-items: center; justify-content: center;
+  color: var(--mmc-dim); flex: none;
+  box-shadow: 0 0 0 2px var(--tag, transparent);
+}
+.mmc-asset-handle { color: var(--tag, var(--mmc-accent)); font-weight: 500; }
+.mmc-asset-role { color: var(--mmc-dim); }
+.mmc-asset-x {
+  background: none; border: 0; color: var(--mmc-off); cursor: pointer;
+  font-size: 15px; line-height: 1; padding: 2px 3px; font-family: inherit;
+}
+.mmc-asset-x:hover { color: var(--mmc-text); }
+.mmc-asset.idle { opacity: .5; }
+.mmc-asset.idle .mmc-asset-handle { color: var(--mmc-dim); }
+.mmc-lora-block { display: flex; flex-direction: column; gap: 6px; }
+.mmc-note {
+  display: flex; gap: 8px; font-size: 11px; color: var(--mmc-dim); line-height: 1.4;
+}
+.mmc-note-key {
+  color: var(--mmc-off); letter-spacing: .06em; text-transform: uppercase;
+  font-size: 10px; padding-top: 1px; flex: none;
+}
 
-FAILURES = []
+.mmc-panel {
+  background: var(--mmc-surface); border: 1px solid var(--mmc-line);
+  border-radius: 20px; padding: 14px; display: flex; flex-direction: column;
+  gap: 12px; flex: 1; min-height: 0;
+}
+.mmc-prompt {
+  flex: 1; min-height: 56px; background: none; border: 0; outline: none;
+  color: var(--mmc-text); font-family: inherit; font-size: 15px; line-height: 1.6;
+  white-space: pre-wrap; word-break: break-word; overflow-y: auto;
+}
+.mmc-prompt:empty::before {
+  content: attr(data-placeholder); color: #6a6a6a; pointer-events: none;
+}
+.mmc-prompt.superseded { opacity: .42; }
+.mmc-prompt.superseded:focus { opacity: .72; }
+.mmc-ref {
+  display: inline-block; padding: 1px 7px; margin: 0 1px; border-radius: 7px;
+  background: color-mix(in srgb, var(--tag, var(--mmc-accent)) 14%, transparent);
+  color: var(--tag, var(--mmc-accent));
+  font-size: .92em; white-space: nowrap; user-select: all;
+}
 
+.mmc-mention {
+  position: fixed; z-index: 1350; width: 330px; max-height: 300px; overflow-y: auto;
+  background: #212121; border: 1px solid var(--mmc-line); border-radius: 14px;
+  padding: 6px; box-shadow: 0 20px 50px rgba(0,0,0,.65);
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+}
+.mmc-mention-head {
+  color: #7d7d7d; font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
+  padding: 10px 10px 6px;
+}
+.mmc-mention-row {
+  display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0;
+  padding: 7px 8px; background: none; border: 1px solid transparent;
+  border-radius: 10px; font-family: inherit; text-align: left; cursor: pointer;
+  color: #ededed; overflow: hidden;
+}
+.mmc-mention-row[aria-selected="true"] { background: #2e2e2e; border-color: rgba(255,255,255,.13); }
+.mmc-mention-thumb {
+  width: 30px; height: 30px; border-radius: 7px; object-fit: cover; flex: none;
+  background: #333; display: flex; align-items: center; justify-content: center;
+  color: #8b8b8b; font-size: 13px;
+}
+.mmc-mention-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+.mmc-mention-handle {
+  color: var(--tag, var(--mmc-accent)); font-size: 14px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mmc-mention-sub {
+  color: #7d7d7d; font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.mmc-mention-empty { color: #7d7d7d; font-size: 13px; padding: 14px 10px; }
 
-def check(label, got, want):
-    if got != want:
-        FAILURES.append(f"{label}: got {got!r}, want {want!r}")
-
-
-def refuses(label, raw, fragment):
-    try:
-        outputs.clean(raw, outputs.VIDEO_PREFIX)
-    except outputs.PrefixError as exc:
-        if fragment not in str(exc):
-            FAILURES.append(f"{label}: refused, but said {str(exc)!r} (wanted {fragment!r})")
-        return
-    FAILURES.append(f"{label}: was accepted")
-
-
-D = outputs.VIDEO_PREFIX
-
-# ---- the ordinary cases -----------------------------------------------------
-
-check("nothing typed means the default", outputs.clean("", D), D)
-check("None means the default", outputs.clean(None, D), D)
-check("whitespace only means the default", outputs.clean("   ", D), D)
-check("a plain name is kept", outputs.clean("H3", D), "H3")
-check("folders are kept", outputs.clean("my-project/scene-a/take", D), "my-project/scene-a/take")
-check("surrounding whitespace is trimmed", outputs.clean("  shots/a  ", D), "shots/a")
-
-# A Windows user typing a Windows path should get a working prefix, not a
-# lecture: the separator is the only thing wrong with it and it means the same.
-check("backslashes are separators", outputs.clean("my-project\\take", D), "my-project/take")
-
-# A trailing slash is a folder, not a mistake — it is what anyone types when
-# they mean "in here, named the usual thing".
-check("a trailing slash keeps the default's stem", outputs.clean("my-project/", D), "my-project/H3")
-check("...including a bare one", outputs.clean("shots/", "minimax/stills/prestage"),
-      "shots/prestage")
-
-# Tokens are core's and pass through untouched — including in a folder, which is
-# where a date token is actually useful.
-check("date tokens survive", outputs.clean("minimax/%year%-%month%-%day%/H3", D),
-      "minimax/%year%-%month%-%day%/H3")
-check("size tokens survive", outputs.clean("H3_%width%x%height%", D), "H3_%width%x%height%")
-
-# ---- the refusals -----------------------------------------------------------
-
-refuses("a parent traversal", "../../etc/H3", "'.' and '..'")
-refuses("a traversal in the middle", "minimax/../../H3", "'.' and '..'")
-refuses("a posix absolute path", "/var/renders/H3", "absolute paths")
-refuses("a windows absolute path", "C:/renders/H3", "absolute paths")
-# A UNC path normalizes to a leading "//" and is caught as the absolute path it
-# is, which is the message worth showing — it names the flag that does work.
-refuses("a UNC path", "\\\\server\\share\\H3", "absolute paths")
-refuses("a hidden folder", ".secret/H3", "cannot start with a dot")
-refuses("a doubled separator", "minimax//H3", "empty folder name")
-refuses("a character Windows cannot write", "minimax/a:b/H3", '< > : " | ? *')
-refuses("a name ending in a space", "minimax /H3", "space or a dot")
-refuses("a name ending in a dot", "minimax./H3", "space or a dot")
-
-# The refusal has to say what to do instead, because "use --output-directory" is
-# genuinely the answer for the person who typed an absolute path.
-try:
-    outputs.clean("/mnt/big/renders", D)
-except outputs.PrefixError as exc:
-    check("the absolute-path refusal points at the flag that does work",
-          "--output-directory" in str(exc), True)
-
-# ---- the two blob accessors -------------------------------------------------
-
-check("a blob with no key gets the video default", outputs.video({}), outputs.VIDEO_PREFIX)
-check("a blob with no key gets the image default", outputs.image({}), outputs.IMAGE_PREFIX)
-check("a blob's key is used", outputs.video({"output_prefix": "shots/a"}), "shots/a")
-# Stills and clips default apart, which is what pre-sorts the gallery into two
-# shelves with no special case in the picker.
-check("the two defaults are different folders",
-      outputs.VIDEO_PREFIX.rsplit("/", 1)[0] != outputs.IMAGE_PREFIX.rsplit("/", 1)[0], True)
-
-if FAILURES:
-    print(f"{len(FAILURES)} failure(s):")
-    for failure in FAILURES:
-        print("  -", failure)
-    sys.exit(1)
-print("all output-prefix tests passed")
+.mmc-pills { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+.mmc-pill {
+  display: flex; align-items: center; gap: 7px; height: 38px; padding: 0 14px;
+  border-radius: 19px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  color: var(--mmc-text); font-size: 13px; font-family: inherit; cursor: pointer;
+  white-space: nowrap; transition: background .12s ease;
+}
+.mmc-pill:hover:not(:disabled) { background: var(--mmc-surface-3); }
+.mmc-pill:disabled { cursor: not-allowed; color: var(--mmc-off); }
+.mmc-pill.on { border-color: var(--mmc-accent); color: var(--mmc-accent); }
+.mmc-pill svg { width: 16px; height: 16px; stroke: currentColor; fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mmc-pill-sub { color: var(--mmc-dim); font-size: 11px; }
+.mmc-pill-group { gap: 0; padding: 0 6px; }
+.mmc-step {
+  background: none; border: 0; color: var(--mmc-text); cursor: pointer;
+  font-size: 16px; width: 26px; height: 36px; font-family: inherit;
+}
+.mmc-step:disabled { color: var(--mmc-off); cursor: not-allowed; }
+.mmc-mode {
+  margin-left: auto; font-size: 11px; letter-spacing: .04em; color: var(--mmc-dim);
+  display: flex; align-items: center; gap: 6px;
+  background: none; border: 1px solid transparent; border-radius: 13px;
+  padding: 5px 10px; font-family: inherit;
+}
+button.mmc-mode { cursor: pointer; }
+button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mmc-line); }
+.mmc-mode.pinned { border-color: var(--mmc-line); background: var(--mmc-surface-2); }
+.mmc-mode b { color: var(--mmc-accent); font-weight: 600; }
+.mmc-pin {
+  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  color: var(--mmc-accent); border: 1px solid currentColor; border-radius: 8px;
+  padding: 0 5px; opacity: .8;
+}
+.mmc-warn { color: #e0743c; font-size: 12px; }

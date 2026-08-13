@@ -544,20 +544,6 @@ class MiniMaxH3TimelineJoin(io.ComfyNode):
 
 
 class MiniMaxH3Save(io.ComfyNode):
-    """The last node of every render: picture and sound, muxed and written out.
-
-    Ours rather than core's `CreateVideo` + `SaveVideo` for one mechanical
-    reason: `SaveVideo`'s `codec` is a `DynamicCombo`, whose value the frontend
-    assembles out of a dynamic schema. A graph built in Python has no frontend,
-    so there is nothing to assemble it and the input arrives as a bare string the
-    node then subscripts. This holds the two tensors already and writing the file
-    is core's `VideoFromComponents` either way.
-
-    It is an output node, and `render.emit_tail` stamps the calling node's id on
-    it, so what it saves is reported against the Creator or Timeline the user is
-    looking at rather than against an expanded node on nobody's canvas.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -572,11 +558,6 @@ class MiniMaxH3Save(io.ComfyNode):
                 io.Audio.Input("audio"),
                 io.Float.Input("fps", default=float(canvas.FPS), min=1.0, max=120.0),
                 io.String.Input("filename_prefix", default="minimax/H3"),
-                # An input rather than a read of `settings.py` here, so that
-                # changing the quality and re-queueing actually re-writes the
-                # file: an output node whose inputs are all unchanged is a
-                # cache hit, and the render would keep the quality it had.
-                # `render.emit_tail` is the one place that reads the setting.
                 io.Int.Input("crf", default=settings.DEFAULT_CRF,
                              min=settings.MIN_CRF, max=settings.MAX_CRF),
             ],
@@ -599,9 +580,6 @@ class MiniMaxH3Save(io.ComfyNode):
         directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory(), width, height)
 
-        # The workflow, so a render dropped back onto the canvas rebuilds the node
-        # that made it. Same two hidden fields core's savers write, and skipped
-        # under --disable-metadata for the same reason.
         metadata = None
         if not args.disable_metadata:
             collected = dict(cls.hidden.extra_pnginfo or {})
@@ -612,11 +590,6 @@ class MiniMaxH3Save(io.ComfyNode):
         video = InputImpl.VideoFromComponents(Types.VideoComponents(
             images=images, audio=audio, frame_rate=Fraction(round(float(fps)))))
         filename = f"{name}_{counter:05}_.mp4"
-        # `crf` reached core's video writer in ComfyUI 0.29. On anything older
-        # the argument does not exist, and dropping it would mean a file that
-        # does not have the quality the settings page says is set — so it is
-        # only dropped when it is the value libx264 would have chosen anyway,
-        # and refused loudly otherwise.
         quality = {"crf": float(crf)}
         if "crf" not in inspect.signature(video.save_to).parameters:
             if int(crf) != settings.DEFAULT_CRF:
@@ -631,15 +604,12 @@ class MiniMaxH3Save(io.ComfyNode):
                       metadata=metadata,
                       **quality)
 
-        # Not `ui.PreviewVideo`: that reports under "images", the key the stock
-        # frontend preview keys on — and with the caller's id stamped on this
-        # node, that stock player lands on the canvas node right under the
-        # stage already showing the same clip. A key core does not know keeps
-        # the report and loses the widget; stage.js reads it by name.
-        return io.NodeOutput(ui={"mmc_video": [
-            {"filename": filename, "subfolder": subfolder, "type": "output"},
-        ]})
-
+        output_item = {"filename": filename, "subfolder": subfolder, "type": "output"}
+        return io.NodeOutput(ui={
+            "mmc_video": [output_item],
+            "videos": [output_item],
+            "gifs": [output_item],
+        })
 
 # Registered by `creator_node.MiniMaxCreatorExtension` — one extension for the
 # package, so there is one place that says what this node pack contains.

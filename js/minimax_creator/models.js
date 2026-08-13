@@ -1,18 +1,3 @@
-// The weights control: one pill, one popover, six files.
-//
-// These were five sockets until the node stopped having any. They are
-// configuration rather than composition — you set them once when you install the
-// checkpoints and then never again — so they get one pill at the end of the
-// sampler row rather than a row of their own, and the popover is where the six
-// choices live.
-//
-// The pill is the only thing that changes shape: with everything picked it says
-// what precision it is running at, and with a required file missing it says so
-// in the same warm orange the resolution slider uses past 768. That is not a
-// decoration — `models.check` refuses the render on exactly this list, and the
-// difference between finding out here and finding out at queue time is a minute
-// of your life.
-
 import { el, icon, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover } from "./pills.js";
@@ -20,36 +5,23 @@ import { listModels } from "./api.js";
 import * as S from "./state.js";
 import { turboRow, loadLoraNames } from "./turbo.js";
 
-// The two "not a filename" entries in the choice lists. Spelled out rather than
-// left as an empty row, because a list whose first entry is blank reads as a
-// rendering bug.
 const NONE = "— none —";
 const AUTO = "— auto —";
 
-/** Said as an instruction rather than as a name: "ref2va" is the field it
- *  writes, and "always Ref2VA" is what choosing it does. */
 export const ROUTE_LABEL = {
   auto: "auto — follow the mode",
   fl2va: "always FL2VA",
   ref2va: "always Ref2VA",
 };
 
-// The listing, shared by every node body on the canvas. Fetched once and handed
-// out synchronously afterwards, because the pill is re-rendered on every commit
-// and an await in that path would make the row flicker.
 let catalog = null;
 
-/** Load the catalog if it is not already here. `onReady` runs only if this call
- *  is the one that fetched it, so a caller can re-render without every node on
- *  the canvas re-rendering for the same reason. */
 export function loadCatalog(onReady) {
   if (catalog) return catalog;
   listModels().then((body) => {
     catalog = body;
     onReady?.(body);
   }).catch(() => {
-    // A failed listing is an empty one: the pill says the folders are empty
-    // rather than the node breaking over a route that did not answer.
     catalog = { files: {}, dtypes: S.MODEL_DTYPES, preview_override: false };
     onReady?.(catalog);
   });
@@ -58,40 +30,15 @@ export function loadCatalog(onReady) {
 
 export const catalogFiles = () => catalog?.files ?? {};
 
-/** The raw per-folder listings (`diffusion_models`, `text_encoders`, `vae`) —
- *  what the PreStage's weights control browses, since its fields do not map
- *  onto the video node's. */
 export const catalogByFolder = () => catalog?.by_folder ?? {};
 
-/** Every device ComfyUI-MultiGPU offers, or `[]` when it is not installed —
- *  which is what the device control keys off. No pack, no control, rather than
- *  a control offering one choice that does nothing. */
 export const catalogDevices = () => catalog?.devices ?? [];
 
-/** Whether KJNodes' preview override is installed. The preview decoder is the
- *  one field that needs somebody else's pack, and a control that cannot do
- *  anything should say why rather than look broken. */
 export const hasPreviewOverride = () => catalog?.preview_override !== false;
 
-/**
- * The pill. Reports first and configures second, which is the right way round
- * for something you look at far more often than you change.
- *
- * @param {object} spec
- * @param {object} spec.models       the state's weights block, mutated in place
- * @param {string[]} spec.checkpoints the checkpoints the *modes* derive; a
- *   forced route collapses this to one, so it is passed raw and resolved here
- * @param {() => void} spec.onChange after a pick
- * @param {object} [spec.turbo]      `{container, widgetIO}` — the state or
- *   timeline that owns the turbo switch, and the widget IO the switch writes
- *   through when its file is swapped while engaged. Absent, no turbo row.
- */
 export function weightsPill({ models, checkpoints, onChange, turbo }) {
   const routed = S.routedCheckpoints(models, checkpoints);
   const missing = S.missingModels(models, S.requiredModels(routed));
-  // What the pill reports when everything is picked, in order of how much it
-  // changes about the run: which cards it is spread over first, then precision,
-  // then nothing worth saying.
   const spread = new Set(S.DEVICE_FIELDS.map((f) => models.devices[f]).filter(Boolean));
   const settled = models.route !== "auto"
     ? t("weights · always {checkpoint}", { checkpoint: S.CHECKPOINT_LABEL[models.route] })
@@ -117,29 +64,16 @@ export function weightsPill({ models, checkpoints, onChange, turbo }) {
   }, [icon("weights", 16), el("span", { text: label })]);
 }
 
-/**
- * Six rows, each opening the file list for its folder.
- *
- * Rebuilt in place after every pick rather than closed: setting up a machine
- * means setting all six, and closing the popover between each one would make
- * that six round trips through a pill.
- */
 export function openWeightsPopover(anchor, { models, checkpoints, onChange, turbo }) {
   const pop = el("div", { class: "mmc-pop mmc-weights-pop" });
   const body = el("div");
 
-  // Recomputed inside `render` rather than captured: forcing a route changes
-  // which of the two checkpoints is required, and that has to show on the row
-  // the moment the route above it is picked.
   const required = () => new Set(S.requiredModels(S.routedCheckpoints(models, checkpoints)));
 
   const render = () => {
     const files = catalogFiles();
     const devices = catalogDevices();
 
-    // Leads the popover, because it decides which of the two checkpoints below
-    // it are used at all. Forced, the other one is never loaded and never
-    // required — which is also why `required` is recomputed on every pick.
     const routeRow = el("div", { class: "mmc-weight-row" }, [
       el("span", { class: "mmc-weight-name", text: t("Route") }),
       el("button", {
@@ -165,15 +99,6 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
       }),
     ]);
 
-    /**
-     * Where one field's weights are loaded. Only drawn when ComfyUI-MultiGPU is
-     * installed: with one card there is nothing to choose, and a control whose
-     * only option is the default is a control that lies about what it does.
-     *
-     * A button of its own rather than part of the row, because the row is
-     * already a button and nesting two is invalid — and because these are two
-     * different questions about the same file.
-     */
     const devicePill = (field) => {
       if (!devices.length || !S.DEVICE_FIELDS.includes(field)) return null;
       const pinned = models.devices[field] || "";
@@ -202,15 +127,10 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
     const rows = S.MODEL_FIELDS.map((field) => {
       const chosen = models[field];
       const options = files[field] ?? [];
-      // The preview is the one field that also needs a pack. Say which half is
-      // absent — "no files" and "no node to read them with" have different fixes.
       const unavailable = field === "preview" && !hasPreviewOverride();
 
       return el("div", {
         class: `mmc-weight-row${needed.has(field) && !chosen ? " missing" : ""}`
-             // A checkpoint the route has taken out of play: still listed, so
-             // the setting is not thrown away, but visibly out of the run — the
-             // same treatment an idle LoRA gets.
              + (S.CHECKPOINTS.includes(field) && !needed.has(field) ? " idle" : ""),
       }, [
         el("span", { class: "mmc-weight-name", text: t(S.MODEL_LABEL[field]) }),
@@ -220,14 +140,9 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
             ? t("Needs KJNodes' Model Preview Override. Without it the live preview "
               + "falls back to latent2rgb, and the render is unaffected either way.")
             : t(S.MODEL_HINT[field]),
-          // The tail of a folder-qualified name is the part that identifies it;
-          // the button ellipsises from the left so that is what survives.
           text: chosen || (unavailable ? t("unavailable") : t("not set")),
           onclick: (event) => openChoicePopover(event.currentTarget, {
             title: t(S.MODEL_LABEL[field]),
-            // "none" is a real answer for the optional fields and for a
-            // checkpoint this graph does not route to, so it is offered rather
-            // than only reachable by clearing the blob by hand.
             options: [t(NONE), ...options],
             value: chosen || t(NONE),
             onPick: (picked) => {
@@ -241,8 +156,6 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
       ]);
     });
 
-    // One precision for both checkpoints — they are the same architecture, and
-    // two controls would imply a choice nobody has.
     rows.push(el("div", { class: "mmc-weight-row" }, [
       el("span", { class: "mmc-weight-name", text: t("Precision") }),
       el("button", {
@@ -261,10 +174,8 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
       }),
     ]));
 
-    // The turbo switch's file, under the files it runs beside. Configuration
-    // like everything above it — the throwing happens on the sampler row.
     if (turbo) {
-      rows.push(turboRow({
+      rows.push(...turboRow({
         container: turbo.container,
         widgetIO: turbo.widgetIO,
         onChange: () => { onChange(); render(); },
@@ -280,10 +191,6 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
   placeNear(pop, anchor);
   dismissable(pop);
 
-  // The catalog may not have arrived yet on a freshly loaded page. Re-render
-  // rather than block: the rows are meaningful without it — they say what is
-  // picked — and the file lists fill in behind them. The LoRA names likewise,
-  // fetched here rather than at load because only this popover wants them.
   if (!catalog) loadCatalog(() => pop.isConnected && render());
   if (turbo) loadLoraNames(() => pop.isConnected && render());
 }

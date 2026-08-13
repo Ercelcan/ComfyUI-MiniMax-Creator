@@ -187,16 +187,6 @@ class MiniMaxH3PreStage(io.ComfyNode):
 
 
 class MiniMaxH3SaveImage(io.ComfyNode):
-    """The last node of an image render: the still, written under output/.
-
-    Core's `SaveImage` would write the same file, but it reports under
-    "images", the key the stock frontend preview widget keys on — and with the
-    PreStage's id stamped on this node, that widget would land on the canvas
-    right under the stage card already showing the same picture. A key core
-    does not know keeps the report and loses the widget; stage.js reads it by
-    name, exactly as it reads `mmc_video`.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -229,8 +219,6 @@ class MiniMaxH3SaveImage(io.ComfyNode):
         directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory(), width, height)
 
-        # The workflow, so a still dropped back onto the canvas rebuilds the
-        # node that made it — the same two hidden fields core's savers write.
         metadata = None
         if not args.disable_metadata:
             metadata = PngInfo()
@@ -248,7 +236,10 @@ class MiniMaxH3SaveImage(io.ComfyNode):
             results.append({"filename": filename, "subfolder": subfolder, "type": "output"})
             counter += 1
 
-        return io.NodeOutput(ui={"mmc_image": results})
+        return io.NodeOutput(ui={
+            "mmc_image": results,
+            "images": results,
+        })
 
 
 class MiniMaxH3StillLatent(io.ComfyNode):

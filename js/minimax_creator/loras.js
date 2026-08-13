@@ -604,7 +604,12 @@ class LoraManager {
   }
 
   close() {
-    // The observer holds strong references to every card it still watches.
+    this.cards.forEach((card) => {
+      const videos = card.querySelectorAll("video");
+      videos.forEach((v) => {
+        try { v.pause(); v.muted = true; v.currentTime = 0; v.removeAttribute("src"); v.load(); } catch {}
+      });
+    });
     this.stillWatch.disconnect();
     this.unmount();
     this.resolve();

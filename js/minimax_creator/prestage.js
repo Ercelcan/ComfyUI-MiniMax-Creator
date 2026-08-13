@@ -1,24 +1,3 @@
-// The PreStage node: stills for the pipeline, made on the left.
-//
-// Two classes. `PreStageEditor` is the body for the two *image* architectures,
-// Krea 2 and Ideogram 4 — same skeleton as CreatorEditor (rail, chips, panel,
-// pills, sampler row) because it is driven the same way, with a plain textarea
-// for a prompt because an image prompt references nothing by handle: the
-// Qwen-edit encoder labels the style references itself, so the mention
-// machinery would be an empty menu.
-//
-// `PreStageBody` below owns the node, and on the third architecture it mounts
-// `CreatorEditor` instead — MiniMax H3's still is a video generation with one
-// latent frame decoded, so the body that drives a shot drives it too, on a
-// request in the same shape. Its docstring says what that buys.
-//
-// The model pill is the one control the video nodes do not have, and it belongs
-// to the body rather than to either editor: it is the control that swaps them.
-// Krea 2 and Ideogram 4 want different sampler rows — RAW runs 52 steps at cfg
-// 3.5 where Ideogram runs its preset's steps at cfg 7 on its own schedule — so
-// switching the arch rewrites the row, and the turbo pill exists only on Krea
-// (Turbo *is* a checkpoint there; Ideogram's speed axis is its preset table).
-
 import { el, icon, ICONS, svg, dismissable, placeNear } from "./dom.js";
 import { openPicker } from "./picker.js";
 import { openLoras } from "./loras.js";
@@ -31,6 +10,9 @@ import { loadCatalog, catalogByFolder } from "./models.js";
 import { viewUrl } from "./api.js";
 import { t } from "./i18n.js";
 import * as S from "./state.js";
+import { setupDragAndDrop } from "./media_drop.js";
+import { app } from "../../../scripts/app.js";
+
 
 const QUALITY_TITLE = {
   quality: "48 steps on the tight schedule — the hosted service's 'Quality' tier.",
@@ -45,14 +27,6 @@ const TURBO_TITLE = {
 };
 
 export class PreStageEditor {
-  /**
-   * @param {object} options
-   * @param {object} options.state    a parsePreStage state, mutated in place
-   * @param {() => void} options.onCommit
-   * @param {object} options.samplingWidgets  the node's hidden sampler widgets
-   * @param {() => void} options.onWidgetChange
-   * @param {() => string|number} options.nodeId
-   */
   constructor({ state, onCommit, samplingWidgets, onWidgetChange, nodeId,
                 stage = null, archPill = null }) {
     this.state = state;
@@ -60,13 +34,9 @@ export class PreStageEditor {
     this.samplingWidgets = samplingWidgets;
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
-    // Both supplied by `PreStageBody`, which outlives this editor: it rebuilds
-    // the body when the architecture changes, and the stage was floated beside
-    // the node once. The arch pill is the control that does the rebuilding, so
-    // it cannot belong to the thing being rebuilt.
     this.stage = stage;
     this.archPill = archPill;
-    this.sizes = new Map();   // filename -> {width,height}, for the adaptive canvas readout
+    this.sizes = new Map();
 
     this.promptBox = el("textarea", {
       class: "mmc-prestage-prompt",
@@ -75,8 +45,12 @@ export class PreStageEditor {
         this.state.prompt = this.promptBox.value;
         this.onCommit?.();
       },
-      onpointerdown: (event) => event.stopPropagation(),
+      onkeydown: (event) => event.stopPropagation(),
       onkeyup: (event) => event.stopPropagation(),
+      onpaste: (event) => event.stopPropagation(),
+      oncopy: (event) => event.stopPropagation(),
+      oncut: (event) => event.stopPropagation(),
+      onpointerdown: (event) => event.stopPropagation(),
     });
 
     this.railHost = el("div");
@@ -86,14 +60,17 @@ export class PreStageEditor {
     this.noticeHost = el("div");
     this.samplingHost = el("div");
 
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [this.promptBox]);
+
     this.root = el("div", { class: "mmc-root mmc-prestage" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      el("div", { class: "mmc-panel" }, [this.promptBox, this.pillsHost]),
+      el("div", { class: "mmc-panel" }, [this.promptScroll, this.pillsHost]),
       this.noticeHost,
       this.samplingHost,
     ]);
+    setupDragAndDrop(this.root, this);
 
     loadCatalog(() => this.adoptWeights());
     this.promptBox.value = this.state.prompt ?? "";
@@ -101,9 +78,7 @@ export class PreStageEditor {
     this.probeInit();
   }
 
-  destroy() {
-    // The stage is the body's — see the constructor.
-  }
+  destroy() {}
 
   adoptWeights() {
     if (S.guessPreStageModels(this.state.models, catalogByFolder())) this.commit();
@@ -136,10 +111,6 @@ export class PreStageEditor {
     this.probeInit();
   }
 
-  // ---- init image and style references --------------------------------------
-
-  /** Pick the init image — the still this render restyles rather than starts
-   *  from nothing. From the picker, or grabbed off a video's playhead. */
   async setInit(fromVideo = false) {
     let path = null;
     if (fromVideo) {
@@ -220,8 +191,6 @@ export class PreStageEditor {
     this.noticeTimer = setTimeout(() => { this.notice = null; this.render(); }, 6000);
   }
 
-  // ---- render ----------------------------------------------------------------
-
   render() {
     const state = this.state;
     this.railHost.replaceChildren(this.renderRail());
@@ -250,21 +219,40 @@ export class PreStageEditor {
     }, [el("span", { class: "mmc-tool-icon" }, [icon(iconName)]), el("span", { text: label })]);
 
     return el("div", { class: "mmc-rail" }, [
-      tool(t("Init image"), "frameIn",
-           t("Start from an image instead of noise — img2img. The strength pill says how much of it survives."),
-           () => this.setInit(false)),
-      tool(t("Style refs"), "image",
-           this.state.arch === "ideogram4"
-             ? t("Ideogram 4.0 has no local reference conditioning — style references are a Krea 2 feature.")
-             : t("Up to three images whose look this render should carry. Encoded through the Qwen edit "
-               + "path Krea 2 was post-trained against; the krea2_style_reference LoRA strengthens it."),
-           () => this.addRefs(false)),
-      tool(t("From video"), "video",
-           t("Pull a single frame off a video's playhead — as the init image, saved as a PNG in the input folder."),
-           () => this.setInit(true)),
-      tool(t("Add LoRA"), "effect",
-           t("Manage the LoRAs patched onto the image model. Krea LoRAs train on RAW and apply on Turbo too."),
-           () => this.manageLoras()),
+      el("div", { class: "mmc-rail-group" }, [
+        tool(t("Init image"), "frameIn",
+             t("Start from an image instead of noise — img2img. The strength pill says how much of it survives."),
+             () => this.setInit(false)),
+        tool(t("Style refs"), "image",
+             this.state.arch === "ideogram4"
+               ? t("Ideogram 4.0 has no local reference conditioning — style references are a Krea 2 feature.")
+               : t("Up to three images whose look this render should carry. Encoded through the Qwen edit "
+                 + "path Krea 2 was post-trained against; the krea2_style_reference LoRA strengthens it."),
+             () => this.addRefs(false)),
+        tool(t("From video"), "video",
+             t("Pull a single frame off a video's playhead — as the init image, saved as a PNG in the input folder."),
+             () => this.setInit(true)),
+        tool(t("Add LoRA"), "effect",
+             t("Manage the LoRAs patched onto the image model. Krea LoRAs train on RAW and apply on Turbo too."),
+             () => this.manageLoras()),
+      ]),
+      el("div", { class: "mmc-rail-group" }, [
+        el("button", {
+          class: "mmc-tool mmc-tool-primary",
+          title: t("Queue prompt in ComfyUI to generate this image"),
+          onclick: () => {
+            try { app.queuePrompt(0); } catch {}
+          },
+        }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
+        el("button", {
+          class: `mmc-tool${this.stage?.showing() ? " active" : ""}`,
+          title: t("Open or close the satellite preview box"),
+          onclick: () => {
+            this.stage?.toggleOpen();
+            this.render();
+          },
+        }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Preview") })]),
+      ]),
     ]);
   }
 
@@ -276,8 +264,7 @@ export class PreStageEditor {
       el("button", {
         class: "mmc-ghost",
         style: { fontSize: "11px" },
-        title: t("How much of the render is new. 1.00 ignores the init entirely; low values keep its "
-               + "composition and only restyle. Click to step down, right-click to step up."),
+        title: t("How much of the render is new. 1.00 ignores the init entirely; low values keep its composition and only restyle. Click to step down, right-click to step up."),
         text: init.denoise.toFixed(2),
         onclick: () => {
           init.denoise = Math.max(S.PRESTAGE_MIN_DENOISE, Math.round((init.denoise - 0.05) * 100) / 100);
@@ -375,8 +362,6 @@ export class PreStageEditor {
     const pills = [archPill, aspectPill, resPill];
 
     if (state.arch === "ideogram4") {
-      // Ideogram's speed axis. The preset owns the schedule shape as well as
-      // the step count, which is why this is a preset pill and not a slider.
       pills.push(el("button", {
         class: "mmc-pill",
         title: t(QUALITY_TITLE[state.quality]),
@@ -406,12 +391,6 @@ export class PreStageEditor {
     return el("div", { class: "mmc-pills" }, pills);
   }
 
-  // ---- turbo (Krea 2) --------------------------------------------------------
-
-  /** The turbo pill, under the H3 contract: save the row once per throw, put it
-   *  back exactly on release, own no second stack. What it throws here is a
-   *  *checkpoint* — Krea 2 Turbo is a distillation of RAW, not a LoRA — so the
-   *  stack is untouched either way (Krea LoRAs train on RAW, apply on Turbo). */
   renderTurbo() {
     const state = this.state;
     const turbo = state.turbo;
@@ -474,8 +453,6 @@ export class PreStageEditor {
 
     return pills;
   }
-
-  // ---- weights ---------------------------------------------------------------
 
   renderWeightsPill() {
     const missing = S.missingPreStageModels(this.state);
@@ -560,8 +537,6 @@ export class PreStageEditor {
     loadCatalog(() => pop.isConnected && render());
   }
 
-  // ---- popovers --------------------------------------------------------------
-
   openAspect(anchor) {
     const pop = el("div", { class: "mmc-pop" }, [el("div", { class: "mmc-pop-title", text: t("Aspect Ratio") })]);
     for (const [label, ratio] of S.PRESTAGE_ASPECTS) {
@@ -607,24 +582,6 @@ export class PreStageEditor {
   }
 }
 
-/**
- * The PreStage node's body: the blob, the stage, and whichever editor the
- * architecture calls for.
- *
- * Two of the three architectures are image models and are driven by the editor
- * above. The third is MiniMax H3, whose still is a *video generation* with one
- * latent frame decoded — so it is driven by `CreatorEditor`, the same body the
- * Creator node and every timeline segment use, on a request in the same shape.
- * That is not a saving of a few lines: the reference pipeline, the keyframe
- * pair, the slot arithmetic, the @-mention prompt, the routing badge and the
- * weights popover are one implementation, and a still gets all of them by
- * being what it is rather than by having them re-described.
- *
- * What this owns is what has to outlive a switch between the two: the blob, the
- * stage floated beside the node (the satellite bound it once), and the arch
- * pill itself — the control that does the switching cannot belong to the thing
- * being switched.
- */
 export class PreStageBody {
   constructor({ state, onCommit, samplingWidgets, onWidgetChange, nodeId, peer = null }) {
     this.state = state;
@@ -654,8 +611,6 @@ export class PreStageBody {
     this.editor?.render();
   }
 
-  /** A saved workflow, or a stash restored onto a freshly spawned node. The
-   *  architecture may differ from what is mounted, so this remounts. */
   setState(state) {
     this.state = state;
     this.mount();
@@ -679,14 +634,6 @@ export class PreStageBody {
     });
   }
 
-  /** The H3 branch: a Creator body on the still's own request.
-   *
-   *  Everything it is handed is what a Creator node hands it, minus three
-   *  things a still has no use for — the seconds pill (how much video gets
-   *  sampled to obtain the one frame is its own pill), the settings tool (it
-   *  holds the video rate control), and the pre-stage pill, because this *is*
-   *  the pre-stage.
-   */
   mountStill() {
     const still = this.state.minimax;
     const editor = new CreatorEditor({
@@ -697,8 +644,6 @@ export class PreStageBody {
       nodeId: this.nodeId,
       stage: this.stage,
       durationPill: false,
-      // The settings page holds the video rate control and this node writes
-      // PNGs, so it would be a button over nothing.
       settingsTool: false,
       extraPills: () => [this.renderArchPill(), ...this.renderStillPills()],
       extraTools: () => [this.renderFrameGrabTool()],
@@ -723,14 +668,6 @@ export class PreStageBody {
     };
   }
 
-  // ---- the model pill --------------------------------------------------------
-
-  /** Switch architectures. Each side keeps its own state — its files, its
-   *  canvas, its attachments — because the two have nothing in common but the
-   *  node they are on; only the prompt is carried across, since that is the
-   *  thing you were in the middle of writing. The sampler row is rewritten,
-   *  because these models run at numbers that have nothing to do with each
-   *  other and carrying the row across would be wrong on arrival. */
   setArch(arch) {
     if (arch === this.state.arch) return;
     const io = this.widgetIO();
@@ -796,10 +733,6 @@ export class PreStageBody {
     }, [icon("model", 16), el("span", { text: S.PRESTAGE_ARCH_LABEL[state.arch] })]);
   }
 
-  // ---- the H3 branch's own pills ---------------------------------------------
-
-  /** What a still costs and which frame of it is kept — the two things H3 has
-   *  that a video render does not, because a video render keeps all of them. */
   renderStillPills() {
     const still = this.state.minimax;
     const latents = S.stillLatentFrames(still.frames);
@@ -820,7 +753,6 @@ export class PreStageBody {
           const frames = S.PRESTAGE_STILL_LENGTHS.find((n) => lengthLabel(n) === picked);
           if (frames == null) return;
           still.frames = frames;
-          // A shorter clip can leave the kept frame past the end of it.
           const total = S.stillLatentFrames(still.frames);
           if (still.latent_index >= total) still.latent_index = total - 1;
           if (still.latent_index < -total) still.latent_index = 0;
@@ -842,10 +774,6 @@ export class PreStageBody {
     return [length, index];
   }
 
-  // ---- the rest of the rail --------------------------------------------------
-
-  /** Not on the Creator's rail, because the Creator has this node. Here it is
-   *  the only way to turn a moment of a clip into a keyframe. */
   renderFrameGrabTool() {
     return el("button", {
       class: "mmc-tool",
@@ -877,11 +805,6 @@ export class PreStageBody {
     this.commit();
   }
 
-  // ---- the hand-off ----------------------------------------------------------
-
-  /** The chips on the finished still: one click writes it into the peer's blob
-   *  as a start frame, end frame or reference. The annotated `[output]` path is
-   *  the same currency the gallery attach uses — one store, no copy. */
   renderResultChips(saved) {
     const target = this.peer?.();
     if (!target) return [];
@@ -893,7 +816,22 @@ export class PreStageBody {
       onpointerdown: (event) => event.stopPropagation(),
       onclick: () => target.attach(role, filename),
     });
+
+    const sendAndQueueChip = el("button", {
+      class: "mmc-stage-chip mmc-stage-send-queue",
+      text: t("⚡ Send & Queue"),
+      title: t("Attach this still as start frame and immediately queue video generation on {target}.", { target: target.label }),
+      onpointerdown: (event) => event.stopPropagation(),
+      onclick: () => {
+        target.attach("first_frame", filename);
+        try {
+          app.queuePrompt(0);
+        } catch {}
+      },
+    });
+
     return [
+      sendAndQueueChip,
       chip("first_frame", "→ start", "Use this still as the start frame"),
       chip("last_frame", "→ end", "Use this still as the end frame"),
       chip("reference", "→ ref", "Attach this still as a reference"),

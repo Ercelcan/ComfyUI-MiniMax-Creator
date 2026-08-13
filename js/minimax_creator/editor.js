@@ -1,16 +1,3 @@
-// The generation body: tool rail, attached assets, prompt, pill row, mode badge.
-//
-// Used twice — as the MiniMax Creator node's body, and as a timeline segment's
-// editor — because a segment is a whole generation and deserves the same
-// controls. It owns a state object and calls back when it changes; who persists
-// that state, and where, is the caller's business.
-//
-// Every mutation funnels through commit(), which notifies the owner and
-// re-renders. The skeleton is built once and render() only refills the four
-// volatile hosts — the prompt box must survive untouched, because rebuilding a
-// contenteditable destroys the caret, and attaching an asset from the @ menu
-// commits *while the user is typing in it*.
-
 import { el, icon, ICONS, svg } from "./dom.js";
 import { t } from "./i18n.js";
 import { openPicker } from "./picker.js";
@@ -26,13 +13,9 @@ import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as Turbo from "./turbo.js";
 import { viewUrl, probeAudio } from "./api.js";
 import * as S from "./state.js";
+import { setupDragAndDrop } from "./media_drop.js";
 import { MIN_SECONDS, MAX_SECONDS, describeRatio, isTrainedLength } from "./canvas.js";
 
-const HANDLE_RE = /@([A-Za-z]+-\d+)/g;
-
-// What a reference video's chip says it is doing, and what the chip switches to
-// when you click it. "sound only" goes back to bringing the picture along,
-// because the way out of it is the way you got in.
 const TRACK_CHIP = {
   "picture+sound": { text: "sound on", next: "picture" },
   "picture": { text: "sound off", next: "picture+sound" },
@@ -40,56 +23,6 @@ const TRACK_CHIP = {
 };
 
 export class CreatorEditor {
-  /**
-   * @param {object} options
-   * @param {object} options.state        mutated in place; the caller owns persistence
-   * @param {() => void} options.onCommit  after every change, before the re-render
-   * @param {boolean} [options.canvasPills]  false in a timeline segment, where the
-   *   aspect and resolution belong to the timeline and not to one shot
-   * @param {boolean} [options.continuePill]  true for a timeline segment after the
-   *   first, which may start from the previous segment's last frame
-   * @param {() => object} [options.refineTarget]  the payload the refine route
-   *   wants — `{kind, data, index}`. Supplied by the owner because only it knows
-   *   whether this state is a whole `creator_data` or one card of a timeline;
-   *   without it the Refine button is not drawn at all.
-   * @param {(result: object) => void} [options.onRefined]  the parts of a reply
-   *   that are not this state's: in a timeline the soundscape and the score
-   *   belong to the timeline, so the owner takes them.
-   * @param {() => void} [options.onReverted]  the rewrite was thrown away — the
-   *   other half of `onRefined`, so an owner holding parts of a reply can drop
-   *   them too rather than keep prose nothing refers to any more.
-   */
-  /**
-   * @param {() => string|number} [options.nodeId]  the ComfyUI node this body is
-   *   mounted on. Supplied only for a node body, never for a timeline segment
-   *   editor: it is what the stage listens for its own previews with, and what
-   *   says this editor owns the weights rather than inheriting them.
-   */
-  /**
-   * @param {{active: () => boolean, toggle: () => void}} [options.preStage]
-   *   the pre-stage pill's wiring, supplied only for a node body: whether a
-   *   PreStage currently claims this node, and spawning/removing one. The state
-   *   is derived by scan on every render, never stored — see minimax_creator.js.
-   */
-  /**
-   * @param {boolean} [options.durationPill]  false where the generation's length
-   *   is not the user's seconds — the pre-stage's H3 branch samples the shortest
-   *   clip it can and keeps one frame, so it puts its own length pill in
-   *   `extraPills` instead.
-   * @param {() => Element[]} [options.extraPills]  pills for the row, in the
-   *   duration pill's place. What a caller that is *not* rendering a video
-   *   needs to say about the generation.
-   * @param {() => Element[]} [options.extraTools]  extra rail tools, after the
-   *   gallery. What a body needs that a Creator does not — the pre-stage's
-   *   frame grabber is the only one.
-   * @param {boolean} [options.settingsTool]  false where the settings page has
-   *   nothing to say about what this body makes. It holds the video rate
-   *   control, and a pre-stage writes PNGs.
-   * @param {Stage} [options.stage]  a stage to use instead of building one.
-   *   Supplied by an owner that outlives this editor — the pre-stage rebuilds
-   *   its body when the architecture changes, and the satellite floating the
-   *   stage beside the node was bound once, to the owner's.
-   */
   constructor({ state, onCommit, canvasPills = true, continuePill = false,
                 refineTarget = null, onRefined = null, onReverted = null,
                 samplingWidgets = null, onWidgetChange = null, nodeId = null,
@@ -102,10 +35,6 @@ export class CreatorEditor {
     this.extraPills = extraPills;
     this.extraTools = extraTools;
     this.state = state;
-    // Where the standing checkpoint route is read from and written to. A node
-    // body owns its own; a timeline segment editor reads the timeline's and
-    // cannot set it, because a route that differed between two shots of one clip
-    // would not be a route.
     this.routeOf = routeOf ?? (() => this.state.models?.route ?? "auto");
     this.setRoute = setRoute;
     this.onCommit = onCommit;
@@ -114,36 +43,25 @@ export class CreatorEditor {
     this.refineTarget = refineTarget;
     this.onRefined = onRefined;
     this.onReverted = onReverted;
-    // Only the node body has these. The same editor opens as a timeline
-    // segment, where the sampler belongs to the timeline and not to one shot.
     this.samplingWidgets = samplingWidgets;
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
-    this.sizes = new Map();   // filename -> {width,height}, for the adaptive canvas readout
+    this.sizes = new Map();
 
     this.prompt = new PromptBox({
       getState: () => this.state,
       onInput: (text) => {
         this.state.prompt = text;
         this.onCommit?.();
-        this.renderNotices();   // dangling-handle warning, without disturbing the caret
+        this.renderNotices();
       },
       onAttach: (row) => this.attachFromMention(row),
       attachBlocked: (action) => S.blockedReason(this.state, action),
-      // The piece's reference pool, where this state is a timeline segment —
-      // `syncTimeline` mirrors it on as `pool`, the way the canvas rides on.
-      // Citable by chip, never attached: the citation is the attachment.
       getPool: () => this.state.pool ?? [],
     });
 
-    // Built once and refreshed in place: it holds textareas that are typed into,
-    // and a full render would rebuild the one under the caret. `onRefined`
-    // decides whether the two audio fields live here — in a timeline they are
-    // the timeline's and are edited in its own modal.
     this.refinePanel = new RefinePanel({
       getState: () => this.state,
-      // Also the dimming: the panel's toggle and its Revert both change whether
-      // the prompt above is queued, and neither goes through a full render.
       onCommit: () => { this.onCommit?.(); this.syncPrompt(); },
       audioFields: !this.onRefined,
       onRevert: () => this.onReverted?.(),
@@ -154,36 +72,33 @@ export class CreatorEditor {
     this.loraHost = el("div");
     this.pillsHost = el("div");
     this.noticeHost = el("div");
-    // Last, the way the Timeline puts it last: the panel says what the piece is
-    // and this says how it is run.
     this.samplingHost = el("div");
 
-    // The stage, for a node only. A timeline segment editor is a modal over
-    // a node that has its own — two stages listening for the same previews would
-    // be two answers to one question. Not mounted here: attach() hands it to a
-    // Satellite, which floats it beside the node, so the body's layout never
-    // changes when a render lands.
     this.stage = stage ?? (this.nodeId ? new Stage({
       nodeId: this.nodeId,
       onGallery: () => this.openGallery(),
     }) : null);
-    // An injected stage belongs to whoever injected it, and outlives this
-    // editor — so `destroy` leaves it alone.
     this.ownsStage = !stage;
+
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [
+      this.prompt.root,
+      this.refinePanel.root,
+    ]);
 
     this.root = el("div", { class: "mmc-root" }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
-      // `frame`, not `root`: the box brings its own disclosure, which folds it
-      // away once a rewrite is what gets queued.
-      el("div", { class: "mmc-panel" }, [this.prompt.frame, this.refinePanel.root, this.pillsHost]),
+      el("div", { class: "mmc-panel" }, [
+        this.prompt.chipsBar,
+        this.promptScroll,
+        this.pillsHost,
+      ]),
       this.noticeHost,
       this.samplingHost,
     ]);
+    setupDragAndDrop(this.root, this);
 
-    // The weights pill needs the file lists to say anything useful, and every
-    // node body on the canvas shares the one request.
     if (this.nodeId) loadCatalog(() => this.adoptWeights());
 
     this.prompt.setValue(this.state.prompt ?? "");
@@ -191,28 +106,15 @@ export class CreatorEditor {
     this.probeKeyframe();
   }
 
-  /** Called when the node body goes away. */
   destroy() {
     if (this.ownsStage) this.stage?.destroy();
   }
 
-  /**
-   * Fill weights nobody has picked from unambiguous filename matches.
-   *
-   * The one case this is really for: a workflow saved when these were sockets
-   * loads with the links dropped and nothing chosen, and the files are already
-   * on disk under recognisable names. Committed like any other change, so it
-   * saves with the workflow and can be overridden by picking something else.
-   */
   adoptWeights() {
     if (S.guessModels(this.state.models, catalogFiles())) this.commit();
     else this.render();
   }
 
-
-  /** The sampler widgets as turbo.js wants them: write-through without the
-   *  re-render, because everything that uses this commits — and renders — once
-   *  at the end rather than three times along the way. */
   widgetIO() {
     return {
       value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
@@ -227,23 +129,12 @@ export class CreatorEditor {
   }
 
   commit() {
-    // Before notifying, because attaching a reference can invalidate a
-    // checkpoint pin that was legal when it was made.
     S.normalizeCheckpoint(this.state);
-    // Same timing, same reason: removing or disabling the turbo LoRA anywhere —
-    // the chip's ✕, the manager — is switching turbo off, and the sampler row
-    // has to come back before this state is serialized with `on` still in it.
     if (this.samplingWidgets && this.state.turbo) Turbo.sync(this.state, this.widgetIO());
     this.onCommit?.();
     this.render();
   }
 
-  /** Point the editor at a different state object.
-   *
-   *  The Creator node needs this because loading a saved workflow assigns widget
-   *  values after the node is created, so the editor built in `nodeCreated` saw
-   *  an empty blob and has to catch up once the graph has finished configuring.
-   */
   setState(state) {
     this.state = state;
     this.sizes.clear();
@@ -253,13 +144,6 @@ export class CreatorEditor {
     this.probeKeyframe();
   }
 
-  /**
-   * Ask the refiner to rewrite this state's prompt.
-   *
-   * The reply is a whole-request answer even when only one shot was asked for —
-   * the soundscape and the score describe the piece — so the shot body lands
-   * here and the rest goes wherever the owner keeps it.
-   */
   async refine() {
     try {
       const result = await refine(this.refineTarget());
@@ -273,11 +157,6 @@ export class CreatorEditor {
     }
   }
 
-  /**
-   * Attach a file the user picked from the @ menu, and return its new handle.
-   * Selecting from the input folder is what creates the reference — there is no
-   * separate "add it first, then mention it" step.
-   */
   attachFromMention(row) {
     const blocked = S.blockedReason(this.state, "reference");
     if (blocked) { this.flash(blocked); return null; }
@@ -290,21 +169,14 @@ export class CreatorEditor {
     const handle = S.nextHandle(this.state, row.kind);
     const entry = {
       handle, kind: row.kind, role: "reference", filename: row.path,
-      // Max by default, for a picture and for a clip alike: fidelity is why a
-      // reference is attached, and "match" trading it for speed is a downgrade
-      // to opt into, not out of. Ignored for audio, which has no size.
       ref_size: "max",
     };
     if (row.kind === "video") entry.track = S.DEFAULT_TRACK;
     this.state.assets.push(entry);
     this.commit();
-    // The caller needs the handle now, to put a chip under a live caret; the
-    // sound default settles a round trip later and commits again.
     if (row.kind === "video") this.applySoundDefault(entry);
     return handle;
   }
-
-  // ---- asset actions -------------------------------------------------------
 
   async addReferences(kind) {
     const blocked = S.blockedReason(this.state, "reference");
@@ -323,12 +195,6 @@ export class CreatorEditor {
     await this.attachAssets(chosen);
   }
 
-  /**
-   * The gallery: the same picker, opened on the renders tab. No capacity
-   * precheck, unlike addReferences — looking at finished renders is legal with
-   * every slot full; only an actual pick has to answer for room, and the
-   * picker's own counters already hold it to that.
-   */
   async openGallery() {
     const chosen = await openPicker({
       kinds: ["renders", "image", "video", "audio"],
@@ -341,8 +207,6 @@ export class CreatorEditor {
     await this.attachAssets(chosen);
   }
 
-  /** Turn picked assets into reference entries. The shared tail of both the
-   *  slot buttons and the gallery. */
   async attachAssets(chosen) {
     const undecided = [];
     for (const asset of chosen) {
@@ -357,9 +221,6 @@ export class CreatorEditor {
       if (asset.trim) entry.trim = asset.trim;
       this.state.assets.push(entry);
       if (asset.kind !== "video") continue;
-      // A track means the user opened the segment editor and said so. Anything
-      // else is the default, which needs a round trip to settle. Both are applied
-      // after the push, so the file the video occupies counts against the total.
       if (asset.track) this.setTrack(entry, asset.track, { defer: true });
       else undecided.push(entry);
     }
@@ -367,27 +228,13 @@ export class CreatorEditor {
     for (const entry of undecided) await this.applySoundDefault(entry);
   }
 
-  /**
-   * A reference video is attached with its sound on — that is what you almost
-   * always want from a clip you chose for its motion *and* its audio. Sequenced
-   * one at a time, so the three audio slots are handed out in pick order rather
-   * than raced for.
-   */
   async applySoundDefault(asset) {
     const has = await probeAudio(asset.filename);
-    // A silent clip stays silent: switching sound on for a file with no audio
-    // track would fail at queue time over a choice the user never made.
     if (has === false) return;
-    if (!this.state.assets.includes(asset)) return;   // removed while we were asking
+    if (!this.state.assets.includes(asset)) return;
     if (this.setTrack(asset, "picture+sound", { defer: true })) this.commit();
   }
 
-  /**
-   * Choose which of a reference video's streams are referenced. Applied first
-   * and rolled back if the result would not compile: a track change can move the
-   * clip between the video and audio buckets, so whether it fits is a question
-   * about the whole reference set rather than about one counter.
-   */
   setTrack(asset, track, { defer = false } = {}) {
     const previous = asset.track;
     if (previous === track) return true;
@@ -406,7 +253,6 @@ export class CreatorEditor {
     return true;
   }
 
-  /** The segment editor, on an already-attached clip. */
   async editSegment(asset) {
     const result = await openTrim({
       path: asset.filename,
@@ -445,8 +291,6 @@ export class CreatorEditor {
     if (!silent) this.commit();
   }
 
-  /** Image dimensions for the adaptive-canvas readout. The backend re-reads
-   *  them from disk; this is only so the pills can tell the truth early. */
   probeKeyframe() {
     const anchor = S.frameAsset(this.state, "first_frame") || S.frameAsset(this.state, "last_frame");
     if (!anchor || this.sizes.has(anchor.filename)) return;
@@ -465,8 +309,6 @@ export class CreatorEditor {
     this.noticeTimer = setTimeout(() => { this.notice = null; this.render(); }, 6000);
   }
 
-  // ---- render --------------------------------------------------------------
-
   render() {
     const state = this.state;
     const anchor = S.frameAsset(state, "first_frame") || S.frameAsset(state, "last_frame");
@@ -482,8 +324,6 @@ export class CreatorEditor {
         const widget = this.samplingWidgets[name];
         return widget ? widget.value : fallback;
       },
-      // Write through to the real widget, callback included — some of them (the
-      // seed's after-generate control) hang behaviour off it.
       set: (name, value) => {
         const widget = this.samplingWidgets[name];
         if (!widget) return;
@@ -492,18 +332,12 @@ export class CreatorEditor {
         this.onWidgetChange?.();
         this.render();
       },
-      // One generation, always: a Creator render has no segments to spread a
-      // seed across.
       perSegment: false,
-      // The turbo switch, for a node body only: a timeline segment has no
-      // sampler of its own to throw it on.
       turbo: this.nodeId ? Turbo.turboPills({
         container: this.state,
         ...this.widgetIO(),
         onCommit: () => this.commit(),
       }) : [],
-      // Last on the row, because it is the one thing there you set when you
-      // install a checkpoint rather than when you write a prompt.
       trailing: this.nodeId ? [weightsPill({
         models: this.state.models,
         checkpoints: [S.checkpoint(this.state)],
@@ -517,15 +351,6 @@ export class CreatorEditor {
     this.renderNotices();
   }
 
-  /**
-   * Show whether the typed prompt is the thing being queued.
-   *
-   * A rewrite replaces it at compile time rather than joining it, so while one
-   * is on the box is holding a draft. Said by dimming it, beside the panel's own
-   * line, because the panel is below the fold on a small node and the box is
-   * what the eye lands on. Called on the panel's commits too — the toggle
-   * changes this and nothing else in the editor.
-   */
   syncPrompt() {
     const refined = this.state.refined;
     this.prompt.setSuperseded(!!refined?.body?.trim() && refined.enabled !== false);
@@ -548,43 +373,40 @@ export class CreatorEditor {
         onclick: () => this.addReferences(kind),
       }, [el("span", { class: "mmc-tool-icon" }, [icon(iconName)]), el("span", { text: t(label) })]);
 
-    // Two clusters, split by the whole width of the node: everything on the
-    // left acts on this generation, and the pair on the right belongs to the
-    // machine — the Gallery is what this ComfyUI has already made, Settings is
-    // how it writes the next one, and neither moves whatever the prompt says.
-    // Seven equal siblings said none of that.
     return el("div", { class: "mmc-rail" }, [
       el("div", { class: "mmc-rail-group" }, [
         tool("image", "Add image", "image"),
         tool("video", "Add video", "video"),
         tool("audio", "Add audio", "audio"),
-        // Not gated like the reference tools: LoRAs sit on the checkpoint, not in the
-        // reference slots, so they are the one thing frames and references share.
         el("button", {
           class: "mmc-tool",
           title: t("Manage the LoRAs patched onto the routed checkpoint"),
           onclick: () => this.manageLoras(),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("effect")]), el("span", { text: t("Add LoRA") })]),
-        // With the adds because they are one: the PreStage's frame grab puts an
-        // init image on this generation, whatever tool the host lends the rail.
         ...(this.extraTools?.() ?? []),
-        // Last of the cluster because it is the step after the rest of it: the
-        // rewrite is written against the references and the duration, so it
-        // wants them settled first.
         ...(this.refineTarget ? [refineButton({ run: () => this.refine() })] : []),
       ]),
       el("div", { class: "mmc-rail-group" }, [
-        // Ungated, and here rather than only on the stage: the stage grows a
-        // Gallery chip when a render finishes, which is exactly the moment you
-        // do not need one — before the first render of a session there was no
-        // way into the output folder at all, and organizing what is already
-        // there is not something you should have to queue a render to reach.
+        el("button", {
+          class: "mmc-tool mmc-tool-primary",
+          title: t("Queue prompt in ComfyUI to generate video"),
+          onclick: () => {
+            try { app.queuePrompt(0); } catch {}
+          },
+        }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
+        el("button", {
+          class: `mmc-tool${this.stage?.showing() ? " active" : ""}`,
+          title: t("Open or close the satellite preview box"),
+          onclick: () => {
+            this.stage?.toggleOpen();
+            this.render();
+          },
+        }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Preview") })]),
         el("button", {
           class: "mmc-tool",
           title: t("Browse, organize and attach finished renders and pre-stage stills"),
           onclick: () => this.openGallery(),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("gallery")]), el("span", { text: t("Gallery") })]),
-        // Absent where it would be a control over nothing — see `settingsTool`.
         ...(this.settingsTool ? [el("button", {
           class: "mmc-tool",
           title: t("Preferences for this ComfyUI — output quality. Not saved into the workflow."),
@@ -631,9 +453,6 @@ export class CreatorEditor {
     };
 
     const parts = [el("div", { class: "mmc-assets" }, this.state.loras.map(chip))];
-    // Trigger words go in front of the prompt at compile time. Showing the
-    // prefix is the difference between that and the prompt quietly not being
-    // what the box says it is.
     const triggers = S.promptTriggers(this.state);
     if (triggers.length) {
       parts.push(el("div", {
@@ -728,7 +547,7 @@ export class CreatorEditor {
 
   renderPills(geometry, currentMode) {
     const state = this.state;
-    const refs = S.hasReferences(state);
+
     const frameLabel = (role, fallback) => {
       const asset = S.frameAsset(state, role);
       return asset ? `@${asset.handle}` : t(fallback);
@@ -750,9 +569,6 @@ export class CreatorEditor {
       ]);
     };
 
-    // Steps of one second up to the trained ceiling, then of five: past 15 s the
-    // pill is a coarse control by then anyway, and nudging 15 → 60 one second at
-    // a time is 45 clicks.
     const grain = state.duration_s >= 15 ? 5 : 1;
     const trained = isTrainedLength(geometry.frames);
     const duration = el("div", {
@@ -789,15 +605,11 @@ export class CreatorEditor {
         : t("Aspect Ratio"),
       onclick: (event) => this.openAspect(event.currentTarget),
     }, geometry.fromImage
-      // The ratio the keyframe brought with it, which is the one case where the
-      // pill is showing a shape no entry in the list would have drawn.
       ? [aspectGlyph(geometry.ratio, PILL_GLYPH),
          el("span", { text: describeRatio(geometry.ratio) }),
          el("span", { class: "mmc-pill-sub", text: t("from image") })]
       : [aspectGlyph(geometry.ratio, PILL_GLYPH), el("span", { text: state.aspect })]);
 
-    // With two passes on, the sub says so in one glance: sampled at the
-    // first-pass edge, refined up to the size beside it.
     const refined = S.twoPass(state);
     const resPill = el("button", {
       class: "mmc-pill",
@@ -818,22 +630,14 @@ export class CreatorEditor {
       ...(this.continuePill ? [this.renderContinue()] : []),
       framePill("first_frame", "Start frame", "frameIn"),
       framePill("last_frame", "End frame", "frameOut"),
-      // A body that is not making a video says how long it runs in its own
-      // terms, or not at all — see `extraPills`.
       ...(this.durationPill ? [duration] : []),
       ...(this.extraPills?.() ?? []),
-      // In a timeline the canvas belongs to the timeline, not to one shot: the
-      // segments are concatenated at the end and have to come out the same size.
-      // The output folder is the timeline's for the same reason — one file.
       ...(this.canvasPills ? [aspectPill, resPill] : []),
       this.renderRouting(currentMode),
       ...(this.preStage ? [this.renderPreStagePill()] : []),
     ]);
   }
 
-  /** The pre-stage pill: an image-generation node at this node's left edge,
-   *  spawned and removed here because the pre-stage is a property of the shot
-   *  being set up, not a node to hunt the menu for. */
   renderPreStagePill() {
     const on = this.preStage.active();
     return el("button", {
@@ -847,12 +651,6 @@ export class CreatorEditor {
     }, [icon("image", 16), el("span", { text: t("pre-stage") })]);
   }
 
-  /**
-   * A finished pre-stage still, pushed into this state by the neighbour's
-   * result chips. Returns a refusal message, or null on success — the same
-   * capacity and exclusivity rules every other attach path answers to, said to
-   * the PreStage so it can show them where the click happened.
-   */
   attachFromPreStage({ role, filename }) {
     if (role === "reference") {
       const blocked = S.blockedReason(this.state, "reference");
@@ -882,13 +680,6 @@ export class CreatorEditor {
     return null;
   }
 
-  /**
-   * The continuation switch, on a timeline segment after the first.
-   *
-   * Off is a hard cut. On makes the previous segment's last frame this one's
-   * start frame — which is a keyframe generation, and so locks the references
-   * out for the same reason a real start frame does.
-   */
   renderContinue() {
     const on = S.continues(this.state);
     const blocked = on ? null : S.blockedReason(this.state, "continue");
@@ -905,26 +696,12 @@ export class CreatorEditor {
     }, [icon("frameIn", 16), el("span", { text: on ? t("continues") : t("hard cut") })]);
   }
 
-  /**
-   * The mode and the weights it runs on, and — where there is a choice — the
-   * control that changes the second without changing the first.
-   *
-   * Two things can decide the weights. The node-level **route** is a standing
-   * instruction and wins outright; failing that, this generation's own pin does,
-   * and failing that the mode. Clicking cycles the route, because that is the
-   * one of the two that survives a mode change: pinning per generation is
-   * dropped the moment attaching a reference makes it illegal, so a preference
-   * expressed there quietly evaporates. `routeOf` is null in a timeline segment
-   * editor, where the route belongs to the timeline and this is a readout.
-   */
   renderRouting(currentMode) {
     const state = this.state;
     const route = this.routeOf?.() ?? "auto";
     const forced = route !== "auto";
     const routed = forced ? route : S.checkpoint(state);
     const pinned = !forced && S.checkpointPinned(state);
-    // Forcing FL2VA on a reference generation is refused at compile time, so the
-    // badge says so here rather than letting the queue do it.
     const impossible = forced && route === "fl2va" && S.hasReferences(state);
     const canCycle = !!this.setRoute;
 
@@ -949,15 +726,12 @@ export class CreatorEditor {
     return badge;
   }
 
-  /** Handles in the prompt with no asset behind them — the state's own or the
-   *  piece's pool. compile.py rejects these, so say so here rather than at
-   *  queue time. */
   renderDangling() {
     const known = new Set([
       ...this.state.assets.map((a) => a.handle),
       ...(this.state.pool ?? []).map((a) => a.handle),
     ]);
-    const missing = [...new Set(Array.from(this.state.prompt.matchAll(HANDLE_RE), (m) => m[1]))]
+    const missing = [...new Set(Array.from(this.state.prompt.matchAll(S.HANDLE_RE), (m) => m[1]))]
       .filter((handle) => !known.has(handle));
     if (!missing.length) return null;
     return [el("div", {
@@ -967,8 +741,6 @@ export class CreatorEditor {
         : t("{handles} is in the prompt but not attached.", { handles: missing.map((h) => "@" + h).join(", ") }),
     })];
   }
-
-  // ---- popovers ------------------------------------------------------------
 
   openAspect(anchor) {
     openAspectPopover(anchor, this.state, () => this.commit());
