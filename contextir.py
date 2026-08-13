@@ -125,9 +125,9 @@ def shot_body(shots):
         text = (text or "").strip()
         if not text:
             raise ValueError(
-                f"shot {position} has no prompt — in one-pass mode the shots are "
-                f"one description with cuts in it, so an empty one would leave a "
-                f"cut with nothing on the far side of it"
+                f"shot {position} has no prompt — the shots of one pass are a "
+                f"single description with cuts in it, so an empty one would leave "
+                f"a cut with nothing on the far side of it"
             )
 
         own = [re.sub(r"\s+", " ", m) for m in SHOT_RE.findall(text)]

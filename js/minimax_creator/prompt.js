@@ -111,6 +111,7 @@ export class PromptBox {
   setValue(text) {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
+    this.syncExcerpt();
   }
 
   build(text) {
@@ -143,11 +144,30 @@ export class PromptBox {
   }
 
   setSuperseded(on) {
-    this.root.classList.toggle("superseded", !!on);
-    this.root.title = on
-      ? t("Not queued while the rewrite below is on — that is what the model reads. "
-        + "Edit this and refine again, or revert the rewrite, to send it.")
-      : "";
+    on = !!on;
+    const changed = on !== this.superseded;
+    this.superseded = on;
+    this.frame.classList.toggle("superseded", on);
+    // Never folded while this is the prompt being queued: there would be
+    // nothing standing in for it and no way back to the thing you are writing.
+    if (changed || !on) this.frame.open = !on;
+    this.root.classList.toggle("superseded", on);
+    const why = t("Not queued while the rewrite below is on — that is what the model reads. "
+                + "Edit this and refine again, or revert the rewrite, to send it.");
+    this.root.title = on ? why : "";
+    this.head.title = on ? why : "";
+    this.syncExcerpt();
+  }
+
+  /** The folded row shows the sentence's own first line, so the box can be
+   *  recognised without opening it. Newlines collapse: it is one line of room. */
+  syncExcerpt() {
+    if (!this.excerpt) return;
+    // From the state rather than by walking the box: `onInput` has already put
+    // the typed text there, and the state is what a rewrite is compared against.
+    const text = (this.hooks.getState().prompt ?? "").replace(/\s+/g, " ").trim();
+    this.excerpt.textContent = text || t("No prompt yet");
+    this.excerpt.classList.toggle("empty", !text);
   }
 
   refresh() {
@@ -157,6 +177,7 @@ export class PromptBox {
 
   onEdit() {
     this.hooks.onInput(this.getValue());
+    this.syncExcerpt();
     const trigger = this.triggerRange();
     if (trigger) this.openMenu(trigger.query);
     else this.closeMenu();

@@ -942,10 +942,10 @@ expect_error("a shot with nothing in it",
              "has no prompt")
 expect_error("a start frame after the first shot",
              lambda: single([segment("a"), segment("b", assets=[ref("img-1", "z.png", "first_frame")])]),
-             "one pass opens on shot 1")
+             "the pass it is in opens on shot 1")
 expect_error("an end frame before the last shot",
              lambda: single([segment("a", assets=[ref("img-1", "z.png", "last_frame")]), segment("b")]),
-             "one pass ends on shot 2")
+             "the pass it is in ends on shot 2")
 expect_error("frames in one shot and references in another",
              lambda: single([segment("a", assets=[ref("img-1", "z.png", "first_frame")]),
                              segment("b @img-1", assets=[ref("img-1", "q.png")])]),
@@ -1230,5 +1230,101 @@ check("a global citation reaches the one-pass request",
 check("...under its own pool handle, so the join's citation resolves",
       pool_global.body.startswith("the piece follows <Picture 1>."), True)
 check("...as a reference generation", pool_global.mode, "REF2VA")
+
+# ---- passes -----------------------------------------------------------------
+#
+# A run of merged segments is one generation, and the timeline is the runs
+# chained end to end. The two old render modes are the extremes of that — no
+# merges is chained, all merges is one pass — so the assertions worth having are
+# about the middle, plus the one that says the extremes did not move.
+
+
+def runs(segments, **rest):
+    return compiler.timeline_runs({"segments": segments, **rest})
+
+
+def merged(prompt="", **rest):
+    return segment(prompt, merge=True, **rest)
+
+
+check("no flags is one pass per segment",
+      runs([segment(), segment(), segment()]), [(0, 1), (1, 2), (2, 3)])
+check("a merged segment joins the one before it",
+      runs([segment(), merged(), segment()]), [(0, 2), (2, 3)])
+check("adjacent merges make one run",
+      runs([segment(), merged(), merged()]), [(0, 3)])
+check("a merge flag on segment 1 is ignored, like the seam flags",
+      runs([merged(), segment()]), [(0, 1), (1, 2)])
+check("a timeline saved as one pass still opens as one",
+      runs([segment(), segment(), segment()], render="single"), [(0, 3)])
+
+# The promise that makes this safe to ship: a timeline with no merges compiles
+# to exactly the payloads it did before, byte for byte, so every segment node in
+# an existing workflow stays a cache hit.
+plain = [segment("one"), segment("two", **{"continue": True}), segment("three")]
+check("an unmerged timeline's payloads are unchanged",
+      compiler.timeline_payloads({"segments": plain, "prompt": "p"}),
+      compiler.timeline_payloads({"segments": [dict(s) for s in plain], "prompt": "p"}))
+check("...and a merge flag never reaches the request",
+      "merge" in compiler.timeline_payloads(
+          {"segments": [segment("a"), merged("b")]})[0]["request"],
+      False)
+
+# The rule that reproduces both old modes: the global prompt opens the first
+# shot of every pass. One pass per segment means every segment gets it, which is
+# what chained always did; one pass over all of them means only shot 1 does.
+two_passes = compiler.timeline_payloads(
+    {"segments": [segment("a", duration_s=5), merged("b", duration_s=4),
+                  segment("c", duration_s=5), merged("d", duration_s=4)],
+     "prompt": "Live-action"})
+check("a partially merged timeline is one payload per pass", len(two_passes), 2)
+check("each pass is its own description",
+      [p["shots"] for p in two_passes], [2, 2])
+check("the global prompt opens each pass's first shot",
+      [p["request"]["prompt"].count("Live-action") for p in two_passes], [1, 1])
+check("cut times restart at the pass, not the timeline",
+      two_passes[1]["request"]["prompt"].count("At 00:05.000"), 1)
+check("a pass's duration is the sum of its shots",
+      [p["request"]["duration_s"] for p in two_passes], [9.0, 9.0])
+
+# What a pass can only have one of is now a question about the pass. Frames and
+# references cannot share a generation — but they can share a timeline, one to
+# a pass, which is the whole point of a run shorter than the strip.
+mixed = compiler.timeline_payloads(
+    {"segments": [segment("opens", assets=[ref("img-1", "z.png", "first_frame")]),
+                  merged("still the same shot"),
+                  segment("a face @img-1", assets=[ref("img-1", "q.png")]),
+                  merged("her hands @img-1", assets=[ref("img-1", "q.png")])]},
+    image_size_lookup=lambda _f: (1500, 1000))
+check("a keyframe pass and a reference pass in one timeline",
+      [compiler.compile_segment(p, lambda _f: (1500, 1000)).mode for p in mixed],
+      ["I2VA", "REF2VA"])
+expect_error("...but not inside one pass",
+             lambda: compiler.timeline_payloads(
+                 {"segments": [segment("opens", assets=[ref("img-1", "z.png", "first_frame")]),
+                               merged("a face @img-2", assets=[ref("img-2", "q.png")])]},
+                 image_size_lookup=lambda _f: (1500, 1000)),
+             "Split the pass between them")
+
+# The seam in front of a pass is the pass's; the seams inside it are gone.
+seamed = compiler.timeline_payloads(
+    {"segments": [segment("a"), merged("b", **{"continue": True}),
+                  segment("c", **{"continue": True, "feather": 22})]})
+check("a seam inside a pass is dropped with the seam",
+      [p["continue"] for p in seamed], [False, True])
+check("...and the blend rides with it", seamed[1].get("feather"), 22)
+check("the passes are held to one canvas, like segments always were",
+      len({(p["canvas"]["width"], p["canvas"]["height"]) for p in seamed}), 1)
+check("one pass over the whole strip keeps its adaptive canvas",
+      "canvas" in compiler.timeline_payloads({"segments": [segment("a"), merged("b")]})[0],
+      False)
+
+# A seam naming a segment that has since been merged into a pass lands on the
+# pass: the frames that exist after decode are the pass's, not that segment's.
+check("a seam into a merged pass resolves to the pass",
+      [p.get("continue_from") for p in compiler.timeline_payloads(
+          {"segments": [segment("a"), merged("b"), segment("c"),
+                        segment("d", **{"continue": True, "continue_from": 1})]})],
+      [None, None, 0])
 
 print("all contract tests passed")

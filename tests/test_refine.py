@@ -82,6 +82,11 @@ check("the reference template teaches the six-section form",
       "retention_analysis" in refine.MODE_TEMPLATE["REF2VA"], True)
 check("...and narrow-by-default subjects — a person is not their picture",
       "never as wide as its source picture" in refine.MODE_TEMPLATE["REF2VA"], True)
+check("...and subjects only where a reference actually shows them",
+      "A subject exists only where a reference actually shows it"
+      in refine.MODE_TEMPLATE["REF2VA"], True)
+check("...with the request-only case worked in the example",
+      "described by the request alone" in refine.MODE_TEMPLATE["REF2VA"], True)
 check("...including the editing and reuse task types",
       all(t in refine.MODE_TEMPLATE["REF2VA"] for t in
           ("video editing", "video continuation", "audio reuse", "audio reference")),

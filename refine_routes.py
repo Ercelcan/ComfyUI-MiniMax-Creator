@@ -1,5 +1,6 @@
 import asyncio
 import os
+import uuid
 
 from aiohttp import web
 
@@ -28,14 +29,25 @@ _TAKES_NOTE = {
     "object": "only the object itself is the reference. The picture's "
               "surroundings, lighting and arrangement are not part of it: "
               "define the subject as the object alone and retain nothing else "
-              "from this picture",
+              "from this picture. Anyone the request names is not in this "
+              "picture unless you can actually see them there",
     "scene": "only the place is the reference — the environment, its surfaces "
              "and its light. Any people or passing objects in the picture, and "
-             "its framing, are not part of it",
+             "its framing, are not part of it. Nobody the request names is in "
+             "this picture unless you can actually see them there",
     "style": "only the look is the reference — medium, palette, light and "
              "rendering. The picture's subjects, layout and content are not "
-             "part of it",
+             "part of it. Nothing the request names is in this picture unless "
+             "you can actually see it there",
 }
+
+# The un-narrowed case. `takes` defaults to "full", so this is what most
+# reference images ride in with, and it is where the hallucination actually
+# bites: with no scope note at all, the one attached picture becomes the place
+# the model grounds whoever the request mentions, seen there or not.
+_FULL_NOTE = ("describe as coming from this picture only what you can "
+              "actually see in it — a subject the request names that it does "
+              "not show is defined from the request alone, with no handle")
 
 
 def _slot(asset, label, show_label):
@@ -568,6 +580,18 @@ async def refine_skills(request):
     return web.json_response({"skills": refine_skill.list_skills()})
 
 
+# Refines in flight and finished ones waiting to be picked up, newest last.
+#
+# A whole-timeline rewrite runs for many minutes with nothing on the wire, and
+# no browser holds a silent HTTP request open that long — Chromium drops one
+# flat at five minutes, a proxy in between usually sooner. So the POST answers
+# immediately with a job id, the result waits here, and the websocket carries
+# the "done" nudge. A handful of slots is plenty: one press is one job, and a
+# result nobody collects — a closed tab — is evicted by the presses after it.
+_jobs = {}
+_JOBS_KEPT = 8
+
+
 @PromptServer.instance.routes.post("/minimax_creator/refine")
 async def refine_prompt(request):
     try:
@@ -580,6 +604,13 @@ async def refine_prompt(request):
             "No text encoder or LLM model chosen. Select a model in the refiner settings."
         }, status=400)
 
+    collected = [key for key, entry in _jobs.items() if entry["done"]]
+    while len(_jobs) >= _JOBS_KEPT and collected:
+        del _jobs[collected.pop(0)]
+
+    job = uuid.uuid4().hex
+    entry = _jobs[job] = {"done": False, "result": None, "error": None,
+                          "status": 200, "task": None}
     loop = asyncio.get_running_loop()
     try:
         return web.json_response(await loop.run_in_executor(None, _run, body))
