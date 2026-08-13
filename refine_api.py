@@ -50,7 +50,7 @@ def fetch_models_openrouter(url, api_key=""):
         endpoint = f"{base}/models"
     else:
         endpoint = f"{base}/v1/models"
-    
+
     headers = {
         "User-Agent": "MiniMaxCreator",
         "HTTP-Referer": "https://github.com/roadmaus/ComfyUI-MiniMax-Creator",
@@ -69,7 +69,9 @@ def fetch_models_openrouter(url, api_key=""):
         raise RuntimeError(f"Could not connect to OpenRouter at {url}: {exc}") from exc
 
 
-def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
+# Internal raw callers
+
+def _raw_chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
     base = (url or "http://localhost:11434").rstrip("/")
     if base.endswith("/api"):
         endpoint = f"{base}/chat"
@@ -122,7 +124,7 @@ def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1
         raise refine.RefineError(f"Ollama connection error: {exc}") from exc
 
 
-def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
+def _raw_chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
     base = (url or "http://localhost:1234/v1").rstrip("/")
     if base.endswith("/v1"):
         endpoint = f"{base}/chat/completions"
@@ -175,7 +177,7 @@ def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1
         raise refine.RefineError(f"LM Studio/OpenAI connection error: {exc}") from exc
 
 
-def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key=""):
+def _raw_chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key=""):
     base = (url or "https://openrouter.ai/api/v1").rstrip("/")
     if base.endswith("/v1"):
         endpoint = f"{base}/chat/completions"
@@ -235,3 +237,41 @@ def chat_openrouter(url, model, system, message, images=(), temperature=0.3, see
         raise refine.RefineError(f"OpenRouter API error ({exc.code}): {err_body}") from exc
     except Exception as exc:
         raise refine.RefineError(f"OpenRouter connection error: {exc}") from exc
+
+
+# Public wrappers with automatic text-only fallback on image rejection
+
+def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
+    if images:
+        try:
+            return _raw_chat_ollama(url, model, system, message, images, temperature, seed, max_tokens)
+        except refine.RefineError as exc:
+            err_msg = str(exc).lower()
+            if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404")):
+                return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens)
+            raise
+    return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens)
+
+
+def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None):
+    if images:
+        try:
+            return _raw_chat_openai(url, model, system, message, images, temperature, seed, max_tokens)
+        except refine.RefineError as exc:
+            err_msg = str(exc).lower()
+            if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404", "detail")):
+                return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens)
+            raise
+    return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens)
+
+
+def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key=""):
+    if images:
+        try:
+            return _raw_chat_openrouter(url, model, system, message, images, temperature, seed, max_tokens, api_key)
+        except refine.RefineError as exc:
+            err_msg = str(exc).lower()
+            if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404", "endpoint")):
+                return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key)
+            raise
+    return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key)
