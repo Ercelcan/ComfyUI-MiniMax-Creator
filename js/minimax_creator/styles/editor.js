@@ -1,20 +1,9 @@
-// Tool rail, attached assets, prompt + pills, @ mention menu.
-// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
-/* --- tool rail ------------------------------------------------------------ */
-/* Every icon comes from ICONS, and every path in there is drawn rather than
-   filled. Set once, before any component rule, because forgetting it renders a
-   stroke-only path as a solid black blob — which is what a missing per-component
-   rule looks like, not a missing icon. Components still override the size and
-   weight; equal specificity, so the later rule wins. */
 .mmc-root svg, .mmc-overlay svg, .mmc-pop svg {
   fill: none; stroke: currentColor; stroke-width: 1.6;
   stroke-linecap: round; stroke-linejoin: round;
 }
 
-/* Two clusters: generation tools left, the machine's pair (Gallery, Settings)
-   at the far edge. space-between does the split; on a node too narrow for both,
-   the right cluster wraps under and keeps its edge. */
 .mmc-rail { display: flex; gap: 10px 24px; flex-wrap: wrap; justify-content: space-between; }
 .mmc-rail-group { display: flex; gap: 10px; flex-wrap: wrap; }
 .mmc-rail-group:last-child { margin-left: auto; }
@@ -35,8 +24,34 @@ export const css = `
 .mmc-tool:disabled .mmc-tool-icon { opacity: .45; }
 .mmc-tool svg { width: 22px; height: 22px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mmc-tool.active .mmc-tool-icon { background: var(--mmc-surface-3); border-color: var(--mmc-accent); color: var(--mmc-accent); }
+.mmc-tool.active { color: var(--mmc-accent); }
+.mmc-tool-primary .mmc-tool-icon {
+  background: var(--mmc-accent);
+  border-color: transparent;
+  color: #141414;
+}
+.mmc-tool-primary:hover:not(:disabled) .mmc-tool-icon {
+  background: #f5b85c;
+  color: #141414;
+}
+.mmc-tool-primary:hover:not(:disabled) {
+  color: #fff;
+}
 
-/* --- attached assets ------------------------------------------------------ */
+.mmc-prompt-chips-bar { display: flex; flex-direction: column; gap: 8px; margin-bottom: 6px; }
+.mmc-chip-toggle {
+  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  padding: 4px 10px; border-radius: 12px; background: var(--mmc-surface-2);
+  border: 1px solid var(--mmc-line); color: var(--mmc-dim); font-size: 11px;
+  font-family: inherit; cursor: pointer; transition: all .12s ease;
+}
+.mmc-chip-toggle:hover { color: var(--mmc-text); background: var(--mmc-surface-3); }
+.mmc-chip-toggle.on { color: var(--mmc-accent); border-color: rgba(240,166,60,.4); }
+.mmc-chip-group { display: flex; flex-direction: column; gap: 4px; }
+.mmc-chip-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--mmc-off); }
+.mmc-quick-chip { font-size: 11px; padding: 3px 8px; text-align: left; }
+
 .mmc-assets { display: flex; gap: 8px; flex-wrap: wrap; }
 .mmc-asset {
   display: flex; align-items: center; gap: 8px; padding: 4px 8px 4px 4px;
@@ -47,9 +62,6 @@ export const css = `
   width: 30px; height: 30px; border-radius: 7px; object-fit: cover;
   background: var(--mmc-surface-3); display: flex; align-items: center; justify-content: center;
   color: var(--mmc-dim); flex: none;
-  /* The identity ring: paints the asset's hue onto the actual picture, which is
-     what the same-hued chip in the prompt points back to. Transparent when the
-     row carries no tag (LoRA chips share this class). */
   box-shadow: 0 0 0 2px var(--tag, transparent);
 }
 .mmc-asset-handle { color: var(--tag, var(--mmc-accent)); font-weight: 500; }
@@ -59,15 +71,9 @@ export const css = `
   font-size: 15px; line-height: 1; padding: 2px 3px; font-family: inherit;
 }
 .mmc-asset-x:hover { color: var(--mmc-text); }
-/* A LoRA set to the checkpoint this graph does not route to. Still listed —
-   removing it on a mode change would throw the setting away — but visibly
-   out of the run. */
 .mmc-asset.idle { opacity: .5; }
 .mmc-asset.idle .mmc-asset-handle { color: var(--mmc-dim); }
 .mmc-lora-block { display: flex; flex-direction: column; gap: 6px; }
-/* What the LoRAs add to the front of the prompt. Not a warning — it is working
-   as intended — but it has to be readable, because the prompt box does not
-   show it. */
 .mmc-note {
   display: flex; gap: 8px; font-size: 11px; color: var(--mmc-dim); line-height: 1.4;
 }
@@ -76,15 +82,11 @@ export const css = `
   font-size: 10px; padding-top: 1px; flex: none;
 }
 
-/* --- prompt + pills ------------------------------------------------------- */
 .mmc-panel {
   background: var(--mmc-surface); border: 1px solid var(--mmc-line);
   border-radius: 20px; padding: 14px; display: flex; flex-direction: column;
   gap: 12px; flex: 1; min-height: 0;
 }
-/* contenteditable, not a textarea: @references are atomic chips, and a textarea
-   can only hold flat text. white-space: pre-wrap so the literal "\n" the box
-   inserts on Enter renders as a line break. */
 .mmc-prompt {
   flex: 1; min-height: 56px; background: none; border: 0; outline: none;
   color: var(--mmc-text); font-family: inherit; font-size: 15px; line-height: 1.6;
@@ -93,13 +95,8 @@ export const css = `
 .mmc-prompt:empty::before {
   content: attr(data-placeholder); color: #6a6a6a; pointer-events: none;
 }
-/* A rewrite replaces this text rather than joining it, so while one is on the
-   box is holding a draft, not the prompt. Dimmed rather than disabled: it is
-   still where the next rewrite comes from. */
 .mmc-prompt.superseded { opacity: .42; }
 .mmc-prompt.superseded:focus { opacity: .72; }
-/* .mmc-ref, not .mmc-chip: the refiner's language chips own that name, and the
-   two rules fighting over it is what once turned these gray. */
 .mmc-ref {
   display: inline-block; padding: 1px 7px; margin: 0 1px; border-radius: 7px;
   background: color-mix(in srgb, var(--tag, var(--mmc-accent)) 14%, transparent);
@@ -107,7 +104,6 @@ export const css = `
   font-size: .92em; white-space: nowrap; user-select: all;
 }
 
-/* --- @ mention menu ------------------------------------------------------- */
 .mmc-mention {
   position: fixed; z-index: 1350; width: 330px; max-height: 300px; overflow-y: auto;
   background: #212121; border: 1px solid var(--mmc-line); border-radius: 14px;
@@ -118,9 +114,6 @@ export const css = `
   color: #7d7d7d; font-size: 10px; letter-spacing: .09em; text-transform: uppercase;
   padding: 10px 10px 6px;
 }
-/* min-width:0 all the way down: a flex item defaults to min-content width, so
-   without it a 90-character generated filename forces the row wider than the
-   menu instead of ellipsizing. */
 .mmc-mention-row {
   display: flex; align-items: center; gap: 10px; width: 100%; min-width: 0;
   padding: 7px 8px; background: none; border: 1px solid transparent;
@@ -152,6 +145,7 @@ export const css = `
 }
 .mmc-pill:hover:not(:disabled) { background: var(--mmc-surface-3); }
 .mmc-pill:disabled { cursor: not-allowed; color: var(--mmc-off); }
+.mmc-pill.on { border-color: var(--mmc-accent); color: var(--mmc-accent); }
 .mmc-pill svg { width: 16px; height: 16px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .mmc-pill-sub { color: var(--mmc-dim); font-size: 11px; }
@@ -161,15 +155,12 @@ export const css = `
   font-size: 16px; width: 26px; height: 36px; font-family: inherit;
 }
 .mmc-step:disabled { color: var(--mmc-off); cursor: not-allowed; }
-/* No text-transform: the socket name has to read exactly as it does on the
-   input, and 'model_fl2va' uppercased is not the name of anything. */
 .mmc-mode {
   margin-left: auto; font-size: 11px; letter-spacing: .04em; color: var(--mmc-dim);
   display: flex; align-items: center; gap: 6px;
   background: none; border: 1px solid transparent; border-radius: 13px;
   padding: 5px 10px; font-family: inherit;
 }
-/* Only the clickable form gets affordances — as a span it is a plain readout. */
 button.mmc-mode { cursor: pointer; }
 button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mmc-line); }
 .mmc-mode.pinned { border-color: var(--mmc-line); background: var(--mmc-surface-2); }
@@ -180,5 +171,4 @@ button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mm
   padding: 0 5px; opacity: .8;
 }
 .mmc-warn { color: #e0743c; font-size: 12px; }
-
 `;

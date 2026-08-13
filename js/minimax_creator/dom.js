@@ -1,12 +1,6 @@
-// Tiny DOM helpers and the icon set. No framework — the node body is small
-// enough that hand-built elements stay clearer than a template layer.
-
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
   for (const [key, value] of Object.entries(props)) {
-    // ARIA states are strings, not HTML boolean attributes: `aria-selected` has
-    // to read "true"/"false", so a boolean is spelled out rather than dropped
-    // (false) or emptied (true) by the rules below. CSS keys off those words.
     if (key.startsWith("aria-") && typeof value === "boolean") {
       node.setAttribute(key, String(value));
       continue;
@@ -24,23 +18,11 @@ export function el(tag, props = {}, children = []) {
   return node;
 }
 
-/**
- * Copy the frame a <video> is sitting on onto a canvas, sizing the backing
- * store to the clip's own aspect and capping it — neither a 230 px card nor a
- * 46vh modal has any use for a 4K canvas.
- *
- * Drawing instead of showing the element is the point. A <video> in the page is
- * composited by the browser rather than painted into it, and that path hands
- * back a black rectangle on a good many Linux setups; drawImage() reads the
- * decoded frame directly and cannot be composited away.
- */
 export function drawFrame(canvas, video, maxHeight = 720) {
   if (!canvas || !video?.videoWidth) return;
   const scale = Math.min(1, maxHeight / video.videoHeight);
   const width = Math.max(2, Math.round(video.videoWidth * scale));
   const height = Math.max(2, Math.round(video.videoHeight * scale));
-  // Assigning either dimension clears the canvas, so only do it when the size
-  // actually changed — otherwise every frame starts with a wipe.
   if (canvas.width !== width || canvas.height !== height) {
     canvas.width = width;
     canvas.height = height;
@@ -48,10 +30,6 @@ export function drawFrame(canvas, video, maxHeight = 720) {
   canvas.getContext("2d").drawImage(video, 0, 0, width, height);
 }
 
-// The only innerHTML in the package, and it is fed exclusively from the ICONS
-// constants below — never from a filename or anything else off disk. There is
-// deliberately no generic `html` prop on el() for the same reason: asset names
-// are user-controlled and must only ever reach the DOM as text.
 export function svg(paths, size = 22) {
   const holder = document.createElement("span");
   holder.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${paths}</svg>`;
@@ -67,9 +45,6 @@ export const ICONS = {
   frameIn: `<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12h8M12 8v8"/>`,
   frameOut: `<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12h8"/>`,
   model: `<circle cx="12" cy="12" r="9"/><path d="M12 7a5 5 0 015 5 3 3 0 01-3 3h-1.5a1.5 1.5 0 000 3H12a8 8 0 110-11z"/>`,
-  // The weights on disk: a stack of files. `model` above is a palette, which is
-  // a fine 22px rail glyph and an unreadable blob at the 16px a pill draws it
-  // at — which is the size this one has to work at and the only size it is used.
   weights: `<path d="M12 3l8 4.2-8 4.2-8-4.2z"/><path d="M4 12l8 4.2 8-4.2"/><path d="M4 16.6l8 4.2 8-4.2"/>`,
   res: `<path d="M4 8V5a1 1 0 011-1h3M16 4h3a1 1 0 011 1v3M20 16v3a1 1 0 01-1 1h-3M8 20H5a1 1 0 01-1-1v-3"/>`,
   play: `<path d="M8 5.5l11 6.5-11 6.5z"/>`,
@@ -77,45 +52,28 @@ export const ICONS = {
   scissors: `<circle cx="6" cy="6" r="2.4"/><circle cx="6" cy="18" r="2.4"/><path d="M8 7.4L20 18M8 16.6L20 6"/>`,
   dice: `<rect x="3" y="3" width="18" height="18" rx="4"/><circle cx="8.5" cy="8.5" r="1.2"/><circle cx="15.5" cy="15.5" r="1.2"/><circle cx="12" cy="12" r="1.2"/>`,
   sliders: `<path d="M4 7h9M17 7h3M4 17h3M11 17h9"/><circle cx="15" cy="7" r="2"/><circle cx="9" cy="17" r="2"/>`,
-  // The seam between two shots: the second picks up where the first left off.
   link: `<path d="M9 12h6"/><path d="M11 8H8a4 4 0 000 8h3M13 8h3a4 4 0 010 8h-3"/>`,
   steps: `<path d="M4 19h4v-5h4V9h4V4h4"/>`,
   bolt: `<path d="M13 2L4.5 13.5H11L9.5 22 19.5 10H13z"/>`,
   timeline: `<path d="M3 12h18"/><rect x="3" y="8" width="7" height="8" rx="2"/><rect x="13" y="8" width="8" height="8" rx="2"/>`,
-  // Lucide's `brain`, verbatim. Drawn for a 2.0 stroke and rendered here at the
-  // package's 1.6 like every other icon — matching its neighbours matters more
-  // than matching its origin.
   brain: `<path d="M12 18V5"/><path d="M15 13a4.17 4.17 0 0 1-3-4 4.17 4.17 0 0 1-3 4"/><path d="M17.598 6.5A3 3 0 1 0 12 5a3 3 0 1 0-5.598 1.5"/><path d="M17.997 5.125a4 4 0 0 1 2.526 5.77"/><path d="M18 18a4 4 0 0 0 2-7.464"/><path d="M19.967 17.483A4 4 0 1 1 12 18a4 4 0 1 1-7.967-.517"/><path d="M6 18a4 4 0 0 1-2-7.464"/><path d="M6.003 5.125a4 4 0 0 0-2.526 5.77"/>`,
   chevron: `<path d="M6 9l6 6 6-6"/>`,
   star: `<path d="M12 3.5l2.6 5.3 5.9.9-4.3 4.1 1 5.9-5.2-2.8-5.2 2.8 1-5.9-4.3-4.1 5.9-.9z"/>`,
   folder: `<path d="M3 7.5A2.5 2.5 0 015.5 5h3.8l2 2.2h7.2A2.5 2.5 0 0121 9.7v6.8a2.5 2.5 0 01-2.5 2.5h-13A2.5 2.5 0 013 16.5z"/>`,
-  // A grid of frames: the gallery is the one place in the node that shows many
-  // renders at once, and the rail already spends `image` on "Add image".
   gallery: `<rect x="3" y="3" width="7.5" height="7.5" rx="1.8"/><rect x="13.5" y="3" width="7.5" height="7.5" rx="1.8"/><rect x="3" y="13.5" width="7.5" height="7.5" rx="1.8"/><rect x="13.5" y="13.5" width="7.5" height="7.5" rx="1.8"/>`,
-  // Lucide's `settings`, verbatim — drawn for a 2.0 stroke and rendered here at
-  // the package's 1.6, the same deal `brain` above gets. `sliders` is spoken
-  // for: the timeline wears it for "Edit timeline".
   gear: `<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>`,
+  camera: `<path d="M14.5 4h-5L7.5 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2h-3.5l-2-3z"/><circle cx="12" cy="13" r="3"/>`,
+  magic: `<path d="M15 4l-2 3 2 3-3-2-3 2 2-3-2-3 3 2zM6 10l-1.5 2 1.5 2-2-1.5-2 1.5 1.5-2-1.5-2 2 1.5zM20 18l-1 1.5 1 1.5-1.5-1-1.5 1 1-1.5-1-1.5 1.5 1z"/>`,
 };
 
 export function icon(name, size = 22) {
-  return svg(ICONS[name], size);
+  return svg(ICONS[name] || ICONS.camera, size);
 }
 
-/**
- * Lift a transient layer above every overlay currently open.
- *
- * A popover cannot have a fixed z-index. The same aspect pill opens the same
- * popover from the node body, where it only has to clear the graph canvas, and
- * from a timeline segment editor, where it has to clear a modal — and modals are
- * stacked by DOM depth (see `mountOverlay`), so how high is high enough is not
- * known until the moment it opens.
- */
 export function floatAbove(node) {
   node.style.zIndex = String(1400 + document.querySelectorAll(".mmc-overlay").length * 10 + 5);
 }
 
-/** Close-on-outside-click / Escape, shared by every popover. */
 export function dismissable(node, onClose) {
   floatAbove(node);
   const away = (event) => {
@@ -130,7 +88,6 @@ export function dismissable(node, onClose) {
     node.remove();
     onClose?.();
   }
-  // Deferred so the click that opened the popover does not immediately shut it.
   setTimeout(() => {
     document.addEventListener("pointerdown", away, true);
     document.addEventListener("keydown", key, true);
@@ -138,18 +95,6 @@ export function dismissable(node, onClose) {
   return close;
 }
 
-/**
- * Portal a full-screen overlay to <body> and give it a place in the stack.
- *
- * Overlays nest arbitrarily — the timeline opens a segment editor, which opens
- * the picker, which opens the clip's segment editor — so neither a fixed
- * z-index nor a single "topmost" class can order them. Depth is DOM order
- * instead: the newest overlay is the last `.mmc-overlay` under <body>, and so is
- * both the highest and the one Escape belongs to. Every listener is registered
- * in the capture phase and stands down unless it is currently last.
- *
- * @returns {() => void} unmount
- */
 export function mountOverlay(overlay, onEscape) {
   overlay.style.zIndex = String(1400 + document.querySelectorAll(".mmc-overlay").length * 10);
   const onKey = (event) => {
@@ -167,7 +112,6 @@ export function mountOverlay(overlay, onEscape) {
   };
 }
 
-/** Anchor a popover to a pill, kept inside the viewport. */
 export function placeNear(popover, anchor, { above = true } = {}) {
   const place = () => {
     const rect = anchor.getBoundingClientRect();
@@ -180,11 +124,6 @@ export function placeNear(popover, anchor, { above = true } = {}) {
     popover.style.top = `${Math.max(8, top)}px`;
   };
   place();
-  // A popover is not a fixed-size thing: the refiner's lists arrive after
-  // placement, and its folds open on click. Whenever the box changes size it
-  // is placed again, so growth slides it up against the viewport edge — where
-  // the max-height on .mmc-pop turns whatever still does not fit into its own
-  // scrollbar — instead of running past the bottom of a 1080p screen.
   const observer = new ResizeObserver(() => {
     if (!popover.isConnected) { observer.disconnect(); return; }
     place();
