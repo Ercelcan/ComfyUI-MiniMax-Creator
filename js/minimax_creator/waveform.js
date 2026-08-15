@@ -1,6 +1,6 @@
-// Peak data for the segment editor's timeline and visual filmstrip.
-
 import { fetchPeaks } from "./api.js";
+import { FPS, framesForSeconds } from "./canvas.js";
+import * as S from "./state.js";
 
 const CACHE = new Map();
 
@@ -11,7 +11,7 @@ export function peaks(path) {
 }
 
 /** Paint peaks into a canvas at its current CSS size, one column per pixel. */
-export function draw(canvas, data, colour) {
+export function draw(canvas, data, colour = "rgba(255,255,255,.34)") {
   if (!canvas) return;
   const width = canvas.clientWidth || canvas.offsetWidth;
   const height = canvas.clientHeight || canvas.offsetHeight;
@@ -39,7 +39,8 @@ export function draw(canvas, data, colour) {
 }
 
 /**
- * Draw a continuous timeline audio waveform composed of multiple shots with automatic resize observation.
+ * Draw a continuous timeline audio waveform composed of multiple shots with 
+ * accurate effective duration accounting for motion blend trims.
  */
 export function drawTimelineWaveform(canvas, segments, colour = "rgba(240,166,60,0.45)") {
   if (!canvas) return;
@@ -49,7 +50,18 @@ export function drawTimelineWaveform(canvas, segments, colour = "rgba(240,166,60
     const height = canvas.clientHeight || canvas.offsetHeight;
     if (!width || !height) return;
 
-    const totalDuration = (segments || []).reduce((acc, seg) => acc + (Number(seg?.duration_s) || 6), 0);
+    const segList = segments || [];
+    if (!segList.length) return;
+
+    // Calculate effective total duration accounting for seam blend trimming
+    const effectiveDurations = segList.map((seg, idx) => {
+      const rawFrames = framesForSeconds(seg.duration_s || 6);
+      const overlap = (idx > 0 && S.continues(seg) && S.feather(seg) > 1) ? S.feather(seg) : 0;
+      const effectiveFrames = Math.max(1, rawFrames - overlap);
+      return effectiveFrames / FPS;
+    });
+
+    const totalDuration = effectiveDurations.reduce((acc, d) => acc + d, 0);
     if (totalDuration <= 0) return;
 
     const ratio = window.devicePixelRatio || 1;
@@ -60,8 +72,9 @@ export function drawTimelineWaveform(canvas, segments, colour = "rgba(240,166,60
     context.clearRect(0, 0, width, height);
 
     let currentX = 0;
-    for (const seg of (segments || [])) {
-      const segDur = Number(seg?.duration_s) || 6;
+    for (let i = 0; i < segList.length; i++) {
+      const seg = segList[i];
+      const segDur = effectiveDurations[i];
       const segWidth = (segDur / totalDuration) * width;
       
       const audioAsset = (seg?.assets || []).find((a) => a.kind === "audio" || (a.kind === "video" && a.track !== "picture"));
@@ -86,7 +99,7 @@ export function drawTimelineWaveform(canvas, segments, colour = "rgba(240,166,60
           }
         } catch {}
       } else if (seg?.continue_audio) {
-        context.fillStyle = "rgba(47, 123, 246, 0.3)";
+        context.fillStyle = "rgba(47, 123, 246, 0.35)";
         context.fillRect(currentX, height / 2 - 1, segWidth, 2);
       }
       
@@ -94,7 +107,6 @@ export function drawTimelineWaveform(canvas, segments, colour = "rgba(240,166,60
     }
   };
 
-  // Observe resize so it renders properly once inserted into the DOM layout
   const observer = new ResizeObserver(() => {
     if (!canvas.isConnected) { observer.disconnect(); return; }
     render();

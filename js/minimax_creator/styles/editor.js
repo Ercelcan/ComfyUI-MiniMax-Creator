@@ -229,28 +229,88 @@ export const css = `
 }
 .mmc-mention-empty { color: #7d7d7d; font-size: 13px; padding: 14px 10px; }
 
+/* --- Core Pill Row & Individual Pill Aesthetics --- */
 .mmc-pills {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex-shrink: 0;
   padding-top: 8px; border-top: 1px solid var(--mmc-line); margin-top: auto;
 }
 .mmc-pill {
-  display: flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
+  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
   border-radius: 17px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
   color: var(--mmc-text); font-size: 12px; font-family: inherit; cursor: pointer;
-  white-space: nowrap; transition: background .12s ease; max-width: 100%; box-sizing: border-box;
+  white-space: nowrap; transition: background .12s ease, border-color .12s ease, color .12s ease;
+  max-width: 100%; box-sizing: border-box;
 }
-.mmc-pill:hover:not(:disabled) { background: var(--mmc-surface-3); }
+.mmc-pill:hover:not(:disabled) { background: var(--mmc-surface-3); color: #fff; }
 .mmc-pill:disabled { cursor: not-allowed; color: var(--mmc-off); }
 .mmc-pill.on { border-color: var(--mmc-accent); color: var(--mmc-accent); }
+.mmc-pill.accel-on { border-color: rgba(110,190,255,.45); color: #6ebeff; }
+.mmc-pill.accel-on:hover:not(:disabled) { border-color: rgba(110,190,255,.7); }
 .mmc-pill svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .mmc-pill-sub { color: var(--mmc-dim); font-size: 10.5px; }
+
+/* Grouped Stepper Pills (- / val / +) */
 .mmc-pill-group { gap: 0; padding: 0 4px; }
 .mmc-step {
   background: none; border: 0; color: var(--mmc-text); cursor: pointer;
   font-size: 15px; width: 24px; height: 32px; font-family: inherit;
+  display: inline-flex; align-items: center; justify-content: center;
 }
+.mmc-step:hover { color: #fff; }
 .mmc-step:disabled { color: var(--mmc-off); cursor: not-allowed; }
+
+/* Seed Pill Components */
+.mmc-seed-dice {
+  display: inline-flex; align-items: center; justify-content: center;
+  width: 26px; height: 32px; padding: 0 4px; color: var(--mmc-dim);
+}
+.mmc-seed-dice:hover { color: var(--mmc-text); }
+.mmc-seed-dice svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
+  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
+.mmc-seed-input {
+  width: 96px; background: none; border: 0; outline: none; color: var(--mmc-text);
+  font-family: inherit; font-size: 13px; text-align: center; padding: 0;
+}
+.mmc-seed-mode { font-size: 11px; padding: 0 8px 0 4px; color: var(--mmc-dim); }
+.mmc-seed-mode:hover { color: var(--mmc-text); }
+
+/* Turbo Pills & Segmented Quality Options */
+.mmc-turbo-main {
+  display: inline-flex; align-items: center; gap: 7px; height: 100%; padding: 0 6px 0 8px;
+  background: none; border: 0; color: inherit; font-size: 12px;
+  font-family: inherit; cursor: pointer; white-space: nowrap; max-width: 240px;
+}
+.mmc-turbo-main span {
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
+}
+.mmc-turbo-pick {
+  display: inline-flex; align-items: center; justify-content: center; width: 20px; color: inherit;
+}
+.mmc-pill.mmc-turbo-seg { gap: 0; padding: 0; overflow: hidden; }
+.mmc-turbo-opt {
+  display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 10px;
+  background: none; border: 0; border-left: 1px solid var(--mmc-line);
+  color: var(--mmc-dim); font-size: 12px; font-family: inherit; cursor: pointer;
+}
+.mmc-turbo-opt:first-child { border-left: 0; }
+.mmc-turbo-opt:hover { color: #ededed; }
+.mmc-turbo-opt[aria-pressed="true"] { background: rgba(110,190,255,.14); color: #6ebeff; font-weight: 500; }
+.mmc-turbo-opt[aria-pressed="true"] .mmc-pill-sub { color: rgba(110,190,255,.75); }
+
+/* Weights Pill */
+.mmc-weights.missing {
+  border-color: #e0743c !important;
+  color: #e0743c !important;
+}
+.mmc-weights.missing:hover {
+  border-color: #f08a55 !important;
+  color: #f08a55 !important;
+}
+.mmc-weights.missing span {
+  color: #e0743c !important;
+}
+
 .mmc-mode {
   margin-left: auto; font-size: 11px; letter-spacing: .04em; color: var(--mmc-dim);
   display: flex; align-items: center; gap: 5px;

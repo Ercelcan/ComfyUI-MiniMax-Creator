@@ -1,10 +1,5 @@
 // Injected once. Everything is scoped under .mmc-root (or .mmc-overlay for the
 // modal, which portals to document.body) so nothing leaks into the graph canvas.
-//
-// The CSS itself lives in styles/, one module per area of the UI, each exporting
-// a single template literal. Concatenation order below is cascade order — keep
-// base first (it owns the :root tokens) and the rest in place unless a rule is
-// meant to override an earlier section.
 
 import { css as base } from "./styles/base.js";
 import { css as stage } from "./styles/stage.js";

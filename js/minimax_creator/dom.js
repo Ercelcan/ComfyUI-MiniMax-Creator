@@ -24,16 +24,30 @@ export function registerGlobalMediaHandler() {
       stopAllMediaGlobally(target);
     }
   }, true);
-
-  document.addEventListener("volumechange", (event) => {
-    const target = event.target;
-    if (target && (target.tagName === "VIDEO" || target.tagName === "AUDIO") && !target.muted) {
-      stopAllMediaGlobally(target);
-    }
-  }, true);
 }
 
 registerGlobalMediaHandler();
+
+export function formatTimecode(seconds, fps = 24) {
+  if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
+  const mins = Math.floor(seconds / 60);
+  const secs = Math.floor(seconds % 60);
+  const ms = Math.floor((seconds % 1) * 1000);
+  const frames = Math.floor((seconds % 1) * fps);
+  const pad = (n, len = 2) => String(n).padStart(len, "0");
+  return {
+    timecode: `${pad(mins)}:${pad(secs)}.${pad(ms, 3)}`,
+    framesText: `F${frames}`,
+    display: `${pad(mins)}:${pad(secs)}.${pad(ms, 3)} / F${frames}`,
+  };
+}
+
+export function formatTime(seconds) {
+  if (!Number.isFinite(seconds) || seconds < 0) return "0:00";
+  const mins = Math.floor(seconds / 60);
+  const rest = seconds - mins * 60;
+  return `${mins}:${rest < 10 ? "0" : ""}${rest.toFixed(1)}`;
+}
 
 export function el(tag, props = {}, children = []) {
   const node = document.createElement(tag);
@@ -46,6 +60,7 @@ export function el(tag, props = {}, children = []) {
     if (key === "class") node.className = value;
     else if (key === "text") node.textContent = value;
     else if (key === "style") Object.assign(node.style, value);
+    else if (key === "value" && ("value" in node)) node.value = value;
     else if (key.startsWith("on")) node.addEventListener(key.slice(2).toLowerCase(), value);
     else node.setAttribute(key, value === true ? "" : value);
   }
@@ -69,7 +84,7 @@ export function drawFrame(canvas, video, maxHeight = 720) {
 
 export function svg(paths, size = 22) {
   const holder = document.createElement("span");
-  holder.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}">${paths}</svg>`;
+  holder.innerHTML = `<svg viewBox="0 0 24 24" width="${size}" height="${size}" style="display:inline-block;vertical-align:middle;">${paths}</svg>`;
   return holder.firstElementChild;
 }
 
@@ -77,6 +92,7 @@ export const ICONS = {
   image: `<rect x="3" y="3" width="18" height="18" rx="3"/><circle cx="8.5" cy="8.5" r="1.5"/><path d="M21 15l-5-5L5 21"/>`,
   video: `<rect x="2" y="6" width="14" height="12" rx="2.5"/><path d="M16 10.5L22 7v10l-6-3.5z"/>`,
   audio: `<path d="M4 10v4M8 6v12M12 3v18M16 7v10M20 10v4"/>`,
+  music: `<path d="M9 18V5l12-2v13"/><circle cx="6" cy="18" r="3"/><circle cx="18" cy="16" r="3"/>`,
   effect: `<path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><path d="M18.5 15.5l.7 1.8 1.8.7-1.8.7-.7 1.8-.7-1.8-1.8-.7 1.8-.7z"/>`,
   clock: `<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3.2 1.9"/>`,
   frameIn: `<rect x="3" y="4" width="18" height="16" rx="3"/><path d="M8 12h8M12 8v8"/>`,
@@ -101,6 +117,23 @@ export const ICONS = {
   gear: `<path d="M9.671 4.136a2.34 2.34 0 0 1 4.659 0 2.34 2.34 0 0 0 3.319 1.915 2.34 2.34 0 0 1 2.33 4.033 2.34 2.34 0 0 0 0 3.831 2.34 2.34 0 0 1-2.33 4.033 2.34 2.34 0 0 0-3.319 1.915 2.34 2.34 0 0 1-4.659 0 2.34 2.34 0 0 0-3.32-1.915 2.34 2.34 0 0 1-2.33-4.033 2.34 2.34 0 0 0 0-3.831A2.34 2.34 0 0 1 6.35 6.051a2.34 2.34 0 0 0 3.319-1.915"/><circle cx="12" cy="12" r="3"/>`,
   camera: `<path d="M14.5 4h-5L7.5 7H4a2 2 0 00-2 2v9a2 2 0 002 2h16a2 2 0 002-2V9a2 2 0 00-2-2h-3.5l-2-3z"/><circle cx="12" cy="13" r="3"/>`,
   magic: `<path d="M15 4l-2 3 2 3-3-2-3 2 2-3-2-3 3 2zM6 10l-1.5 2 1.5 2-2-1.5-2 1.5 1.5-2-1.5-2 2 1.5zM20 18l-1 1.5 1 1.5-1.5-1-1.5 1 1-1.5-1-1.5 1.5 1z"/>`,
+  skipStart: `<path d="M6 5v14M18 5l-9 7 9 7V5z"/>`,
+  stepBack: `<path d="M15 6l-6 6 6 6"/>`,
+  stepForward: `<path d="M9 6l6 6-6 6"/>`,
+  skipEnd: `<path d="M18 5v14M6 5l9 7-9 7V5z"/>`,
+  markIn: `<path d="M8 5v14M8 5h6M8 19h6"/>`,
+  markOut: `<path d="M16 5v14M16 5h-6M16 19h-6"/>`,
+  magnet: `<path d="M6 4v7a6 6 0 0012 0V4M6 8h4M14 8h4"/>`,
+  razor: `<path d="M4 4l16 16M9 4l11 11M4 9l11 11"/>`,
+  lock: `<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 018 0v4"/>`,
+  unlock: `<rect x="5" y="11" width="14" height="10" rx="2"/><path d="M8 11V7a4 4 0 017.5-2"/>`,
+  edit: `<path d="M11 4H4a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2v-7"/><path d="M18.5 2.5a2.121 2.121 0 013 3L12 15l-4 1 1-4 9.5-9.5z"/>`,
+  trash: `<path d="M3 6h18M19 6v14a2 2 0 01-2 2H7a2 2 0 01-2-2V6m3 0V4a2 2 0 012-2h4a2 2 0 012 2v2M10 11v6M14 11v6"/>`,
+  loop: `<path d="M17 2l4 4-4 4"/><path d="M3 11v-1a4 4 0 014-4h14"/><path d="M7 22l-4-4 4-4"/><path d="M21 13v1a4 4 0 01-4 4H3"/>`,
+  volume: `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><path d="M15.54 8.46a5 5 0 010 7.07"/><path d="M19.07 4.93a10 10 0 010 14.14"/>`,
+  volumeMute: `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>`,
+  download: `<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>`,
+  broom: `<path d="M3 21l8-8M14 4l6 6-7 7-6-6 7-7zM18 10l2 2M15 7l2 2"/>`,
 };
 
 export function icon(name, size = 22) {

@@ -125,13 +125,18 @@ export class PromptBox {
     }
   }
 
+  recordHistoryDebounced() {
+    clearTimeout(this.historyDebounce);
+    this.historyDebounce = setTimeout(() => {
+      this.saveSnapshot("Edit");
+    }, 1000);
+  }
+
   saveSnapshot(label = "Edit") {
     const text = this.getValue().trim();
     if (!text || text.length < 5) return;
     const history = this.getHistory();
-    // Don't save if identical to the last entry
     if (history.length && history[0].text.trim() === text) return;
-    // Don't save tiny 1-word edits if last was saved less than 5 seconds ago
     if (history.length && Date.now() - history[0].timestamp < 5000 && Math.abs(history[0].text.length - text.length) < 4) return;
     
     const entry = { text, timestamp: Date.now(), label };
@@ -148,7 +153,6 @@ export class PromptBox {
   }
 
   openHistoryModal(anchor) {
-    const history = this.getHistory();
     const current = this.getValue();
     const pop = el("div", { class: "mmc-pop mmc-history-pop" });
 

@@ -83,7 +83,6 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
         source = decoded[payloads[index].get("continue_from", index - 1)] \
             if index else (None, None)
 
-        # Bypass KSampler if segment is locked and has a cached artifact
         if one.locked and one.cached_video:
             loaded = graph.node(LOAD_SEGMENT_NODE, video_path=one.cached_video)
             images, audio = loaded.out(0), loaded.out(1)
@@ -109,6 +108,10 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             if one.continues_audio:
                 inputs["prev_audio"] = graph.node(
                     AUDIO_TAIL_NODE, audio=source[1], seconds=one.audio_tail_s).out(0)
+
+            # Enforce strict sequential execution order (1 -> 2 -> 3) across the graph
+            if index > 0 and decoded:
+                inputs["prev_step"] = decoded[index - 1][0]
 
             segment = graph.node(SEGMENT_NODE, **inputs)
             against = graph.node("ConditioningZeroOut", conditioning=segment.out(1)).out(0)
@@ -155,7 +158,6 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                 trimmed = graph.node(TRIM_NODE, images=images, audio=audio, frames=one.feather)
                 images, audio = trimmed.out(0), trimmed.out(1)
 
-            # Auto-save intermediate segment if multi-segment timeline
             if len(compiled) > 1:
                 saved_seg = graph.node(
                     SAVE_SEGMENT_NODE,

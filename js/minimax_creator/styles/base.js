@@ -32,22 +32,62 @@ export const css = `
 .mmc-root {
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
   color: var(--mmc-text);
-  display: flex; flex-direction: column; gap: 10px;
-  padding: 12px; box-sizing: border-box;
-  height: 100% !important; width: 100% !important;
-  min-width: 440px !important;
-  min-height: 320px !important;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 10px;
+  box-sizing: border-box;
+  height: 100%;
+  width: 100%;
+  min-width: 440px;
+  min-height: 320px;
   overflow: hidden;
-  transition: width .15s ease, margin-right .15s ease;
 }
 
-/* When output sockets are enabled, leave the right 115px lane completely clear for canvas sockets & wire dragging */
+.mmc-root.mmc-nle-studio {
+  min-width: 580px;
+  min-height: 400px;
+  padding: 10px;
+  gap: 8px;
+}
+
 .mmc-root.mmc-has-outputs {
   width: calc(100% - 115px) !important;
   margin-right: 115px !important;
   box-sizing: border-box !important;
 }
 
-.mmc-prestage-host { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; }
+.mmc-prestage-host {
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  min-height: 0;
+  width: 100%;
+}
 .mmc-prestage-host > * { flex: 1 1 auto; min-height: 0; width: 100%; }
+
+.mmc-root.mmc-drag-drop-active::after {
+  content: "📥 Drop media here to attach as reference";
+  position: absolute;
+  inset: 0;
+  z-index: 1000;
+  background: rgba(47, 123, 246, 0.88);
+  color: #ffffff;
+  font-size: 15px;
+  font-weight: 600;
+  font-family: inherit;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  border: 2px dashed #ffffff;
+  border-radius: 16px;
+  pointer-events: none;
+  backdrop-filter: blur(4px);
+  box-sizing: border-box;
+}
+
+::-webkit-scrollbar { width: 6px; height: 6px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--mmc-surface-3); border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: var(--mmc-dim); }
 `;

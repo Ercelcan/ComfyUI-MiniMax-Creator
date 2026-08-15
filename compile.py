@@ -564,7 +564,7 @@ def render_mode(data):
 
 
 def _join_prompt(global_prompt, segment_prompt):
-    parts = [p for p in (global_prompt.strip(), str(segment_prompt or "").strip()) if p]
+    parts = [p for p in (str(global_prompt or "").strip(), str(segment_prompt or "").strip()) if p]
     return "\n".join(parts)
 
 
@@ -645,7 +645,7 @@ def _continue_source(raw, index):
 
 def timeline_payloads(data, image_size_lookup=None):
     segments = timeline_segments(data)
-    global_prompt = str(data.get("prompt") or "")
+    global_prompt = str(data.get("prompt") or "").strip()
     pool = timeline_pool(data)
     global_cited = {asset.handle for asset in pool} & set(HANDLE_RE.findall(global_prompt))
     payloads = []
@@ -657,15 +657,20 @@ def timeline_payloads(data, image_size_lookup=None):
         request.pop("continue_from", None)
         request.pop("feather", None)
         
-        # Extract lock/caching metadata
         locked = bool(segment.get("locked"))
         cached_video = segment.get("cached_video") or None
 
+        # Always join global prompt in front of every segment's prompt and refined body
         request["prompt"] = _join_prompt(global_prompt, segment.get("prompt"))
-        if refined_scope(segment) == "shot":
-            request["refined"] = {**segment["refined"],
-                                  "body": _join_prompt(global_prompt,
-                                                       segment["refined"].get("body"))}
+        refined = request.get("refined")
+        if isinstance(refined, dict) and refined.get("enabled") is not False:
+            body_text = refined.get("body")
+            if body_text and str(body_text).strip() and global_prompt:
+                request["refined"] = {
+                    **refined,
+                    "body": _join_prompt(global_prompt, body_text),
+                }
+
         request["aspect"] = data.get("aspect", "16:9")
         request["short_edge"] = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
         for key in ("upscale", "sample_edge", "refine_denoise"):
@@ -709,8 +714,7 @@ def timeline_payloads(data, image_size_lookup=None):
             try:
                 feather = int(segment.get("feather") or 1)
             except (TypeError, ValueError) as exc:
-                raise CompileError(f"segment {index + 1}: feather must be a "
-                                   f"number of frames") from exc
+                raise CompileError(f"segment {index + 1}: feather must be a number of frames") from exc
             if feather > 1:
                 payloads[-1]["feather"] = feather
 
@@ -819,8 +823,7 @@ def single_payload(data):
             lambda m: "@" + rename.get(m.group(1), m.group(1)),
             written or str(segment.get("prompt") or ""),
         ).strip()
-        if number == 1 and global_prompt and (not written
-                                              or refined_scope(segment) == "shot"):
+        if number == 1 and global_prompt:
             joiner = "" if global_prompt[-1] in ".!?,;:—" else "."
             text = f"{global_prompt}{joiner} {text}".strip()
         shots.append((at, text))

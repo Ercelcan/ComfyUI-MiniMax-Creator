@@ -9,7 +9,7 @@ import { handleMediaFiles } from "./minimax_creator/media_drop.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
-// Global input guard to prevent ComfyUI node copy/paste and support Image Paste
+// Global input guard to prevent ComfyUI node copy/paste conflicts and support Image/Media Paste
 function installInputGuard() {
   if (globalThis._mmcInputGuardInstalled) return;
   globalThis._mmcInputGuardInstalled = true;
@@ -17,12 +17,12 @@ function installInputGuard() {
   const isMmcInput = (el) => {
     if (!el) return false;
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
+      return !el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt, .mmc-nle-studio");
     }
     if (el.isContentEditable) {
-      return !!el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt");
+      return !el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt, .mmc-nle-studio");
     }
-    return !!el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop");
+    return !el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop, .mmc-nle-studio");
   };
 
   window.addEventListener("keydown", (e) => {
@@ -86,7 +86,13 @@ installInputGuard();
 const CREATOR = "MiniMaxH3Creator";
 const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";
-const MIN_SIZE = { [CREATOR]: [620, 520], [TIMELINE]: [620, 360], [PRESTAGE]: [460, 420] };
+
+// Floor dimensions for the nodes
+const MIN_SIZE = {
+  [CREATOR]: [620, 520],
+  [TIMELINE]: [680, 480],
+  [PRESTAGE]: [460, 420],
+};
 const WIDGET = { [CREATOR]: "creator_data", [TIMELINE]: "timeline_data", [PRESTAGE]: "prestage_data" };
 const SIDE = { [PRESTAGE]: "left" };
 
@@ -296,22 +302,23 @@ function attach(node, build) {
       const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
       const hasOutputs = node.properties?.show_outputs === true;
       const initialW = hasOutputs ? minWidth + 115 : minWidth;
-      node.size = [Math.max(node.size?.[0] ?? 0, initialW), Math.max(node.size?.[1] ?? 0, minHeight)];
+
+      if (!node.size || node.size[0] < initialW || node.size[1] < minHeight) {
+        node.size = [Math.max(node.size?.[0] ?? 0, initialW), Math.max(node.size?.[1] ?? 0, minHeight)];
+      }
 
       node.widgets_start_y = 0;
 
-      const origComputeSize = node.computeSize;
+      // Returns the minimum bounding floor so user can freely shrink and grow the node
       node.computeSize = function (out) {
-        const sz = origComputeSize ? origComputeSize.apply(this, arguments) : [minWidth, minHeight];
         const withOutputs = node.properties?.show_outputs === true;
         const curMinW = withOutputs ? minWidth + 115 : minWidth;
         out = out || [0, 0];
-        out[0] = Math.max(sz[0] || 0, curMinW);
-        out[1] = Math.max(sz[1] || 0, minHeight);
+        out[0] = curMinW;
+        out[1] = minHeight;
         return out;
       };
 
-      const origOnResize = node.onResize;
       node.onResize = function (size) {
         if (size) {
           const withOutputs = node.properties?.show_outputs === true;
@@ -319,7 +326,6 @@ function attach(node, build) {
           size[0] = Math.max(size[0], curMinW);
           size[1] = Math.max(size[1], minHeight);
         }
-        origOnResize?.apply(this, arguments);
         try { node.setDirtyCanvas?.(true, true); } catch {}
       };
 

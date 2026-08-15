@@ -1,23 +1,9 @@
-// The sampler row, drawn the same way on both nodes.
-//
-// Both the Creator and the Timeline own their sampler and declare the same
-// widgets under the same names, so there is one row and both mount it. It lives
-// outside the panel on either node because the panel says what the piece *is*
-// and this says how it is run.
-//
-// The widgets are the real ComfyUI ones, hidden by the entry point and re-drawn
-// here: `graphToPrompt` reads values off `node.widgets`, so these pills write
-// through to them rather than holding state of their own.
-
 import { el, icon } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover, stepperPill } from "./pills.js";
 
 export const SEED_CONTROL = ["fixed", "increment", "decrement", "randomize"];
 
-// Every widget this row draws. The entry point hides exactly these, so a name
-// added here without being added there would render twice — once as a pill and
-// once as the stock widget underneath.
 export const SAMPLING_WIDGETS = [
   "seed", "control_after_generate", "steps", "cfg", "sampler_name", "scheduler",
   "block_cache", "spectrum", "spectrum_blend",
@@ -30,22 +16,6 @@ const BLOCK_CACHE_TITLE = {
   aggressive: "FirstBlockCache, most skipping — fastest, furthest from a native render.",
 };
 
-/**
- * @param {object} options
- * @param {object} options.widgets           name -> real ComfyUI widget
- * @param {(name, fallback) => any} options.value
- * @param {(name, value) => void} options.set write-through to the widget
- * @param {boolean} options.perSegment       true when there is more than one
- *                                           generation, which changes what the
- *                                           seed and step counts mean
- * @param {HTMLElement[]} [options.turbo]     the turbo switch's pills (see
- *   turbo.js), drawn with the accelerators because that is what it is — built
- *   by the caller because it needs the state, which this row otherwise doesn't
- * @param {HTMLElement[]} [options.trailing] appended after the accelerators —
- *   the weights pill, which belongs on this row because it is the other half of
- *   "how is this run" and nowhere else because it is not a sampler setting
- * @returns {HTMLElement}
- */
 export function samplingBar({ widgets, value, set, perSegment = false, turbo = [], trailing = [] }) {
   const pills = [];
 
@@ -120,10 +90,6 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
     }, [el("span", { text: String(widget.value) })]));
   }
 
-  // The accelerators. Off is the default and reads as off — an unlit pill —
-  // because they are other people's nodes and a render with one on is not a
-  // native render, which is worth being able to see at a glance. The turbo
-  // switch leads them: it is the one that changes the most about the run.
   pills.push(...turbo);
 
   if (widgets.block_cache) {
@@ -151,8 +117,6 @@ export function samplingBar({ widgets, value, set, perSegment = false, turbo = [
       onclick: () => set("spectrum", !on),
     }, [el("span", { text: on ? t("spectrum") : t("spectrum off") })]));
 
-    // Only worth a control when it is doing something; the blend is ignored
-    // outright while Spectrum is off.
     if (on && widgets.spectrum_blend) {
       pills.push(stepperPill({
         value: Number(value("spectrum_blend", 0.5)), min: 0, max: 1, step: 0.05, width: "52px",

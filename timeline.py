@@ -156,7 +156,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
     def define_schema(cls):
         return io.Schema(
             node_id="MiniMaxH3TimelineSegment",
-            display_name="MiniMax H3 Timeline Segment",
+            display_name="MiniMaxH3 Timeline Segment",
             category="MiniMax/internal",
             description="One segment of a MiniMax H3 timeline. Written into the graph by the Timeline node.",
             is_dev_only=True,
@@ -171,6 +171,8 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                     tooltip="An earlier segment's last frame, when this segment continues from it."),
                 io.Audio.Input("prev_audio", optional=True,
                     tooltip="The tail of an earlier segment's soundtrack, when this segment's sound continues from it."),
+                io.Image.Input("prev_step", optional=True,
+                    tooltip="Guarantees strict sequential execution order (1 -> 2 -> 3) in ComfyUI graph."),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -191,7 +193,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
     @classmethod
     def execute(cls, clip, segment_data, vae=None, audio_vae=None,
                 model_fl2va=None, model_ref2va=None,
-                prev_image=None, prev_audio=None) -> io.NodeOutput:
+                prev_image=None, prev_audio=None, prev_step=None) -> io.NodeOutput:
         payload = _parse(segment_data)
 
         progress = payload.get("progress")
@@ -507,7 +509,6 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         
         target_node = str(parent_node_id).strip() if str(parent_node_id).strip() else cls.hidden.unique_id
 
-        # Broadcast cached segment artifact back to frontend
         server = getattr(PromptServer, "instance", None)
         if server is not None:
             server.send_sync("mmc_segment_cached", {

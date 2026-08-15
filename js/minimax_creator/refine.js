@@ -466,24 +466,30 @@ export class RefinePanel {
 
   apply(result, shot) {
     const state = this.getState();
-    const replaced = this.refined?.replaced
-      ?? { soundscape: state.soundscape ?? "", music: state.music ?? "" };
+    const replaced = this.refined?.replaced ?? {
+      prompt: state.prompt ?? "",
+      soundscape: state.soundscape ?? "",
+      music: state.music ?? "",
+    };
 
     state.refined = {
       body: shot.body,
-      ...(result.scope ? { scope: result.scope } : {}),
+      scope: "shot",
       ...(result.sections ? { sections: result.sections } : {}),
       ...(result.skill ? { skill: result.skill } : {}),
       ...(result.template ? { template: result.template, forced: !!result.forced } : {}),
       source: state.prompt ?? "",
       model: chosenModel(),
       enabled: true,
-      ...(this.audioFields ? { replaced } : {}),
+      replaced,
     };
-    if (this.audioFields) {
-      state.soundscape = result.soundscape ?? "";
-      state.music = result.music ?? "";
-    }
+
+    if (shot.soundscape !== undefined && shot.soundscape !== "") state.soundscape = shot.soundscape;
+    else if (result.soundscape) state.soundscape = result.soundscape;
+
+    if (shot.music !== undefined && shot.music !== "") state.music = shot.music;
+    else if (result.music) state.music = result.music;
+
     this.seen = result.seen ?? "";
     this.problems = result.problems ?? [];
     this.render();
@@ -498,10 +504,16 @@ export class RefinePanel {
     const state = this.getState();
     const replaced = state.refined?.replaced;
     delete state.refined;
-    if (this.audioFields && replaced) {
+
+    if (replaced) {
+      if (replaced.prompt !== undefined) state.prompt = replaced.prompt;
       state.soundscape = replaced.soundscape ?? "";
       state.music = replaced.music ?? "";
+    } else {
+      state.soundscape = "";
+      state.music = "";
     }
+
     this.seen = "";
     this.problems = [];
     this.onCommit?.();
@@ -542,6 +554,7 @@ export class RefinePanel {
   textarea(get, set, { rows = 3, placeholder = "", className = "mmc-refined-box" }) {
     const box = el("textarea", {
       class: className, rows: String(rows), placeholder,
+      value: get() ?? "",
       oninput: (event) => { set(event.target.value); this.onCommit?.(); },
     });
     box.value = get() ?? "";
@@ -554,7 +567,7 @@ export class RefinePanel {
   render() {
     const state = this.getState();
     const refined = this.refined;
-    const audio = this.audioFields && (state.soundscape?.trim() || state.music?.trim());
+    const audio = Boolean(state.soundscape?.trim() || state.music?.trim());
     if (!refined && !audio && !this.problems.length) {
       this.root.replaceChildren();
       return;
@@ -568,7 +581,7 @@ export class RefinePanel {
         class: "mmc-ghost mmc-copy-btn",
         style: { fontSize: "11px" },
         text: t("📋 Copy all"),
-        title: t("Copy full Context-IR formatted prompt (all sections, description and sound)"),
+        title: t("Copy full Context-IR formatted prompt"),
         onclick: async () => {
           const full = this.getFullPromptText();
           if (full) {
@@ -582,9 +595,7 @@ export class RefinePanel {
       parts.push(el("div", { class: "mmc-refined-head" }, [
         el("button", {
           class: `mmc-refined-toggle${on ? " on" : ""}`,
-          title: on
-            ? t("This rewrite is what the model will read. Click to queue your own prompt instead — the rewrite is kept.")
-            : t("Your own prompt is what the model will read. Click to use the rewrite again."),
+          title: on ? t("Rewrite active") : t("Rewrite off"),
           onclick: () => {
             refined.enabled = !on;
             this.onCommit?.();
@@ -592,39 +603,19 @@ export class RefinePanel {
           },
         }, [el("span", { class: "mmc-dot" }), el("span", { text: on ? t("refined (active)") : t("refined (off)") })]),
         ...(refined.model ? [el("span", { class: "mmc-refined-model", text: refined.model })] : []),
-        ...(refined.template ? [el("span", {
-          class: "mmc-refined-model",
-          text: refined.forced ? t("{template} (pinned)", { template: refined.template.toLowerCase() })
-                               : refined.template.toLowerCase(),
-          title: refined.forced
-            ? t("Written with the {template} template you pinned in the refiner's settings, not the one the attachments imply.", { template: refined.template })
-            : t("Written with the {template} template, picked automatically from what is attached.", { template: refined.template }),
-        })] : []),
-        ...(refined.skill ? [el("span", { class: "mmc-refined-model",
-                                          text: t("skill: {skill}", { skill: refined.skill }),
-                                          title: t("Written by this skill package rather than the built-in prompts — the whole document, format included.") })] : []),
-        ...(this.stale ? [el("span", {
-          class: "mmc-refined-stale",
-          text: t("prompt edited since"),
-          title: t("Your prompt has changed since this was written. It still queues as it stands — refine again to fold the change in."),
-        })] : []),
+        ...(refined.template ? [el("span", { class: "mmc-refined-model", text: refined.template.toLowerCase() })] : []),
         el("span", { style: { flex: "1" } }),
         copyBtn,
         el("button", {
           class: "mmc-ghost",
           style: { fontSize: "11px" },
           text: this.collapsed ? t("Expand") : t("Collapse"),
-          title: this.collapsed ? t("Expand the refined text box") : t("Collapse the refined text box"),
-          onclick: () => {
-            this.collapsed = !this.collapsed;
-            this.render();
-          },
+          onclick: () => { this.collapsed = !this.collapsed; this.render(); },
         }),
         el("button", {
           class: "mmc-ghost",
           style: { fontSize: "11px" },
           text: t("Revert"),
-          title: t("Throw the rewrite away and go back to your own prompt. The soundscape and score it wrote go with it."),
           onclick: () => this.clear(),
         }),
       ]));
@@ -672,23 +663,21 @@ export class RefinePanel {
       }
     }
 
-    if (this.audioFields && (refined || audio)) {
+    if (refined || audio) {
       parts.push(el("div", { class: "mmc-tl-audio" }, [
         el("label", { class: "mmc-tl-field" }, [
           el("span", { class: "mmc-tl-field-name", text: "overall_soundscape" }),
           this.textarea(
             () => state.soundscape,
             (value) => { state.soundscape = value; },
-            { rows: 3, className: "mmc-refined-sub-box",
-              placeholder: t("Everything heard in the room. Empty leaves it to the model; N/A is silence.") }),
+            { rows: 2, className: "mmc-refined-sub-box", placeholder: t("Ambient noise, action sounds in this shot...") }),
         ]),
         el("label", { class: "mmc-tl-field" }, [
           el("span", { class: "mmc-tl-field-name", text: "non_diegetic_music" }),
           this.textarea(
             () => state.music,
             (value) => { state.music = value; },
-            { rows: 3, className: "mmc-refined-sub-box",
-              placeholder: t("The score only the audience hears. Empty leaves it to the model.") }),
+            { rows: 2, className: "mmc-refined-sub-box", placeholder: t("Music, background score for this shot...") }),
         ]),
       ]));
     }
@@ -702,40 +691,56 @@ export class RefinePanel {
 
 export function refineButton({ run, label = "Refine", title, className = "mmc-tool" }) {
   let busy = false;
+  const isPill = className.includes("mmc-pill") || className.includes("mmc-nle-btn");
+
+  const spinner = el("span", { class: "mmc-refine-spinner", style: { display: "none" } });
+  const brainIcon = icon("brain", isPill ? 15 : 20);
   const text = el("span", { text: t(label) });
+
+  const btnContent = isPill
+    ? [spinner, brainIcon, text]
+    : [el("span", { class: "mmc-tool-icon" }, [spinner, brainIcon]), text];
+
   const button = el("button", {
     class: className,
-    title: title || t("Rewrite this prompt into the expanded description H3 was trained to read, keeping everything you wrote and expanding it."),
+    title: title || t("Rewrite prompt with Context-IR AI refiner"),
     onclick: async () => {
       if (busy) return;
       busy = true;
       button.classList.add("busy");
+      spinner.style.display = "inline-block";
+      brainIcon.style.display = "none";
       text.textContent = t("Refining…");
       try {
         await run();
       } finally {
         busy = false;
         button.classList.remove("busy");
+        spinner.style.display = "none";
+        brainIcon.style.display = "";
         text.textContent = t(label);
       }
     },
-  }, [el("span", { class: "mmc-tool-icon" }, [icon("brain")]), text]);
+  }, btnContent);
 
   const more = el("button", {
     class: "mmc-refine-more",
     title: chosenModel()
-      ? t("{model} — click to change the model, template, language or sampling", { model: chosenModel() })
-      : t("Choose a model"),
+      ? t("{model} — click to change model settings", { model: chosenModel() })
+      : t("Choose refiner model"),
     onclick: (event) => {
       event.stopPropagation();
       openSettings(event.currentTarget, () => {
         more.title = chosenModel()
-          ? t("{model} — click to change the model, template, language or sampling", { model: chosenModel() })
-          : t("Choose a model");
+          ? t("{model} — click to change model settings", { model: chosenModel() })
+          : t("Choose refiner model");
       });
     },
-  }, [icon("chevron", 12)]);
+  }, [icon("chevron", 11)]);
 
-  const pill = className.includes("mmc-pill");
-  return el("div", { class: `mmc-refine-split${pill ? " pill" : ""}` }, [button, more]);
+  if (!isPill) {
+    return el("div", { class: "mmc-tool mmc-refine-split" }, [button, more]);
+  }
+
+  return el("div", { class: "mmc-refine-split pill" }, [button, more]);
 }

@@ -20,6 +20,7 @@ _TAKES_WHAT = {
     "scene": "a scene reference",
     "style": "a style reference",
 }
+
 _TAKES_NOTE = {
     "person": "only the person is the reference — face, hair, skin, build and "
               "what they wear. The picture's background, palette, lighting, "
@@ -43,10 +44,11 @@ def _slot(asset, label, show_label):
     if what is None:
         what = {
             "image": _TAKES_WHAT.get(asset.takes, "a reference image"),
-            "video": {"picture": "a reference video, picture only",
-                      "picture+sound": "a reference video, picture and soundtrack",
-                      "sound": "a reference video used for its soundtrack alone"}.get(
-                          asset.track, "a reference video"),
+            "video": {
+                "picture": "a reference video, picture only",
+                "picture+sound": "a reference video, picture and soundtrack",
+                "sound": "a reference video used for its soundtrack alone",
+            }.get(asset.track, "a reference video"),
             "audio": "a reference audio clip",
         }[asset.kind]
     row = {"handle": asset.handle, "what": f"{what} ({os.path.basename(asset.filename)})"}
@@ -134,8 +136,7 @@ def _shot(compiled, text, seconds, continues, show_labels):
         "slots": slots,
         "labels": dict(compiled.labels),
         "handles": {a.handle for a in assets},
-        "refs": {a.handle for a in
-                 compiled.ref_images + compiled.ref_videos + compiled.ref_audios},
+        "refs": {a.handle for a in compiled.ref_images + compiled.ref_videos + compiled.ref_audios},
     }, images
 
 
@@ -353,8 +354,15 @@ def _run(body):
     if kind == "timeline" and not single and mode == "REF2VA":
         ref_shots = tuple(n for n, s in enumerate(shots) if s["mode"] == "REF2VA")
 
-    shape = refine.reply_shape(mode, len(shots), cuts=cuts, images=len(pictures),
-                               piece=ask_piece, ref_shots=ref_shots)
+    shape = refine.reply_shape(
+        mode,
+        len(shots),
+        cuts=cuts,
+        images=len(pictures),
+        piece=ask_piece,
+        ref_shots=ref_shots,
+        ai_seam_mode=body.get("ai_seam_mode", "auto"),
+    )
     system = refine.system_prompt(mode, body.get("language") or "English",
                                   shape=shape, cuts=cuts)
     message = refine.user_message(
@@ -416,8 +424,14 @@ def _run(body):
             max_tokens=body.get("max_tokens"),
         )
 
-    parsed = refine.parse_reply(content, mode, len(shots), cuts=cuts,
-                                piece=ask_piece, ref_shots=ref_shots)
+    parsed = refine.parse_reply(
+        content,
+        mode,
+        len(shots),
+        cuts=cuts,
+        piece=ask_piece,
+        ref_shots=ref_shots,
+    )
 
     if "cuts" in parsed:
         parsed["shots"] = [refine.join_shots(parsed["shots"], parsed["cuts"], seconds)]
@@ -441,7 +455,18 @@ def _run(body):
         where = f"Shot {shot['index'] + 1} " if "index" in shot else "The rewrite "
         for problem in refine.check(written, shot["handles"], shot["labels"]):
             problems.append(where + problem)
-        entry = {"index": shot.get("index"), "body": written}
+
+        auto_seam = parsed.get("auto_seams", [None] * len(shots))[position]
+        shot_sound = parsed.get("shot_soundscapes", [""] * len(shots))[position]
+        shot_music = parsed.get("shot_musics", [""] * len(shots))[position]
+
+        entry = {
+            "index": shot.get("index", position),
+            "body": written,
+            "auto_seam": auto_seam,
+            "soundscape": shot_sound,
+            "music": shot_music,
+        }
 
         if position in ref_shots:
             own = shot_sections[position] if position < len(shot_sections) else None
@@ -474,12 +499,11 @@ def _run(body):
             problems.append(f"The {field} {problem}")
         return text
 
-    parsed["soundscape"] = normalized(parsed["soundscape"], "overall_soundscape")
-    parsed["music"] = normalized(parsed["music"], "non_diegetic_music")
+    soundscape = normalized(parsed.get("soundscape") or "", "overall_soundscape")
+    music = normalized(parsed.get("music") or "", "non_diegetic_music")
     sections = parsed.get("sections")
     if sections:
         sections = {name: normalized(text, name) for name, text in sections.items()}
-        parsed["sections"] = sections
 
     piece_out = None
     if ask_piece:
@@ -503,11 +527,12 @@ def _run(body):
                     "Edit it out before queueing."
                 )
 
-    everything = "\n".join([entry["body"] for entry in out]
-                           + [text for entry in out
-                              for text in (entry.get("sections") or {}).values()]
-                           + list((sections or {}).values())
-                           + [parsed["soundscape"], parsed["music"], piece_out or ""])
+    everything = "\n".join(
+        [entry["body"] for entry in out]
+        + [text for entry in out for text in (entry.get("sections") or {}).values()]
+        + list((sections or {}).values())
+        + [soundscape, music, piece_out or ""]
+    )
     if not ref_shots:
         for handle in refine.uncited(everything, refs, labels):
             problems.append(
@@ -530,9 +555,9 @@ def _run(body):
         "derived": derived,
         "forced": forced,
         "shots": out,
-        "soundscape": parsed["soundscape"],
-        "music": parsed["music"],
-        "sections": parsed.get("sections"),
+        "soundscape": soundscape,
+        "music": music,
+        "sections": sections,
         "piece": piece_out,
         "scope": "shot" if kind in ("segment", "timeline") else None,
         "seen": parsed.get("seen") or "",
@@ -548,13 +573,19 @@ async def refine_models(request):
     loop = asyncio.get_running_loop()
     try:
         if provider == "ollama":
-            models_list = await loop.run_in_executor(None, refine_api.fetch_models_ollama, url or "http://localhost:11434")
+            models_list = await loop.run_in_executor(
+                None, refine_api.fetch_models_ollama, url or "http://localhost:11434"
+            )
             return web.json_response({"models": models_list})
         elif provider == "openai":
-            models_list = await loop.run_in_executor(None, refine_api.fetch_models_openai, url or "http://localhost:1234/v1")
+            models_list = await loop.run_in_executor(
+                None, refine_api.fetch_models_openai, url or "http://localhost:1234/v1"
+            )
             return web.json_response({"models": models_list})
         elif provider == "openrouter":
-            models_list = await loop.run_in_executor(None, refine_api.fetch_models_openrouter, url or "https://openrouter.ai/api/v1", api_key)
+            models_list = await loop.run_in_executor(
+                None, refine_api.fetch_models_openrouter, url or "https://openrouter.ai/api/v1", api_key
+            )
             return web.json_response({"models": models_list})
         else:
             names = await loop.run_in_executor(None, refine_local.list_models)
@@ -576,9 +607,10 @@ async def refine_prompt(request):
         return web.json_response({"error": "the request body was not JSON"}, status=400)
 
     if not (body.get("model") or "").strip():
-        return web.json_response({"error":
-            "No text encoder or LLM model chosen. Select a model in the refiner settings."
-        }, status=400)
+        return web.json_response(
+            {"error": "No text encoder or LLM model chosen. Select a model in the refiner settings."},
+            status=400,
+        )
 
     loop = asyncio.get_running_loop()
     try:
