@@ -887,7 +887,51 @@ export class TimelineBody {
     for (const name of events) api.addEventListener(name, this.onApiEvent);
 
     loadCatalog(() => this.adoptWeights());
+    this.restoreLocalCache();
     this.render();
+  }
+
+  saveLocalCache() {
+    const id = this.getId();
+    if (!id) return;
+    const cacheMap = {};
+    for (let i = 0; i < (this.timeline.segments || []).length; i++) {
+      const seg = this.timeline.segments[i];
+      if (seg?.cached_video) {
+        cacheMap[i] = {
+          cached_video: seg.cached_video,
+          locked: seg.locked === true,
+        };
+      }
+    }
+    try {
+      localStorage.setItem(`mmc-timeline-cache-${id}`, JSON.stringify(cacheMap));
+    } catch {}
+  }
+
+  restoreLocalCache() {
+    const id = this.getId();
+    if (!id) return;
+    try {
+      const raw = localStorage.getItem(`mmc-timeline-cache-${id}`);
+      if (!raw) return;
+      const cacheMap = JSON.parse(raw);
+      let changed = false;
+      for (const [idxStr, item] of Object.entries(cacheMap)) {
+        const idx = Number(idxStr);
+        const seg = (this.timeline.segments || [])[idx];
+        if (seg && item?.cached_video) {
+          if (seg.cached_video !== item.cached_video || seg.locked !== item.locked) {
+            seg.cached_video = item.cached_video;
+            seg.locked = item.locked;
+            changed = true;
+          }
+        }
+      }
+      if (changed) {
+        this.write(S.serializeTimeline(this.timeline));
+      }
+    } catch {}
   }
 
   destroy() {
@@ -923,6 +967,7 @@ export class TimelineBody {
         const segment = (this.timeline.segments || [])[segIdx];
         if (segment) {
           segment.cached_video = detail.cached_video;
+          this.saveLocalCache();
           this.commit();
         }
       }
@@ -930,7 +975,7 @@ export class TimelineBody {
       this.activeSegment = null;
       this.render();
     } else if (type === "executed") {
-      if (String(detail.display_node) === String(this.getId() ?? "")) {
+      if (String(detail.display_node) === String(this.getId() ?? "") || this.ours(detail.node)) {
         this.activeSegment = null;
         const allCached = detail.output?.mmc_segment_cached || [];
         for (const item of allCached) {
@@ -940,6 +985,7 @@ export class TimelineBody {
             seg.cached_video = item.cached_video;
           }
         }
+        this.saveLocalCache();
         this.commit();
       }
     } else if (type === "execution_error") {
@@ -957,12 +1003,14 @@ export class TimelineBody {
 
   reload() {
     this.timeline = S.parseTimeline(this.read());
+    this.restoreLocalCache();
     this.render();
   }
 
   commit() {
     S.syncTimeline(this.timeline);
     Turbo.sync(this.timeline, this.widgetIO());
+    this.saveLocalCache();
     this.write(S.serializeTimeline(this.timeline));
     this.render();
   }

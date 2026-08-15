@@ -466,6 +466,7 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
                 io.Float.Input("fps", default=float(canvas.FPS)),
                 io.String.Input("filename_prefix", default="minimax/renders/H3"),
                 io.Int.Input("segment_index", default=1),
+                io.String.Input("parent_node_id", default=""),
                 io.Int.Input("crf", default=settings.DEFAULT_CRF),
             ],
             outputs=[],
@@ -473,7 +474,7 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, audio, fps, filename_prefix, segment_index,
+    def execute(cls, images, audio, fps, filename_prefix, segment_index, parent_node_id="",
                 crf=settings.DEFAULT_CRF) -> io.NodeOutput:
         import inspect
         import os
@@ -504,11 +505,13 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         output_path = f"{subfolder}/{filename}" if subfolder else filename
         cached_result = output_path + " [output]"
         
+        target_node = str(parent_node_id).strip() if str(parent_node_id).strip() else cls.hidden.unique_id
+
         # Broadcast cached segment artifact back to frontend
         server = getattr(PromptServer, "instance", None)
         if server is not None:
             server.send_sync("mmc_segment_cached", {
-                "node": cls.hidden.unique_id,
+                "node": target_node,
                 "segment_index": int(segment_index),
                 "cached_video": cached_result,
             })

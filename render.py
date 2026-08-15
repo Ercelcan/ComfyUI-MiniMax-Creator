@@ -164,6 +164,7 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                     fps=float(canvas.FPS),
                     filename_prefix=filename_prefix,
                     segment_index=index + 1,
+                    parent_node_id=str(unique_id),
                     crf=settings.video_crf()
                 )
                 saved_seg.set_override_display_id(unique_id)
