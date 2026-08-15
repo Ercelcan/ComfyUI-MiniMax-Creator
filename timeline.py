@@ -1,7 +1,7 @@
 """A clip made of several shots, in one of two ways.
 
 Chained: one generation per segment, concatenated, with segment N able to start
-from segment N-1's decoded last frame.
+from segment N-1's decoded last frame. Supports selective locking and regeneration.
 
 One pass: the segments are compiled into a single multi-shot description and
 generated in one go.
@@ -450,6 +450,103 @@ class MiniMaxH3Save(io.ComfyNode):
         })
 
 
+class MiniMaxH3SaveSegment(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3SaveSegment",
+            display_name="MiniMax H3 Save Segment",
+            category="MiniMax/internal",
+            description="Auto-saves an intermediate timeline segment for selective re-rendering.",
+            is_dev_only=True,
+            is_output_node=True,
+            inputs=[
+                io.Image.Input("images"),
+                io.Audio.Input("audio"),
+                io.Float.Input("fps", default=float(canvas.FPS)),
+                io.String.Input("filename_prefix", default="minimax/renders/H3"),
+                io.Int.Input("segment_index", default=1),
+                io.Int.Input("crf", default=settings.DEFAULT_CRF),
+            ],
+            outputs=[],
+            hidden=[io.Hidden.unique_id],
+        )
+
+    @classmethod
+    def execute(cls, images, audio, fps, filename_prefix, segment_index,
+                crf=settings.DEFAULT_CRF) -> io.NodeOutput:
+        import inspect
+        import os
+        from fractions import Fraction
+        import folder_paths
+        from comfy_api.latest import InputImpl, Types
+        from server import PromptServer
+
+        height, width = int(images.shape[1]), int(images.shape[2])
+        seg_prefix = f"{filename_prefix.rstrip('/')}_seg{int(segment_index)}"
+        directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
+            seg_prefix, folder_paths.get_output_directory(), width, height)
+
+        video = InputImpl.VideoFromComponents(Types.VideoComponents(
+            images=images, audio=audio, frame_rate=Fraction(round(float(fps)))))
+        filename = f"{name}_{counter:05}_.mp4"
+        full_path = os.path.join(directory, filename)
+        
+        quality = {"crf": float(crf)}
+        if "crf" not in inspect.signature(video.save_to).parameters:
+            quality = {}
+            
+        video.save_to(full_path,
+                      format=Types.VideoContainer.MP4,
+                      codec=Types.VideoCodec.H264,
+                      **quality)
+
+        output_path = f"{subfolder}/{filename}" if subfolder else filename
+        cached_result = output_path + " [output]"
+        
+        # Broadcast cached segment artifact back to frontend
+        server = getattr(PromptServer, "instance", None)
+        if server is not None:
+            server.send_sync("mmc_segment_cached", {
+                "node": cls.hidden.unique_id,
+                "segment_index": int(segment_index),
+                "cached_video": cached_result,
+            })
+
+        return io.NodeOutput(ui={
+            "mmc_segment_cached": [{
+                "index": int(segment_index),
+                "cached_video": cached_result,
+            }],
+        })
+
+
+class MiniMaxH3LoadSegment(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3LoadSegment",
+            display_name="MiniMax H3 Load Segment",
+            category="MiniMax/internal",
+            description="Loads a cached timeline segment to bypass DiT sampling.",
+            is_dev_only=True,
+            inputs=[
+                io.String.Input("video_path"),
+            ],
+            outputs=[
+                io.Image.Output(display_name="images"),
+                io.Audio.Output(display_name="audio"),
+            ],
+        )
+
+    @classmethod
+    def execute(cls, video_path) -> io.NodeOutput:
+        frames, audio = media.load_video(video_path, want_audio=True)
+        if audio is None:
+            audio = {"waveform": torch.zeros((1, 2, frames.shape[0] * 1000), dtype=torch.float32), "sample_rate": 24000}
+        return io.NodeOutput(frames, audio)
+
+
 NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3LastFrame,
          MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3TimelineJoin,
-         MiniMaxH3Save]
+         MiniMaxH3Save, MiniMaxH3SaveSegment, MiniMaxH3LoadSegment]

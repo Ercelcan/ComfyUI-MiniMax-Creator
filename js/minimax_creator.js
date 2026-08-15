@@ -298,7 +298,6 @@ function attach(node, build) {
       const initialW = hasOutputs ? minWidth + 115 : minWidth;
       node.size = [Math.max(node.size?.[0] ?? 0, initialW), Math.max(node.size?.[1] ?? 0, minHeight)];
 
-      // Keep DOM widget anchored at top
       node.widgets_start_y = 0;
 
       const origComputeSize = node.computeSize;
@@ -351,6 +350,7 @@ function attach(node, build) {
       try { node.setDirtyCanvas?.(true, true); } catch {}
       return body;
     } catch (err) {
+      console.error("[MiniMax Creator] attach error:", err);
       return null;
     }
   };

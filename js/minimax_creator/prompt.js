@@ -1,10 +1,11 @@
-import { el, icon, floatAbove } from "./dom.js";
+import { el, icon, floatAbove, mountOverlay, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
 
 const TRIGGER = /@([\w-]*)$/;
 const MAX_SUGGESTIONS = 40;
+const MAX_HISTORY = 15;
 
 export const QUICK_CHIPS = [
   { group: "Camera Motion", items: [
@@ -33,11 +34,36 @@ export const QUICK_CHIPS = [
   ]},
 ];
 
+function diffWords(oldText, newText) {
+  const oldWords = (oldText || "").trim().split(/\s+/).filter(Boolean);
+  const newWords = (newText || "").trim().split(/\s+/).filter(Boolean);
+  const result = [];
+
+  let i = 0, j = 0;
+  while (i < oldWords.length || j < newWords.length) {
+    if (i < oldWords.length && j < newWords.length && oldWords[i] === newWords[j]) {
+      result.push({ type: "same", text: newWords[j] });
+      i++; j++;
+    } else if (j < newWords.length && (!oldWords.includes(newWords[j]) || oldWords.indexOf(newWords[j]) < i)) {
+      result.push({ type: "add", text: newWords[j] });
+      j++;
+    } else if (i < oldWords.length) {
+      result.push({ type: "del", text: oldWords[i] });
+      i++;
+    } else {
+      result.push({ type: "add", text: newWords[j] });
+      j++;
+    }
+  }
+  return result;
+}
+
 export class PromptBox {
   constructor(hooks) {
     this.hooks = hooks;
     this.menu = null;
     this.showChips = false;
+    this.historyDebounce = null;
 
     this.root = el("div", {
       class: "mmc-prompt",
@@ -49,12 +75,14 @@ export class PromptBox {
     });
 
     this.wordCountEl = el("span", { class: "mmc-prompt-wordcount", text: "0 words" });
-
+    this.linterBar = el("div", { class: "mmc-linter-bar" });
     this.chipsBar = el("div", { class: "mmc-prompt-chips-bar" });
 
     this.root.addEventListener("input", () => {
       this.onEdit();
       this.updateWordCount();
+      this.recordHistoryDebounced();
+      this.runLinter();
     });
     this.root.addEventListener("keydown", (event) => this.onKeyDown(event), true);
     this.root.addEventListener("paste", (event) => this.onPaste(event));
@@ -65,6 +93,179 @@ export class PromptBox {
     }
 
     this.renderChipsBar();
+    this.runLinter();
+  }
+
+  get syntaxMode() {
+    try {
+      return localStorage.getItem("mmc-syntax-mode") || "media";
+    } catch {
+      return "media";
+    }
+  }
+
+  get linterEnabled() {
+    try {
+      return localStorage.getItem("mmc-linter-enabled") !== "false";
+    } catch {
+      return true;
+    }
+  }
+
+  getHistoryKey() {
+    const id = this.hooks.getState?.()?.nodeId || "default";
+    return `mmc-prompt-history-${id}`;
+  }
+
+  getHistory() {
+    try {
+      return JSON.parse(localStorage.getItem(this.getHistoryKey()) || "[]");
+    } catch {
+      return [];
+    }
+  }
+
+  saveSnapshot(label = "Edit") {
+    const text = this.getValue().trim();
+    if (!text || text.length < 5) return;
+    const history = this.getHistory();
+    // Don't save if identical to the last entry
+    if (history.length && history[0].text.trim() === text) return;
+    // Don't save tiny 1-word edits if last was saved less than 5 seconds ago
+    if (history.length && Date.now() - history[0].timestamp < 5000 && Math.abs(history[0].text.length - text.length) < 4) return;
+    
+    const entry = { text, timestamp: Date.now(), label };
+    history.unshift(entry);
+    try {
+      localStorage.setItem(this.getHistoryKey(), JSON.stringify(history.slice(0, MAX_HISTORY)));
+    } catch {}
+  }
+
+  clearHistory() {
+    try {
+      localStorage.removeItem(this.getHistoryKey());
+    } catch {}
+  }
+
+  openHistoryModal(anchor) {
+    const history = this.getHistory();
+    const current = this.getValue();
+    const pop = el("div", { class: "mmc-pop mmc-history-pop" });
+
+    const render = () => {
+      const hist = this.getHistory();
+      if (!hist.length) {
+        pop.replaceChildren(
+          el("div", { class: "mmc-history-header" }, [
+            el("span", { class: "mmc-pop-title", style: { padding: 0 }, text: t("Prompt History") }),
+          ]),
+          el("div", { class: "mmc-refine-hint", style: { padding: "14px 4px", textAlign: "center" }, text: t("No previous prompt snapshots yet.") })
+        );
+        return;
+      }
+
+      const header = el("div", { class: "mmc-history-header" }, [
+        el("span", { class: "mmc-pop-title", style: { padding: 0 }, text: t("Prompt History & Diff") }),
+        el("button", {
+          class: "mmc-ghost mmc-history-clear-btn",
+          text: t("🗑 Clear history"),
+          title: t("Clear all saved snapshots"),
+          onclick: () => {
+            this.clearHistory();
+            render();
+          },
+        }),
+      ]);
+
+      const list = el("div", { class: "mmc-history-list" });
+      for (const item of hist) {
+        const timeStr = new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+        const words = (item.text || "").trim().split(/\s+/).filter(Boolean).length;
+        
+        const row = el("div", { class: "mmc-history-item" }, [
+          el("div", { class: "mmc-history-item-head" }, [
+            el("span", { class: "mmc-history-time", text: timeStr }),
+            el("span", { class: "mmc-history-label", text: `· ${item.label || "Edit"}` }),
+            el("span", { class: "mmc-history-count", text: `${words} ${words === 1 ? "word" : "words"}` }),
+            el("button", {
+              class: "mmc-ghost mmc-history-restore-btn",
+              text: t("Restore"),
+              onclick: () => {
+                this.setValue(item.text);
+                this.hooks.onInput(item.text);
+                close();
+              },
+            }),
+          ]),
+          el("div", { class: "mmc-history-diff" }, diffWords(item.text, current).map((part) =>
+            el("span", {
+              class: part.type === "add" ? "mmc-diff-add" : part.type === "del" ? "mmc-diff-del" : "mmc-diff-same",
+              text: `${part.text} `,
+            })
+          )),
+        ]);
+        list.appendChild(row);
+      }
+
+      pop.replaceChildren(header, list);
+    };
+
+    render();
+    document.body.appendChild(pop);
+    placeNear(pop, anchor);
+    const close = dismissable(pop);
+  }
+
+  runLinter() {
+    if (!this.linterEnabled) {
+      this.linterBar.replaceChildren();
+      return;
+    }
+
+    const text = this.getValue();
+    const state = this.hooks.getState?.() ?? {};
+    const attached = new Set([
+      ...(state.assets ?? []).map((a) => a.handle),
+      ...(this.hooks.getPool?.() ?? []).map((a) => a.handle),
+    ]);
+
+    const warnings = [];
+
+    const mentioned = [...new Set(Array.from(text.matchAll(/@([A-Za-z]+-\d+)/g), (m) => m[1]))];
+    const missing = mentioned.filter((h) => !attached.has(h));
+    if (missing.length) {
+      warnings.push({
+        text: t("Mentions @{handles} which are not attached.", { handles: missing.join(", @") }),
+        type: "warn",
+      });
+    }
+
+    const dialogueMatches = Array.from(text.matchAll(/<d>(?:\[\w+\])?\s*([\s\S]*?)\s*<\/d>/g), (m) => m[1]);
+    if (dialogueMatches.length) {
+      const dialogueWords = dialogueMatches.join(" ").split(/\s+/).filter(Boolean).length;
+      const duration = Number(state.duration_s || 6);
+      const rate = dialogueWords / Math.max(1, duration);
+      if (rate > 3.8) {
+        warnings.push({
+          text: t("Dialogue is {words} words for a {sec}s shot (~{rate} words/sec) — may exceed duration.", {
+            words: dialogueWords, sec: duration, rate: rate.toFixed(1),
+          }),
+          type: "warn",
+        });
+      }
+    }
+
+    if (!warnings.length) {
+      this.linterBar.replaceChildren();
+      return;
+    }
+
+    this.linterBar.replaceChildren(...warnings.map((w) =>
+      el("div", { class: `mmc-lint-item ${w.type}` }, [
+        el("span", { class: "mmc-lint-dot" }),
+        el("span", { text: w.text }),
+      ])
+    ));
   }
 
   updateWordCount() {
@@ -85,6 +286,17 @@ export class PromptBox {
       },
       onpointerdown: (e) => e.stopPropagation(),
     }, [icon("camera", 14), el("span", { text: t("Camera & Style") })]);
+
+    const historyBtn = el("button", {
+      class: "mmc-ghost mmc-prompt-tool-btn",
+      text: t("🕒 History"),
+      title: t("Open prompt snapshot history & diff comparison"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (e) => {
+        e.stopPropagation();
+        this.openHistoryModal(e.currentTarget);
+      },
+    });
 
     const copyBtn = el("button", {
       class: "mmc-ghost mmc-prompt-tool-btn",
@@ -112,11 +324,13 @@ export class PromptBox {
         this.setValue("");
         this.hooks.onInput("");
         this.updateWordCount();
+        this.runLinter();
       },
     });
 
     const topBar = el("div", { class: "mmc-prompt-top-row" }, [
       toggleBtn,
+      historyBtn,
       el("span", { style: { flex: "1" } }),
       copyBtn,
       clearBtn,
@@ -124,7 +338,7 @@ export class PromptBox {
     ]);
 
     if (!this.showChips) {
-      this.chipsBar.replaceChildren(topBar);
+      this.chipsBar.replaceChildren(topBar, this.linterBar);
       return;
     }
 
@@ -144,7 +358,7 @@ export class PromptBox {
       }))),
     ]));
 
-    this.chipsBar.replaceChildren(topBar, ...groups);
+    this.chipsBar.replaceChildren(topBar, ...groups, this.linterBar);
   }
 
   getValue() {
@@ -162,25 +376,57 @@ export class PromptBox {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
     this.updateWordCount();
+    this.runLinter();
   }
 
   build(text) {
+    const mode = this.syntaxMode;
+    if (mode === "off") {
+      return [document.createTextNode(text)];
+    }
+
     const state = this.hooks.getState?.() ?? {};
     const known = new Set([
       ...(state.assets ?? []).map((a) => a.handle),
       ...(this.hooks.getPool?.() ?? []).map((a) => a.handle),
     ]);
+
     const out = [];
     let at = 0;
-    const pattern = /@([A-Za-z]+-\d+)/g;
+    
+    const pattern = mode === "full"
+      ? /(@[A-Za-z]+-\d+)|(\[Shot\s+\d+\])|(At\s+\d{1,3}:\d{2}\.\d{3},?)|(<\s*(?:Subject|Picture|Video|Audio)\s+\d+\s*>)|(<d>[\s\S]*?<\/d>)/gi
+      : /@([A-Za-z]+-\d+)/g;
+
     let match;
     while ((match = pattern.exec(text)) !== null) {
-      if (!known.has(match[1])) continue;
-      if (match.index > at) out.push(document.createTextNode(text.slice(at, match.index)));
-      out.push(this.chip(match[1]));
+      if (match.index > at) {
+        out.push(document.createTextNode(text.slice(at, match.index)));
+      }
+
+      if (match[1]) {
+        const handle = match[1].replace(/^@/, "");
+        if (known.has(handle)) {
+          out.push(this.chip(handle));
+        } else {
+          out.push(document.createTextNode(match[1]));
+        }
+      } else if (match[2]) {
+        out.push(el("span", { class: "mmc-tok-shot", contenteditable: "false", text: match[2] }));
+      } else if (match[3]) {
+        out.push(el("span", { class: "mmc-tok-time", contenteditable: "false", text: match[3] }));
+      } else if (match[4]) {
+        out.push(el("span", { class: "mmc-tok-subject", contenteditable: "false", text: match[4] }));
+      } else if (match[5]) {
+        out.push(el("span", { class: "mmc-tok-dialogue", text: match[5] }));
+      }
+
       at = match.index + match[0].length;
     }
-    if (at < text.length) out.push(document.createTextNode(text.slice(at)));
+
+    if (at < text.length) {
+      out.push(document.createTextNode(text.slice(at)));
+    }
     return out;
   }
 
@@ -205,6 +451,7 @@ export class PromptBox {
     if (document.activeElement === this.root) return;
     this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
     this.updateWordCount();
+    this.runLinter();
   }
 
   onEdit() {

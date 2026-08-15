@@ -210,10 +210,10 @@ const clampSampleEdge = (value) => {
 };
 
 export const sampleEdge = (target) =>
-  Math.min(clampSampleEdge(target.sample_edge), target.short_edge);
+  Math.min(clampSampleEdge(target.sample_edge), target.short_edge || NATIVE_SHORT_EDGE);
 
 export const twoPass = (target) =>
-  sampleEdge(target) < target.short_edge && target.upscale !== "direct";
+  sampleEdge(target) < (target.short_edge || NATIVE_SHORT_EDGE) && target.upscale !== "direct";
 
 const clampRefineDenoise = (value) => {
   const n = Number(value);
@@ -244,7 +244,7 @@ export function emptyState() {
 
 export function parseState(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed && typeof parsed === "object") {
       const state = { ...emptyState(), ...parsed };
       if (!Array.isArray(state.loras)) state.loras = [];
@@ -302,7 +302,7 @@ function serializeRefined(refined) {
 }
 
 function serializeAssets(assets) {
-  return assets.map((asset) => {
+  return (assets || []).map((asset) => {
     const out = { handle: asset.handle, kind: asset.kind, role: asset.role, filename: asset.filename };
     if (asset.kind === "video") out.track = asset.track || DEFAULT_TRACK;
     if (sizeable(asset) && refSize(asset) !== DEFAULT_REF_SIZE[asset.kind]) {
@@ -325,7 +325,7 @@ function serializeCommon(state) {
     ...(state.soundscape?.trim() ? { soundscape: state.soundscape } : {}),
     ...(state.music?.trim() ? { music: state.music } : {}),
     assets: serializeAssets(state.assets),
-    loras: serializeLoras(state.loras),
+    loras: serializeLoras(state.loras || []),
     duration_s: state.duration_s,
     ...(state.checkpoint && state.checkpoint !== "auto" ? { checkpoint: state.checkpoint } : {}),
   };
@@ -349,7 +349,7 @@ export function serializeState(state) {
 export const MAX_SEGMENTS = 24;
 
 export const RENDER_MODES = ["chained", "single"];
-export const isSingle = (timeline) => timeline.render === "single";
+export const isSingle = (timeline) => timeline?.render === "single";
 
 export const DEFAULT_AUDIO_TAIL_S = 1.0;
 export const MAX_AUDIO_TAIL_S = 4.0;
@@ -365,6 +365,8 @@ export function emptySegment() {
   delete state.version;
   state.continue = false;
   state.continue_audio = false;
+  state.locked = false;
+  state.cached_video = null;
   return state;
 }
 
@@ -391,7 +393,7 @@ export function emptyTimeline() {
 }
 
 function syncCanvas(timeline) {
-  for (const segment of timeline.segments) {
+  for (const segment of (timeline.segments || [])) {
     segment.aspect = timeline.aspect;
     segment.short_edge = timeline.short_edge;
     segment.upscale = timeline.upscale;
@@ -404,14 +406,14 @@ function syncCanvas(timeline) {
       music: timeline.music ?? "",
     };
   }
-  if (timeline.segments.length) {
+  if (timeline.segments && timeline.segments.length) {
     timeline.segments[0].continue = false;
     timeline.segments[0].continue_audio = false;
   }
-  timeline.segments.forEach((segment, index) => {
+  (timeline.segments || []).forEach((segment, index) => {
     const from = segment.continue_from;
     if (!Number.isInteger(from) || from < 1 || from >= index) delete segment.continue_from;
-    if (segment.feather && 2 * segment.feather > framesForSeconds(segment.duration_s)) {
+    if (segment.feather && 2 * segment.feather > framesForSeconds(segment.duration_s || 6)) {
       delete segment.feather;
     }
   });
@@ -422,7 +424,7 @@ export { syncCanvas as syncTimeline };
 
 export function parseTimeline(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed && typeof parsed === "object") {
       const timeline = { ...emptyTimeline(), ...parsed };
       if (!Array.isArray(timeline.loras)) timeline.loras = [];
@@ -448,18 +450,20 @@ export function parseTimeline(raw) {
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
       const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
-      timeline.segments = (segments.length ? segments : [{}]).map((raw) => {
-        const segment = parseState(JSON.stringify(raw ?? {}));
+      timeline.segments = (segments.length ? segments : [{}]).map((rawSeg) => {
+        const segment = parseState(JSON.stringify(rawSeg ?? {}));
         delete segment.version;
         delete segment.models;
         delete segment.turbo;
-        segment.continue = raw?.continue === true;
-        segment.continue_audio = raw?.continue_audio === true;
+        segment.continue = rawSeg?.continue === true;
+        segment.continue_audio = rawSeg?.continue_audio === true;
+        segment.locked = rawSeg?.locked === true;
+        segment.cached_video = typeof rawSeg?.cached_video === "string" ? rawSeg.cached_video : null;
         delete segment.continue_from;
-        const from = Number(raw?.continue_from);
+        const from = Number(rawSeg?.continue_from);
         if (Number.isInteger(from)) segment.continue_from = from;
         delete segment.feather;
-        const width = Number(raw?.feather);
+        const width = Number(rawSeg?.feather);
         if (FEATHER_GRID.includes(width) && width > 1) segment.feather = width;
         return segment;
       });
@@ -489,10 +493,14 @@ export function serializeTimeline(timeline) {
     audio_tail_s: clampTail(timeline.audio_tail_s),
     ...serializeModels(timeline.models),
     ...serializeTurbo(timeline.turbo),
-    segments: timeline.segments.map((segment, index) => {
+    segments: (timeline.segments || []).map((segment, index) => {
       const out = serializeCommon(segment);
       if (index > 0 && segment.continue) out.continue = true;
       if (index > 0 && segment.continue_audio) out.continue_audio = true;
+      if (segment.locked && segment.cached_video) {
+        out.locked = true;
+        out.cached_video = segment.cached_video;
+      }
       if ((out.continue || out.continue_audio)
           && Number.isInteger(segment.continue_from)
           && segment.continue_from >= 1 && segment.continue_from < index) {
@@ -511,7 +519,7 @@ export function cloneSegment(segment) {
 export function cutTimes(timeline) {
   const at = [];
   let total = 0;
-  for (const segment of timeline.segments) {
+  for (const segment of (timeline.segments || [])) {
     at.push(total);
     total += Number(segment.duration_s) || 0;
   }
@@ -526,9 +534,9 @@ export function shotTime(seconds) {
 
 export function timelineFrames(timeline) {
   if (isSingle(timeline)) return framesForSeconds(cutTimes(timeline).total);
-  return timeline.segments.reduce((total, segment, index) => {
+  return (timeline.segments || []).reduce((total, segment, index) => {
     const overlap = index > 0 && continues(segment) && feather(segment) > 1 ? feather(segment) : 0;
-    return total + framesForSeconds(segment.duration_s) - overlap;
+    return total + framesForSeconds(segment.duration_s || 6) - overlap;
   }, 0);
 }
 
@@ -680,7 +688,7 @@ export const PRESTAGE_IMAGE_ARCHES = PRESTAGE_ARCHES.filter((arch) => arch !== P
 
 export function parsePreStage(raw) {
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed && typeof parsed === "object") {
       const state = { ...emptyPreStage(), ...parsed };
       if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
@@ -743,7 +751,7 @@ export function serializePreStage(state) {
     short_edge: state.short_edge,
     ...(state.init ? { init: { filename: state.init.filename, denoise: round2(state.init.denoise) } } : {}),
     ...(state.refs.length ? { refs: state.refs.map((r) => ({ handle: r.handle, filename: r.filename })) } : {}),
-    loras: serializeLoras(state.loras),
+    loras: serializeLoras(state.loras || []),
     ...(state.turbo.on || state.turbo.saved
       ? { turbo: { on: state.turbo.on, quality: state.turbo.quality,
                    ...(state.turbo.saved ? { saved: { ...state.turbo.saved } } : {}) } }
@@ -787,7 +795,7 @@ export function resolvedPreStage(state, initSize = null) {
     fromImage = true;
   }
   ratio = Math.min(PRESTAGE_MAX_RATIO, Math.max(PRESTAGE_MIN_RATIO, ratio));
-  const edge = Math.max(PRESTAGE_MIN_EDGE, Math.min(PRESTAGE_MAX_EDGE, Math.round(state.short_edge)));
+  const edge = Math.max(PRESTAGE_MIN_EDGE, Math.min(PRESTAGE_MAX_EDGE, Math.round(state.short_edge || PRESTAGE_DEFAULT_EDGE)));
 
   let width, height;
   if (ratio >= 1) { width = edge * ratio; height = edge; }
@@ -814,7 +822,7 @@ export function resolvedPreStage(state, initSize = null) {
 }
 
 export function nextPreStageHandle(state) {
-  const taken = new Set(state.refs.map((r) => r.handle));
+  const taken = new Set((state.refs || []).map((r) => r.handle));
   for (let n = 1; ; n += 1) {
     const handle = `img-${n}`;
     if (!taken.has(handle)) return handle;
@@ -836,7 +844,7 @@ export function tagIndex(handle) {
 
 export function nextHandle(state, kind) {
   const prefix = PREFIX[kind];
-  const taken = new Set(state.assets.map((a) => a.handle));
+  const taken = new Set((state.assets || []).map((a) => a.handle));
   for (let n = 1; ; n += 1) {
     const handle = `${prefix}-${n}`;
     if (!taken.has(handle)) return handle;
@@ -873,11 +881,11 @@ export function refinedBody(state) {
   return (refined.body || "").trim();
 }
 
-export const findLora = (state, name) => state.loras.find((l) => l.name === name) || null;
+export const findLora = (state, name) => (state.loras || []).find((l) => l.name === name) || null;
 
 export function activeLoras(state) {
   const target = checkpoint(state);
-  return state.loras.filter((entry) =>
+  return (state.loras || []).filter((entry) =>
     entry.enabled !== false && loraModes(entry).includes(target) && round2(entry.strength) !== 0);
 }
 
@@ -891,6 +899,7 @@ export function addLora(state, name, triggers = [], strength = null) {
     enabled: true,
     modes: [...CHECKPOINTS], triggers: [...triggers],
   };
+  state.loras = state.loras || [];
   state.loras.push(entry);
   return entry;
 }
@@ -911,16 +920,16 @@ export function promptTriggers(state) {
 
 export function timelineCheckpoints(timeline) {
   if (isSingle(timeline)) {
-    if (timeline.segments.some(hasReferences)) return ["ref2va"];
-    const pin = timeline.segments.map((s) => s.checkpoint).find((c) => c && c !== "auto");
+    if ((timeline.segments || []).some(hasReferences)) return ["ref2va"];
+    const pin = (timeline.segments || []).map((s) => s.checkpoint).find((c) => c && c !== "auto");
     return [pin || "fl2va"];
   }
-  const routed = new Set(timeline.segments.map((segment) => checkpoint(segment)));
+  const routed = new Set((timeline.segments || []).map((segment) => checkpoint(segment)));
   return CHECKPOINTS.filter((name) => routed.has(name));
 }
 
 export function singleMode(timeline) {
-  const shots = timeline.segments;
+  const shots = timeline.segments || [];
   if (shots.some(hasReferences)) return "REF2VA";
   const first = frameAsset(shots[0] ?? { assets: [] }, "first_frame");
   const last = frameAsset(shots[shots.length - 1] ?? { assets: [] }, "last_frame");
@@ -931,7 +940,7 @@ export function singleMode(timeline) {
 }
 
 export function singleProblem(timeline) {
-  const shots = timeline.segments;
+  const shots = timeline.segments || [];
   const globalPrompt = (timeline.prompt || "").trim();
 
   for (const [index, shot] of shots.entries()) {
@@ -977,7 +986,7 @@ export function activeGlobalLoras(timeline) {
 }
 
 export function removeLora(state, name) {
-  state.loras = state.loras.filter((entry) => entry.name !== name);
+  state.loras = (state.loras || []).filter((entry) => entry.name !== name);
 }
 
 export const HANDLE_RE = /@([A-Za-z]+-\d+)/g;
@@ -1006,7 +1015,7 @@ export function citedPool(state) {
   const pool = state.pool ?? [];
   if (!pool.length) return [];
   const found = citedHandles(poolTexts(state));
-  const own = new Set(state.assets.map((a) => a.handle));
+  const own = new Set((state.assets || []).map((a) => a.handle));
   return pool.filter((asset) => found.has(asset.handle) && !own.has(asset.handle));
 }
 
@@ -1021,7 +1030,7 @@ export function poolCitedGlobally(timeline, asset) {
 }
 
 export function poolCitations(timeline, asset) {
-  return timeline.segments
+  return (timeline.segments || [])
     .map((segment, index) => (citedPool(segment).includes(asset) ? index + 1 : null))
     .filter((n) => n !== null);
 }
@@ -1034,37 +1043,37 @@ export function nextPoolHandle(timeline) {
   }
 }
 
-export const references = (state) => state.assets.filter((a) => a.role === "reference");
+export const references = (state) => (state.assets || []).filter((a) => a.role === "reference");
 export const refImages = (state) => references(state).filter((a) => a.kind === "image");
 export const soundOnly = (asset) => asset.kind === "video" && asset.track === "sound";
 export const refVideos = (state) => references(state).filter((a) => a.kind === "video" && !soundOnly(a));
 export const refAudios = (state) => references(state).filter((a) => a.kind === "audio" || soundOnly(a));
-export const frameAsset = (state, role) => state.assets.find((a) => a.role === role) || null;
+export const frameAsset = (state, role) => (state.assets || []).find((a) => a.role === role) || null;
 
 export function hasReferences(state) {
   return references(state).length > 0 || citedPool(state).length > 0;
 }
 
-export const continues = (state) => state.continue === true;
+export const continues = (state) => state?.continue === true;
 
 export const FEATHER_GRID = [1, 5, 22, 39];
 
 export function feather(segment) {
-  return FEATHER_GRID.includes(segment.feather) && segment.feather > 1 ? segment.feather : 1;
+  return FEATHER_GRID.includes(segment?.feather) && segment.feather > 1 ? segment.feather : 1;
 }
 
 export function maxFeather(segment) {
-  const frames = framesForSeconds(segment.duration_s);
+  const frames = framesForSeconds(segment?.duration_s || 6);
   return FEATHER_GRID.filter((f) => 2 * f <= frames).pop() ?? 1;
 }
 
 export function continueSource(segment, index) {
-  const from = segment.continue_from;
+  const from = segment?.continue_from;
   return Number.isInteger(from) && from >= 1 && from < index ? from : index;
 }
 
 export function remapContinueFrom(timeline, map) {
-  for (const segment of timeline.segments) {
+  for (const segment of (timeline.segments || [])) {
     if (!Number.isInteger(segment.continue_from)) continue;
     const next = map(segment.continue_from);
     if (Number.isInteger(next) && next >= 1) segment.continue_from = next;
@@ -1072,10 +1081,14 @@ export function remapContinueFrom(timeline, map) {
   }
 }
 
-export const continuesAudio = (state) => state.continue_audio === true;
+export const continuesAudio = (state) => state?.continue_audio === true;
 
 export function frameFile(state) {
   return !!(frameAsset(state, "first_frame") || frameAsset(state, "last_frame"));
+}
+
+export function isLocked(segment) {
+  return segment?.locked === true && Boolean(segment?.cached_video);
 }
 
 export function mode(state) {
@@ -1115,14 +1128,14 @@ export function overflow(state) {
 }
 
 export function resolved(state, keyframeSize = null) {
-  const frames = framesForSeconds(state.duration_s);
+  const frames = framesForSeconds(state.duration_s || 6);
   let ratio = ASPECT_PRESETS.find(([label]) => label === state.aspect)?.[1] ?? 16 / 9;
   let fromImage = false;
   if (keyframeSize && keyframeSize.width && keyframeSize.height) {
     ratio = keyframeSize.width / keyframeSize.height;
     fromImage = true;
   }
-  const [width, height] = resolveCanvas(ratio, state.short_edge);
+  const [width, height] = resolveCanvas(ratio, state.short_edge || NATIVE_SHORT_EDGE);
   return { frames, seconds: secondsForFrames(frames), width, height, ratio, fromImage };
 }
 

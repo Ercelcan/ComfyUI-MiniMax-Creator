@@ -14,11 +14,15 @@ DEFAULT_CRF = 23
 DEFAULT_VIDEO_PREFIX = outputs.VIDEO_PREFIX
 DEFAULT_IMAGE_PREFIX = outputs.IMAGE_PREFIX
 
+SYNTAX_MODES = ("media", "full", "off")
+
 DEFAULTS = {
     "video_crf": DEFAULT_CRF,
     "video_prefix": DEFAULT_VIDEO_PREFIX,
     "image_prefix": DEFAULT_IMAGE_PREFIX,
     "enable_preview": True,
+    "syntax_highlighting": "media",
+    "enable_linter": True,
 }
 
 
@@ -44,6 +48,10 @@ def clean(raw):
                 raise ValueError(f"{key}: {exc}") from exc
     if "enable_preview" in raw and raw["enable_preview"] is not None:
         clean_settings["enable_preview"] = bool(raw["enable_preview"])
+    if "syntax_highlighting" in raw and raw["syntax_highlighting"] in SYNTAX_MODES:
+        clean_settings["syntax_highlighting"] = raw["syntax_highlighting"]
+    if "enable_linter" in raw and raw["enable_linter"] is not None:
+        clean_settings["enable_linter"] = bool(raw["enable_linter"])
     return clean_settings
 
 
@@ -76,20 +84,24 @@ def save(raw):
 
 
 def video_crf():
-    """The quality target for every video this pack writes."""
     return load()["video_crf"]
 
 
 def video_prefix():
-    """Where finished renders land, unless the blob names somewhere itself."""
     return load()["video_prefix"]
 
 
 def image_prefix():
-    """Where pre-stage stills land, unless the blob names somewhere itself."""
     return load()["image_prefix"]
 
 
 def enable_preview():
-    """Whether the live preview box is enabled by default."""
     return load().get("enable_preview", True)
+
+
+def syntax_highlighting():
+    return load().get("syntax_highlighting", "media")
+
+
+def enable_linter():
+    return load().get("enable_linter", True)

@@ -1,4 +1,5 @@
 import { api } from "../../../scripts/api.js";
+import { app } from "../../../scripts/app.js";
 import { viewUrl } from "./api.js";
 import { el, icon, mountOverlay } from "./dom.js";
 import { CreatorEditor } from "./editor.js";
@@ -11,9 +12,10 @@ import { refine, refineButton, chosenModel as refineModel } from "./refine.js";
 import { samplingBar } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
-import * as S from "./state.js";
 import * as Turbo from "./turbo.js";
+import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
+import { drawTimelineWaveform, peaks, draw } from "./waveform.js";
 import {
   FPS, framesForSeconds, secondsForFrames, resolveCanvas, ASPECT_PRESETS, describeRatio, isTrainedLength,
 } from "./canvas.js";
@@ -24,7 +26,7 @@ export function openTimeline(options) {
   return new Promise((resolve) => new Timeline(options, resolve).mount());
 }
 
-const cardWidth = (seconds) => 132 + Math.round(Math.sqrt(seconds) * 26);
+const cardWidth = (seconds) => 154 + Math.round(Math.sqrt(seconds) * 28);
 
 const TRANSITION_PRESETS = [
   {
@@ -142,18 +144,18 @@ class Timeline {
                    + "Empty leaves it to the model; write N/A for none."),
     });
 
-    this.audioHost = el("div", { class: "mmc-tl-audio" }, [
-      el("label", { class: "mmc-tl-field" }, [
-        el("span", { class: "mmc-tl-field-name", text: t("overall_soundscape") }),
+    this.audioHost = el("div", { class: "mmc-tl-audio-grid" }, [
+      el("label", { class: "mmc-tl-field-card" }, [
+        el("span", { class: "mmc-tl-field-tag", text: t("OVERALL_SOUNDSCAPE") }),
         this.soundscapeBox,
       ]),
-      el("label", { class: "mmc-tl-field" }, [
-        el("span", { class: "mmc-tl-field-name", text: t("non_diegetic_music") }),
+      el("label", { class: "mmc-tl-field-card" }, [
+        el("span", { class: "mmc-tl-field-tag", text: t("NON_DIEGETIC_MUSIC") }),
         this.musicBox,
       ]),
     ]);
 
-    this.poolHost = el("div", { class: "mmc-tl-pool" });
+    this.poolHost = el("div", { class: "mmc-tl-pool-card" });
     this.barHost = el("div", { class: "mmc-tl-bar" });
     this.stripHost = el("div", { class: "mmc-tl-strip" });
 
@@ -166,7 +168,7 @@ class Timeline {
 
     this.modal = el("div", { class: "mmc-modal mmc-tl-modal" }, [
       el("div", { class: "mmc-modal-head" }, [
-        el("span", { class: "mmc-tab", "aria-selected": "true", text: t("Timeline") }),
+        el("span", { class: "mmc-tab", "aria-selected": "true", text: t("Timeline Editor") }),
         el("button", { class: "mmc-close", text: "✕", title: t("Close"), onclick: () => this.close() }),
       ]),
       el("div", { class: "mmc-tl-body" }, [
@@ -201,20 +203,18 @@ class Timeline {
     const assets = this.timeline.assets ?? [];
     this.poolHost.replaceChildren(
       el("div", { class: "mmc-tl-pool-head" }, [
-        el("span", { class: "mmc-tl-field-name", text: t("Piece references") }),
+        el("span", { class: "mmc-tl-field-tag", text: t("PIECE REFERENCES (GLOBAL)") }),
         el("span", {
           class: "mmc-tl-pool-hint",
-          text: t("Attached once. Cite the @handle in the global prompt to use it in every "
-                + "segment, or in a segment's own prompt to use it just there."),
+          text: t("Attach once. Cite @handle in global prompt or segment prompts."),
         }),
         el("button", {
           class: "mmc-ghost mmc-tl-pool-add",
-          title: t("Attach a reference to the whole piece — a character sheet, a location, "
-               + "a voice. Cite it with its @handle in every segment where it appears."),
+          title: t("Attach a reference to the whole piece — a character sheet, location, or voice."),
           onclick: () => this.addPoolAssets(),
-        }, [el("span", { text: "+" }), el("span", { text: t("Add") })]),
+        }, [el("span", { text: "+ Add Reference" })]),
       ]),
-      ...(assets.length ? [el("div", { class: "mmc-assets" }, assets.map((a) => this.poolChip(a)))] : []),
+      ...(assets.length ? [el("div", { class: "mmc-assets", style: { marginTop: "6px" } }, assets.map((a) => this.poolChip(a)))] : []),
     );
   }
 
@@ -222,10 +222,10 @@ class Timeline {
     const everywhere = S.poolCitedGlobally(this.timeline, asset);
     const cited = S.poolCitations(this.timeline, asset);
     const where = everywhere
-      ? t("everywhere — cited in the global prompt")
+      ? t("everywhere (global)")
       : cited.length
-        ? t(cited.length === 1 ? "in segment {list}" : "in segments {list}", { list: cited.join(", ") })
-        : t("cited nowhere yet");
+        ? t(cited.length === 1 ? "in shot {list}" : "in shots {list}", { list: cited.join(", ") })
+        : t("uncited");
     const thumb = asset.kind === "image"
       ? el("img", { class: "mmc-asset-thumb", src: viewUrl(asset.filename, { preview: true }), alt: "" })
       : el("span", { class: "mmc-asset-thumb", text: asset.kind === "video" ? "▶" : "♪" });
@@ -233,32 +233,26 @@ class Timeline {
       class: `mmc-asset${everywhere || cited.length ? "" : " idle"}`,
       title: everywhere || cited.length
         ? t("{file} — {where}", { file: asset.filename, where })
-        : t("{file} — no segment cites @{handle} yet, so it rides into none of them.",
-            { file: asset.filename, handle: asset.handle }),
+        : t("{file} — no segment cites @{handle} yet.", { file: asset.filename, handle: asset.handle }),
     }, [
       thumb,
       el("button", {
         class: `mmc-asset-handle mmc-tl-pool-cite mmc-tag-${S.tagIndex(asset.handle)}`,
         text: `@${asset.handle}`,
-        title: t("Write @{handle} into the global prompt, so it applies to every segment.",
-                 { handle: asset.handle }),
+        title: t("Write @{handle} into global prompt", { handle: asset.handle }),
         onclick: () => this.citeInGlobal(asset),
       }),
       el("span", { class: "mmc-tl-pool-where", text: where }),
       ...(asset.kind === "image" ? [el("button", {
         class: "mmc-ghost",
         style: { fontSize: "11px" },
-        title: t("What of this picture is the reference — narrowing it keeps the picture's "
-             + "background and palette out of the video."),
+        title: t("What of this picture is referenced"),
         text: t(S.takes(asset)),
         onclick: (event) => this.pickPoolTakes(event.currentTarget, asset),
       })] : []),
       el("button", {
         class: "mmc-asset-x", text: "✕",
-        title: cited.length
-          ? t("Remove @{handle} — segments {list} still cite it and will refuse to queue "
-            + "until the mentions are edited out.", { handle: asset.handle, list: cited.join(", ") })
-          : t("Remove @{handle}", { handle: asset.handle }),
+        title: t("Remove @{handle}", { handle: asset.handle }),
         onclick: () => {
           this.timeline.assets = (this.timeline.assets ?? []).filter((a) => a !== asset);
           this.commit();
@@ -279,7 +273,7 @@ class Timeline {
   pickPoolTakes(anchor, asset) {
     const label = (key) => t(key);
     openChoicePopover(anchor, {
-      title: t("@{handle} is a reference to", { handle: asset.handle }),
+      title: t("@{handle} reference type", { handle: asset.handle }),
       options: S.TAKES.map(label),
       value: label(S.takes(asset)),
       onPick: (choice) => {
@@ -333,13 +327,9 @@ class Timeline {
     });
     return el("div", { class: "mmc-tl-render" }, [
       option("chained", "Chained",
-        t("One generation per segment, joined end to end. No limit on the finished length, "
-        + "and a segment can start from the previous one's last frame — but every join is a real seam.")),
+        t("One generation per segment, joined end to end. Supports selective locking and re-rolling.")),
       option("single", "One pass",
-        t("One generation. The segments become the shots of a single description, cut times and all, "
-        + "so nothing is decoded and re-encoded mid-clip and there is no seam to cross. "
-        + "Everything a single pass can only have one of — mode, checkpoint, LoRAs, seed — "
-        + "becomes the timeline's.")),
+        t("One generation. The segments become the shots of a single description, cut times and all.")),
     ]);
   }
 
@@ -367,9 +357,9 @@ class Timeline {
         class: "mmc-pill",
         title: S.twoPass(this.timeline)
           ? t("Sampled at a {edge} px short edge, refined up to "
-            + "{width} × {height} by a second pass — every segment alike.",
+            + "{width} × {height} by a second pass.",
               { edge: S.sampleEdge(this.timeline), width, height })
-          : t("Short edge. Lower is faster; 768 is what the open weights were trained at."),
+          : t("Short edge. Lower is faster; 768 is native."),
         onclick: (event) => openResolutionPopover(
           event.currentTarget, this.timeline, () => this.geometry(), () => this.commit()),
       }, [
@@ -381,8 +371,7 @@ class Timeline {
       ]),
       el("button", {
         class: `mmc-pill${active ? " on" : ""}`,
-        title: t("LoRAs patched onto every segment, in front of whatever that segment adds. "
-             + "Where a turbo LoRA belongs."),
+        title: t("Global LoRAs patched onto every segment."),
         onclick: () => this.openLoras(),
       }, [
         icon("effect", 16),
@@ -394,31 +383,23 @@ class Timeline {
       ...(!single && this.timeline.segments.some(S.continuesAudio) ? [stepperPill({
         value: Number(this.timeline.audio_tail_s), min: 0.1, max: S.MAX_AUDIO_TAIL_S,
         step: 0.1, width: "52px", iconName: "audio",
-        title: t("How much of the previous segment's sound a continuing seam inherits. "
-             + "Longer costs sampling time and pulls the inherited start frame off the clip's opening."),
+        title: t("How much of the previous segment's sound a continuing seam inherits."),
         format: (n) => t("{n}s tail", { n: n.toFixed(1) }),
         onChange: (next) => { this.timeline.audio_tail_s = next; this.commit(); },
       })] : []),
       ...(single ? [el("span", {
         class: "mmc-pill mmc-pill-static",
-        title: t("What the merged request compiles to — every shot's references and "
-             + "keyframes are one pool, so this is asked of the whole timeline at once."),
+        title: t("Merged mode for one-pass timeline."),
       }, [el("span", { text: S.singleMode(this.timeline) })])] : []),
       refineButton({
         run: () => this.refineAll(),
         label: refined ? t("Refine again") : t("Refine all"),
         className: "mmc-pill mmc-tl-refine",
-        title: t("Rewrite {what} into the expanded "
-             + "description H3 was trained to read, in one pass so the later shots keep what the "
-             + "first establishes. The global prompt is rewritten too, in its own box, and still "
-             + "stands in front of every shot. Everything you wrote is kept and expanded. A "
-             + "rewrite is queued in place of the card's own prompt, not alongside it.",
-             { what: count === 1 ? t("the shot") : t("all {count} shots", { count }) }),
+        title: t("Rewrite all shots into Context-IR descriptions."),
       }),
       ...(refined ? [el("button", {
         class: "mmc-pill mmc-tl-unrefine",
-        title: t("Throw every rewrite away and go back to the prompts you typed. The global "
-             + "prompt, soundscape and score the refiner wrote go with them."),
+        title: t("Revert all rewrites."),
         onclick: () => this.revertAll(),
       }, [el("span", { text: t("Revert all") })])] : []),
       el("div", { class: "mmc-tl-total" }, [
@@ -427,16 +408,6 @@ class Timeline {
           ? t(count === 1 ? "{count} shot · {frames} frames" : "{count} shots · {frames} frames",
               { count, frames })
           : t(count === 1 ? "{count} segment" : "{count} segments", { count }) }),
-      ]),
-      el("div", {
-        class: "mmc-note",
-        title: single
-          ? t("The whole timeline is generated at once, so the shots cost no more than one clip of the same length.")
-          : t("Each segment is generated separately and they run one after another."),
-      }, [
-        el("span", { class: "mmc-note-key", text: t("cost") }),
-        el("span", { text: single ? t("1 generation per queue")
-          : t(count === 1 ? "{count} generation per queue" : "{count} generations per queue", { count }) }),
       ]),
       ...(problem ? [el("div", { class: "mmc-tl-problem" }, [
         el("span", { class: "mmc-note-key", text: t("one pass") }),
@@ -461,7 +432,7 @@ class Timeline {
         : t("Add a {what} to the end", { what: t(what.toLowerCase()) }),
       disabled: this.timeline.segments.length >= S.MAX_SEGMENTS || undefined,
       onclick: () => this.add(),
-    }, [el("span", { text: "+" }), el("span", { text: t(what) })]));
+    }, [el("span", { style: { fontSize: "22px" }, text: "+" }), el("span", { text: t(what) })]));
     this.stripHost.replaceChildren(...parts);
   }
 
@@ -470,10 +441,8 @@ class Timeline {
     return el("div", { class: "mmc-tl-seam" }, [
       el("div", {
         class: "mmc-tl-cut",
-        title: t("Shot {n} cuts in {time} into the clip. "
-             + 'Write its prompt as the cut — "the camera cuts to…", "the shot transitions to…" — '
-             + "and the timestamp is added for you.",
-             { n: index + 1, time: S.shotTime(at[index]) }),
+        title: t("Shot {n} cuts in at {time}.",
+                 { n: index + 1, time: S.shotTime(at[index]) }),
       }, [el("span", { text: "✂" }), el("span", { text: S.shotTime(at[index]) })]),
     ]);
   }
@@ -534,23 +503,16 @@ class Timeline {
       ...((on || sound) && index >= 2 ? [el("button", {
         class: `mmc-tl-join mmc-tl-join-from${from !== index ? " on" : ""}`,
         title: t("What continues across this seam is segment {from}'s last {what}. "
-             + "Click to inherit from a different earlier segment — a story returning to "
-             + "segment 1 after an unrelated shot continues from segment 1.",
+             + "Click to inherit from a different earlier segment.",
              { from, what: t(on && sound ? "frame and sound" : on ? "frame" : "sound") }),
         onclick: (event) => this.pickContinueFrom(event.currentTarget, segment, index),
       }, [el("span", { text: t("from #{from}", { from }) })])] : []),
       ...(on ? [el("button", {
         class: `mmc-tl-join mmc-tl-join-from${S.feather(segment) > 1 ? " on" : ""}`,
         title: (S.feather(segment) > 1
-          ? t("The last {s} s of segment {from}'s motion "
-            + "carries across this cut, so the movement flows through instead of restarting "
-            + "from a still. That blended moment is redone at the start of segment {n} "
-            + "and removed from the final video, so it plays about "
-            + "{s} s shorter than its set length.",
-              { s: blendSeconds(S.feather(segment)), from, n: index + 1 })
-          : t("This cut picks up from segment {from}'s last frame. Click to blend a moment "
-            + "of its motion across instead — a smoother handoff, in exchange for segment "
-            + "{n} playing slightly shorter.", { from, n: index + 1 })),
+          ? t("The last {s} s of segment {from}'s motion carries across this cut.",
+              { s: blendSeconds(S.feather(segment)), from })
+          : t("Click to blend a moment of motion across.")),
         onclick: (event) => this.pickFeather(event.currentTarget, segment, index),
       }, [el("span", {
         text: S.feather(segment) > 1
@@ -559,40 +521,79 @@ class Timeline {
     ]);
   }
 
-  pickFeather(anchor, segment, index) {
-    const max = S.maxFeather(segment);
-    const label = (f) => (f === 1 ? t("None — start from the last frame")
-      : t("{name} · {s} s of motion",
-          { name: t({ 5: "Short", 22: "Medium", 39: "Long" }[f] ?? "Blend"), s: blendSeconds(f) }));
-    openChoicePopover(anchor, {
-      title: t("Blend into segment {n}", { n: index + 1 }),
-      options: S.FEATHER_GRID.filter((f) => f <= max).map(label),
-      value: label(Math.min(S.feather(segment), max)),
-      onPick: (choice) => {
-        const width = S.FEATHER_GRID.find((f) => label(f) === choice) ?? 1;
-        if (width > 1) segment.feather = width;
-        else delete segment.feather;
-        this.commit();
-      },
+  reRollSegment(targetIndex) {
+    this.timeline.segments.forEach((seg, idx) => {
+      if (idx === targetIndex) {
+        seg.locked = false;
+      } else if (seg.cached_video) {
+        seg.locked = true;
+      }
     });
+    this.commit();
+    try {
+      app.queuePrompt(0);
+    } catch {}
   }
 
-  pickContinueFrom(anchor, segment, index) {
-    const options = [];
-    for (let n = 1; n <= index; n += 1) {
-      options.push(n === index ? t("segment {n} — previous", { n }) : t("segment {n}", { n }));
+  renderFilmstrip(segment) {
+    const firstFrame = S.frameAsset(segment, "first_frame");
+    const lastFrame = S.frameAsset(segment, "last_frame");
+    const cached = segment.cached_video;
+
+    const filmstrip = el("div", { class: "mmc-tl-filmstrip" });
+
+    if (cached) {
+      const vid = el("video", {
+        class: "mmc-tl-filmstrip-media",
+        muted: true, playsinline: true, preload: "metadata",
+        src: `${viewUrl(cached)}#t=0.1`,
+      });
+      filmstrip.appendChild(vid);
+    } else {
+      filmstrip.appendChild(el("button", {
+        class: `mmc-tl-filmstrip-slot${firstFrame ? " has-asset" : ""}`,
+        title: firstFrame ? `@${firstFrame.handle} (${t("Start frame")})` : t("Add start frame"),
+        onclick: () => this.pickFrameForSegment(segment, "first_frame"),
+      }, firstFrame ? [
+        el("img", { src: viewUrl(firstFrame.filename, { preview: true }), alt: "" }),
+        el("span", { class: "mmc-tl-slot-tag", text: "START" }),
+      ] : [
+        icon("frameIn", 14),
+        el("span", { text: t("Start") }),
+      ]));
+
+      filmstrip.appendChild(el("button", {
+        class: `mmc-tl-filmstrip-slot${lastFrame ? " has-asset" : ""}`,
+        title: lastFrame ? `@${lastFrame.handle} (${t("End frame")})` : t("Add end frame"),
+        onclick: () => this.pickFrameForSegment(segment, "last_frame"),
+      }, lastFrame ? [
+        el("img", { src: viewUrl(lastFrame.filename, { preview: true }), alt: "" }),
+        el("span", { class: "mmc-tl-slot-tag", text: "END" }),
+      ] : [
+        icon("frameOut", 14),
+        el("span", { text: t("End") }),
+      ]));
     }
-    openChoicePopover(anchor, {
-      title: t("Segment {n} continues from", { n: index + 1 }),
-      options,
-      value: options[S.continueSource(segment, index) - 1],
-      onPick: (choice) => {
-        const n = Number(/\d+/.exec(choice)[0]);
-        if (n === index) delete segment.continue_from;
-        else segment.continue_from = n;
-        this.commit();
-      },
+    return filmstrip;
+  }
+
+  async pickFrameForSegment(segment, role) {
+    const chosen = await openPicker({
+      kinds: ["image", "renders"], kind: "image", single: true,
+      capacity: () => ({ used: 0, max: 1, filesLeft: 1 }),
     });
+    if (!chosen) return;
+    const asset = chosen[0];
+    const existing = S.frameAsset(segment, role);
+    if (existing) segment.assets = (segment.assets || []).filter((a) => a.handle !== existing.handle);
+    segment.assets = segment.assets || [];
+    segment.assets.push({
+      handle: S.nextHandle(segment, "image"),
+      kind: "image",
+      role,
+      filename: asset.path,
+    });
+    this.commit();
   }
 
   renderCard(segment, index) {
@@ -606,14 +607,59 @@ class Timeline {
     const using = rewrite && segment.refined.enabled !== false;
     const prompt = typed || rewrite || "";
     const isGenerating = (index + 1) === this.activeSegment;
+    const isLocked = S.isLocked(segment);
+    const hasCache = Boolean(segment.cached_video);
 
     const meta = [];
     if (refs) meta.push(t(refs === 1 ? "{count} ref" : "{count} refs", { count: refs }));
     if (loras) meta.push(t(loras === 1 ? "{count} LoRA" : "{count} LoRAs", { count: loras }));
     if (rewrite) meta.push(using ? t("refined") : t("refined (off)"));
 
+    const lockBtn = !single && hasCache ? el("button", {
+      class: `mmc-ghost mmc-tl-icon-btn${isLocked ? " locked" : ""}`,
+      text: isLocked ? "🔒" : "🔓",
+      title: isLocked ? t("Locked (using cached render)") : t("Click to lock cache"),
+      onclick: (e) => {
+        e.stopPropagation();
+        segment.locked = !segment.locked;
+        this.commit();
+      },
+    }) : null;
+
+    const rerollBtn = !single ? el("button", {
+      class: "mmc-ghost mmc-tl-icon-btn",
+      text: "🎲",
+      title: t("Re-roll this shot only"),
+      onclick: (e) => {
+        e.stopPropagation();
+        this.reRollSegment(index);
+      },
+    }) : null;
+
+    let statusBadge = null;
+    if (!single) {
+      if (isLocked) {
+        statusBadge = el("span", { class: "mmc-tl-card-badge locked", text: t("LOCKED") });
+      } else if (hasCache) {
+        statusBadge = el("span", { class: "mmc-tl-card-badge ready", text: t("CACHED") });
+      }
+    }
+
+    const waveCanvas = el("canvas", { class: "mmc-tl-card-wave" });
+    const audioAsset = (segment.assets || []).find((a) => a.kind === "audio" || (a.kind === "video" && a.track !== "picture"));
+    const waveSource = segment.cached_video || audioAsset?.filename;
+    if (waveSource) {
+      peaks(waveSource).then((data) => {
+        if (data?.length && waveCanvas.isConnected) {
+          draw(waveCanvas, data, "rgba(240,166,60,0.38)");
+        }
+      });
+    }
+
+    const filmstrip = this.renderFilmstrip(segment);
+
     return el("div", {
-      class: `mmc-tl-card${isGenerating ? " generating" : ""}`,
+      class: `mmc-tl-card${isGenerating ? " generating" : ""}${isLocked ? " locked" : ""}`,
       style: { width: `${cardWidth(seconds)}px` },
       ondblclick: () => this.edit(index),
     }, [
@@ -622,40 +668,38 @@ class Timeline {
         el("span", {
           class: `mmc-tl-dur${single || isTrainedLength(frames) ? "" : " off-distribution"}`,
           text: `${segment.duration_s} s`,
-          title: single
-            ? t("{s} s of the one generation — the frame count is the timeline's.",
-                { s: segment.duration_s })
-            : isTrainedLength(frames)
-              ? t("{frames} frames at 24 fps", { frames })
-              : t("{frames} frames — outside the ~5–15 s the weights were trained on.", { frames }),
         }),
+        statusBadge,
+        lockBtn,
         ...(single ? [] : [el("span", { class: "mmc-tl-mode", text: S.mode(segment) })]),
       ]),
+      filmstrip,
       el("div", {
         class: `mmc-tl-card-prompt${prompt ? "" : " empty"}${using && typed ? " superseded" : ""}`,
-        text: prompt || t("No prompt yet"),
-        title: using && typed ? t("Not queued — this card's rewrite is. Open it to read or revert.") : "",
+        text: prompt || t("Describe this shot..."),
       }),
+      waveCanvas,
       ...(meta.length ? [el("div", { class: "mmc-tl-card-meta", text: meta.join(" · ") })] : []),
       el("div", { class: "mmc-tl-card-foot" }, [
         el("button", { class: "mmc-tl-edit", text: t("Edit"), onclick: () => this.edit(index) }),
+        rerollBtn,
         el("button", {
-          class: "mmc-ghost", text: "◀", title: t("Move earlier"),
+          class: "mmc-ghost mmc-tl-icon-btn", text: "◀", title: t("Move left"),
           disabled: index === 0 || undefined,
           onclick: () => this.move(index, -1),
         }),
         el("button", {
-          class: "mmc-ghost", text: "▶", title: t("Move later"),
+          class: "mmc-ghost mmc-tl-icon-btn", text: "▶", title: t("Move right"),
           disabled: index === this.timeline.segments.length - 1 || undefined,
           onclick: () => this.move(index, 1),
         }),
         el("button", {
-          class: "mmc-ghost", text: "⧉", title: t("Duplicate"),
+          class: "mmc-ghost mmc-tl-icon-btn", text: "⧉", title: t("Duplicate shot"),
           disabled: this.timeline.segments.length >= S.MAX_SEGMENTS || undefined,
           onclick: () => this.duplicate(index),
         }),
         el("button", {
-          class: "mmc-asset-x", text: "✕", title: t("Remove this segment"),
+          class: "mmc-asset-x", text: "✕", title: t("Remove shot"),
           disabled: this.timeline.segments.length <= 1 || undefined,
           onclick: () => this.remove(index),
         }),
@@ -798,7 +842,7 @@ class Timeline {
                      text: t(single ? "Shot {n}" : "Segment {n}", { n: index + 1 }) }),
         el("span", { class: "mmc-tl-editor-sub",
                      text: t("of {count}", { count: this.timeline.segments.length }) }),
-        el("button", { class: "mmc-close", text: "✕", title: t("Back to the timeline"), onclick: () => done() }),
+        el("button", { class: "mmc-close", text: "✕", title: t("Back to timeline"), onclick: () => done() }),
       ]),
       el("div", { class: "mmc-tl-editor-body" }, [editor.root]),
     ]);
@@ -839,7 +883,7 @@ export class TimelineBody {
     });
 
     this.onApiEvent = (event) => this.handleApiEvent(event.type, event.detail);
-    const events = ["mmc_segment", "execution_start", "executed", "execution_error"];
+    const events = ["mmc_segment", "mmc_segment_cached", "execution_start", "executed", "execution_error"];
     for (const name of events) api.addEventListener(name, this.onApiEvent);
 
     loadCatalog(() => this.adoptWeights());
@@ -847,7 +891,7 @@ export class TimelineBody {
   }
 
   destroy() {
-    const events = ["mmc_segment", "execution_start", "executed", "execution_error"];
+    const events = ["mmc_segment", "mmc_segment_cached", "execution_start", "executed", "execution_error"];
     for (const name of events) api.removeEventListener(name, this.onApiEvent);
     this.stage?.destroy();
   }
@@ -873,13 +917,30 @@ export class TimelineBody {
         this.activeSegment = detail.index ?? null;
         this.render();
       }
+    } else if (type === "mmc_segment_cached") {
+      if (this.ours(detail.node)) {
+        const segIdx = (detail.segment_index ?? 1) - 1;
+        const segment = (this.timeline.segments || [])[segIdx];
+        if (segment) {
+          segment.cached_video = detail.cached_video;
+          this.commit();
+        }
+      }
     } else if (type === "execution_start") {
       this.activeSegment = null;
       this.render();
     } else if (type === "executed") {
       if (String(detail.display_node) === String(this.getId() ?? "")) {
         this.activeSegment = null;
-        this.render();
+        const allCached = detail.output?.mmc_segment_cached || [];
+        for (const item of allCached) {
+          const idx = (item.index ?? 1) - 1;
+          const seg = (this.timeline.segments || [])[idx];
+          if (seg && item.cached_video) {
+            seg.cached_video = item.cached_video;
+          }
+        }
+        this.commit();
       }
     } else if (type === "execution_error") {
       if (this.ours(detail.node_id)) {
@@ -942,7 +1003,7 @@ export class TimelineBody {
   }
 
   renderPanel() {
-    const segments = this.timeline.segments;
+    const segments = this.timeline.segments || [];
     const single = S.isSingle(this.timeline);
     const seconds = S.timelineSeconds(this.timeline);
     const [width, height] = resolveCanvas(
@@ -955,7 +1016,66 @@ export class TimelineBody {
       ...(this.timeline.music?.trim() ? [t("music")] : []),
     ];
 
+    const words = prompt ? prompt.split(/\s+/).filter(Boolean).length : 0;
+    const chars = prompt.length;
+
+    const laneWaveCanvas = el("canvas", { class: "mmc-tl-lane-wave" });
+    drawTimelineWaveform(laneWaveCanvas, segments);
+
+    const ticks = segments.map((segment, index) => {
+      const continues = !single && S.continues(segment);
+      const isGenerating = (index + 1) === this.activeSegment;
+      const isLocked = S.isLocked(segment);
+      const { at } = S.cutTimes(this.timeline);
+
+      // Find thumbnail source
+      const firstFrame = S.frameAsset(segment, "first_frame");
+      const lastFrame = S.frameAsset(segment, "last_frame");
+      const refImg = S.refImages(segment)[0];
+      const thumbPath = segment.cached_video || firstFrame?.filename || lastFrame?.filename || refImg?.filename;
+
+      const thumbEl = thumbPath
+        ? (segment.cached_video
+            ? el("video", {
+                class: "mmc-tl-tick-thumb", muted: true, playsinline: true, preload: "metadata",
+                src: `${viewUrl(segment.cached_video)}#t=0.1`,
+              })
+            : el("img", { class: "mmc-tl-tick-thumb", src: viewUrl(thumbPath, { preview: true }), alt: "" }))
+        : null;
+
+      return el("div", {
+        class: `mmc-tl-tick${continues ? " on" : ""}${isGenerating ? " generating" : ""}${isLocked ? " locked" : ""}${thumbEl ? " has-thumb" : ""}`,
+        style: { flexGrow: String(Math.max(1, segment.duration_s || 6)) },
+        title: single
+          ? (index
+              ? t("Shot {n} · {s} s · cuts in at {time}",
+                  { n: index + 1, s: segment.duration_s, time: S.shotTime(at[index]) })
+              : t("Shot {n} · {s} s · opens the clip", { n: index + 1, s: segment.duration_s }))
+          : (continues
+              ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
+                  { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
+                    from: S.continueSource(segment, index) })
+              : t("Segment {n} · {s} s · {mode} · hard cut",
+                  { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
+      }, [
+        thumbEl,
+        el("div", { class: "mmc-tl-tick-overlay" }, [
+          el("div", { class: "mmc-tl-tick-top" }, [
+            el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
+            ...(isLocked ? [el("span", { class: "mmc-tl-tick-lock", text: "🔒" })] : []),
+            ...(continues ? [icon("link", 11)] : []),
+          ]),
+          el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
+        ]),
+      ]);
+    });
+
     return el("div", { class: "mmc-panel mmc-tl-summary" }, [
+      el("div", { class: "mmc-tl-summary-header" }, [
+        el("span", { class: "mmc-tl-summary-label", text: t("Global Prompt") }),
+        el("span", { style: { flex: "1" } }),
+        el("span", { class: "mmc-prompt-wordcount", text: words ? `${words} words · ${chars} chars` : "" }),
+      ]),
       el("div", {
         class: `mmc-tl-summary-prompt${prompt ? "" : " empty"}`,
         text: prompt || (single
@@ -963,30 +1083,10 @@ export class TimelineBody {
           : t("No global prompt yet — the standing description every segment inherits.")),
         onclick: () => this.open(),
       }),
-      el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, segments.map((segment, index) => {
-        const continues = !single && S.continues(segment);
-        const isGenerating = (index + 1) === this.activeSegment;
-        const { at } = S.cutTimes(this.timeline);
-        return el("div", {
-          class: `mmc-tl-tick${continues ? " on" : ""}${isGenerating ? " generating" : ""}`,
-          style: { flexGrow: String(Math.max(1, segment.duration_s)) },
-          title: single
-            ? (index
-                ? t("Shot {n} · {s} s · cuts in at {time}",
-                    { n: index + 1, s: segment.duration_s, time: S.shotTime(at[index]) })
-                : t("Shot {n} · {s} s · opens the clip", { n: index + 1, s: segment.duration_s }))
-            : (continues
-                ? t("Segment {n} · {s} s · {mode} · continues from segment {from}",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment),
-                      from: S.continueSource(segment, index) })
-                : t("Segment {n} · {s} s · {mode} · hard cut",
-                    { n: index + 1, s: segment.duration_s, mode: S.mode(segment) })),
-        }, [
-          ...(continues ? [icon("link", 13)] : []),
-          el("span", { class: "mmc-tl-tick-n", text: String(index + 1) }),
-          el("span", { class: "mmc-tl-tick-s", text: `${segment.duration_s}s` }),
-        ]);
-      })),
+      el("div", { class: "mmc-tl-lane-wrapper" }, [
+        laneWaveCanvas,
+        el("div", { class: "mmc-tl-lane", onclick: () => this.open() }, ticks),
+      ]),
       el("div", { class: "mmc-pills" }, [
         el("span", {
           class: "mmc-pill mmc-pill-static",
@@ -1027,8 +1127,7 @@ export class TimelineBody {
         ])] : []),
         ...(this.timeline.assets?.length ? [el("span", {
           class: "mmc-pill mmc-pill-static",
-          title: t("References attached to the piece itself, cited by @handle from "
-               + "the segments where they appear."),
+          title: t("References attached to the piece itself."),
         }, [
           icon("image", 16),
           el("span", { text: t(this.timeline.assets.length === 1
@@ -1049,7 +1148,7 @@ export class TimelineBody {
         }, [icon("play", 16), el("span", { text: t("Preview") })]),
         el("button", {
           class: "mmc-tl-open",
-          title: t("Open the timeline: the global prompt, the segments, and what happens between them"),
+          title: t("Open the timeline editor"),
           onclick: () => this.open(),
         }, [icon("sliders", 16), el("span", { text: t("Edit timeline") })]),
         ...(this.preStage ? [this.renderPreStagePill()] : []),
@@ -1062,8 +1161,8 @@ export class TimelineBody {
     return el("button", {
       class: `mmc-pill mmc-prestage-toggle${on ? " on" : ""}`,
       title: on
-        ? t("The pre-stage node on the left generates stills for this timeline — the opening frame, the closing frame, references. Click to remove it.")
-        : t("Add a pre-stage: an image node (Krea 2 / Ideogram 4) at this node's left edge whose stills land on the timeline's shots with one click."),
+        ? t("The pre-stage node generates stills for this timeline. Click to remove it.")
+        : t("Add a pre-stage image node at this node's left edge."),
       onclick: () => { this.preStage.toggle(); this.render(); },
     }, [icon("image", 16), el("span", { text: t("pre-stage") })]);
   }

@@ -5,7 +5,7 @@ import { t } from "./i18n.js";
 
 const EVENTS = ["progress_state", "b_preview_with_metadata", "b_preview",
                 "kj_preview_override", "executed", "execution_error", "execution_start",
-                "mmc_segment"];
+                "mmc_segment", "mmc_segment_cached"];
 
 export class Stage {
   constructor({ nodeId, onVisibility, onGallery, resultChips, segmentLabel }) {

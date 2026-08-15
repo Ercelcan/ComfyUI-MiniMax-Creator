@@ -1,6 +1,3 @@
-// The settings page: the preferences that belong to this ComfyUI rather than to
-// a workflow. Opened from the rail's Settings tool, beside the Gallery.
-
 import { el, mountOverlay } from "./dom.js";
 import { loadSettings, saveSettings } from "./api.js";
 import { t } from "./i18n.js";
@@ -28,6 +25,7 @@ export function openSettings() {
 const TABS = [
   { key: "quality", label: "Quality" },
   { key: "folders", label: "Folders" },
+  { key: "editor", label: "Editor" },
   { key: "preview", label: "Preview" },
 ];
 
@@ -116,6 +114,7 @@ class SettingsPage {
       ...(this.problem ? [el("div", { class: "mmc-set-problem", text: this.problem })] : []),
       ...(this.tab === "quality" ? [this.renderQuality()]
          : this.tab === "folders" ? this.renderFolders()
+         : this.tab === "editor" ? [this.renderEditor()]
          : [this.renderPreview()]),
     );
   }
@@ -153,6 +152,71 @@ class SettingsPage {
           }),
         ]),
       ]);
+  }
+
+  renderEditor() {
+    const currentSyntax = this.settings.syntax_highlighting || "media";
+    const linterEnabled = this.settings.enable_linter !== false;
+
+    const syntaxOptions = [
+      { key: "media", label: "Media Chips Only (Default)",
+        note: "Highlights @img-1, @vid-1, and @aud-1 as colored badge chips." },
+      { key: "full", label: "Full Context-IR Syntax",
+        note: "Highlights [Shot N], <Subject N>, dialogue tags <d>, cut timestamps, and camera motion keywords." },
+      { key: "off", label: "Disabled",
+        note: "Displays plain text without token badges or highlights." },
+    ];
+
+    const linterOptions = [
+      { enabled: true, label: "Enabled",
+        note: "Shows live warnings for missing @handles, dialogue pacing, and mode conflicts as you type." },
+      { enabled: false, label: "Disabled",
+        note: "Hides all real-time validation notices beneath the prompt box." },
+    ];
+
+    return el("div", {}, [
+      this.section("Prompt Editor", "Syntax Highlighting",
+        "Choose how tokens, attachments, and Context-IR structures are colored in prompt boxes.",
+        [
+          el("div", { class: "mmc-set-choices" }, syntaxOptions.map((opt) => el("button", {
+            class: "mmc-opt mmc-set-opt",
+            "aria-checked": opt.key === currentSyntax,
+            onclick: () => {
+              if (opt.key !== currentSyntax) {
+                try { localStorage.setItem("mmc-syntax-mode", opt.key); } catch {}
+                this.set({ syntax_highlighting: opt.key });
+              }
+            },
+          }, [
+            el("span", { class: "mmc-radio" }),
+            el("span", { class: "mmc-set-opt-text" }, [
+              el("span", { class: "mmc-set-opt-label", text: t(opt.label) }),
+              el("span", { class: "mmc-set-opt-note", text: t(opt.note) }),
+            ]),
+          ]))),
+        ]),
+      this.section("Validation", "Live Prompt Linter",
+        "Checks prompt constraints in real time before queueing.",
+        [
+          el("div", { class: "mmc-set-choices" }, linterOptions.map((opt) => el("button", {
+            class: "mmc-opt mmc-set-opt",
+            "aria-checked": opt.enabled === linterEnabled,
+            onclick: () => {
+              if (opt.enabled !== linterEnabled) {
+                try { localStorage.setItem("mmc-linter-enabled", String(opt.enabled)); } catch {}
+                this.set({ enable_linter: opt.enabled });
+              }
+            },
+          }, [
+            el("span", { class: "mmc-radio" }),
+            el("span", { class: "mmc-set-opt-text" }, [
+              el("span", { class: "mmc-set-opt-label", text: t(opt.label) }),
+              el("span", { class: "mmc-set-opt-note", text: t(opt.note) }),
+            ]),
+            el("span", { class: "mmc-set-value", text: opt.enabled ? t("on") : t("off") }),
+          ]))),
+        ]),
+    ]);
   }
 
   renderPreview() {

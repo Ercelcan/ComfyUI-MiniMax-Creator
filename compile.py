@@ -1,17 +1,8 @@
 """`creator_data` (the UI's JSON blob) -> a validated, ordered generation request.
 
-This is the load-bearing module. The `@chip` a user types in the prompt box is
-not decoration: it is how they bind a slot to a role ("use @img-2 for her
-face"), and H3 only understands that binding through its own ordinal labels,
-`<Picture N>` / `<Video N>` / `<Audio N>`.
-
-So the ordinals assigned here MUST match the order the encoder presents
-references to the tokenizer, or `<Picture 3>` in the prompt points at the wrong
-tensor and the failure is silent — a slightly-wrong video, not an exception.
-That order is: images, then videos (each video's soundtrack emitting its
-`<Audio j>` label *before* its own `<Video k>`), then standalone audio, with
-ordinals counted 1-based per type across that sequence. `encode.py` walks the
-lists this module produces in exactly that order; the two must be read together.
+This is the load-bearing module. The @chip a user types in the prompt box is
+not decoration: it is how they bind a slot to a role, and H3 only understands
+that binding through its own ordinal labels, <Picture N> / <Video N> / <Audio N>.
 """
 
 import re
@@ -26,77 +17,27 @@ MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
 MAX_REF_FILES = 12
 
-# A timeline segment is a whole generation, so this is a cap on how many sampler
-# passes one queue can expand into. High enough to never be the reason a real
-# timeline is refused, low enough that a malformed blob does not run for a day.
 MAX_SEGMENTS = 24
 
-# How much of the previous segment's sound is handed to the next one.
-#
-# Not the whole thing, for two reasons that point the same way. A reference audio
-# block costs `40 * seconds * 2` rows in the packed sequence, which ride through
-# every sampling step. And an audio reference advances the layout's RoPE cursor
-# by its own length, pushing the target's time origin away from the keyframe cond
-# rows — which stay pinned at the text — so a long tail turns the inherited start
-# frame from "this is frame 0" into "this is from some seconds earlier".
-#
-# A short tail is also all a seam needs: what carries across a cut is the room
-# tone, the key and the tempo, not the phrase.
 DEFAULT_AUDIO_TAIL_S = 1.0
 MAX_AUDIO_TAIL_S = 4.0
 
-# How many of the source segment's last frames a seam may inherit — the counts
-# the H3 video VAE can encode standalone. Its temporal grid compresses runs of
-# (1, 4, 4, 4, 4) pixel frames per latent step, so only a run ending on a
-# whole cycle boundary encodes to steps that cover exactly the frames given:
-# 1, 5, 22 and 39 frames. Anything else would pin a run ending short of the
-# source's last frame, and the join would jump by the difference. Mirrored by
-# the seam's feather picker in `timeline.js`.
 FEATHER_GRID = (1, 5, 22, 39)
 
 HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
 
-# Whether a render whose first pass sits under the slider's canvas gets the
-# second, refining pass. "two_pass" samples at `sample_edge` — the trained
-# 768 px edge unless the blob lowers it — and refines up to the slider;
-# "direct" is the old behaviour, one pass at the slider's size, which past
-# native is off-distribution. Mirrored by the resolution popover in `pills.js`.
 UPSCALE_MODES = ("two_pass", "direct")
 
-# How much of the schedule the refine pass runs. 0.5 keeps the first pass's
-# composition and motion while re-resolving the detail the interpolation
-# blurred; the ceiling stays under 1.0 because at 1.0 the pass is a fresh
-# generation that owes the first one nothing — and because the audio ride-along
-# divides by (1 - the starting sigma), which full denoise would send to zero.
 DEFAULT_REFINE_DENOISE = 0.5
 MIN_REFINE_DENOISE = 0.1
 MAX_REFINE_DENOISE = 0.9
 
 CHECKPOINTS = ("fl2va", "ref2va")
 
-# Which of a reference video's streams are actually referenced. "sound" drops the
-# picture entirely: the file becomes an audio reference like any other, which is
-# how you cite a clip's soundtrack without also citing how it looks.
 TRACKS = ("picture", "picture+sound", "sound")
 
-# What a reference is encoded at when the blob does not say, per kind.
-#
-# Both entries are the behaviour that shipped before the setting reached video,
-# so a blob written without one is read exactly as it used to be. They differ
-# because `max` means something different for each: an image's is the reference
-# pipeline's 2048 short edge, a video's is core's 768-short-edge reference
-# canvas, which is already the ceiling — for video the setting only ever buys
-# speed, never more detail than it had.
 DEFAULT_REF_SIZE = {"image": "match", "video": "max"}
 
-# What of a reference image is actually the reference. "full" — the default and
-# the only behaviour that existed before the setting — is the whole picture.
-# The others narrow it: a "person" reference contributes the person's likeness
-# and nothing else, so the picture's background, palette and pose stop bleeding
-# into the target video the moment the user says "her from @img-1". The DiT is
-# handed the same tensor either way — the narrowing lives in the prose, which
-# is where H3's reference form expresses it (`retention_analysis`) — so the
-# field is read by the refiner's glossary and by nothing on the encode path.
 TAKES = ("full", "person", "object", "scene", "style")
 
 
@@ -106,25 +47,18 @@ class CompileError(ValueError):
 
 @dataclass
 class Asset:
-    handle: str          # "img-1", "vid-1", "aud-1" — what the user types after @
-    kind: str            # image | video | audio
-    role: str            # reference | first_frame | last_frame
-    filename: str        # relative to ComfyUI/input
-    track: str | None = None   # video only: one of TRACKS; None for images and audio
-    ref_size: str = "match"    # reference image/video: match | max; see DEFAULT_REF_SIZE
-    trim: tuple[float, float] | None = None   # video/audio only: (start, end) seconds; None = whole file
-    takes: str = "full"        # reference image only: one of TAKES; what of it is the reference
+    handle: str
+    kind: str
+    role: str
+    filename: str
+    track: str | None = None
+    ref_size: str = "match"
+    trim: tuple[float, float] | None = None
+    takes: str = "full"
 
 
 @dataclass
 class CanvasSpec:
-    """A resolved canvas, so a timeline can hold every segment to one geometry.
-
-    Segments are concatenated frame-by-frame at the end, which is only defined if
-    they all came out the same size. So the first segment resolves the canvas
-    the way a lone generation would — from its own keyframe, if it has one — and
-    every segment after it is compiled against that answer rather than its own.
-    """
     width: int
     height: int
     ratio: float
@@ -135,13 +69,6 @@ class CanvasSpec:
 
 @dataclass(frozen=True)
 class Refine:
-    """The second half of a two-pass render: the canvas the refinement lands on
-    and how much of the schedule it runs. On `Compiled` only when the first
-    pass samples under the slider's canvas — past native by default, or
-    anywhere the blob's `sample_edge` sits below the slider — and the mode says
-    "two_pass". With the two edges equal the passes collapse into one render
-    and there is nothing to refine up to.
-    """
     width: int
     height: int
     denoise: float
@@ -150,91 +77,52 @@ class Refine:
 @dataclass
 class Compiled:
     mode: str
-    checkpoint: str                 # fl2va | ref2va — which MODEL input is routed out
-    prompt: str                     # the composed Context-IR: instruction + sections
-    body: str                       # just the description, @handles and triggers resolved
+    checkpoint: str
+    prompt: str
+    body: str
     frames: int
-    seconds: float                  # the real duration, not the pill's whole number
+    seconds: float
     width: int
     height: int
     ratio: float
     ratio_label: str
     ratio_from_image: bool
     ratio_clamped: bool
-    soundscape: str = ""            # overall_soundscape, as written
-    music: str = ""                 # non_diegetic_music, as written
+    soundscape: str = ""
+    music: str = ""
     first_frame: Asset | None = None
     last_frame: Asset | None = None
     ref_images: list[Asset] = field(default_factory=list)
     ref_videos: list[Asset] = field(default_factory=list)
     ref_audios: list[Asset] = field(default_factory=list)
-    labels: dict[str, str] = field(default_factory=dict)   # handle -> "<Picture 1>"
-    plan: list[dict] = field(default_factory=list)         # REF2VA only; see plan_references
-    triggers: list[str] = field(default_factory=list)      # already prefixed onto `prompt`
-    checkpoint_pinned: bool = False                        # the user chose it; not derived
-    # Timeline only: the first frame is the previous segment's last frame, which
-    # is a tensor produced mid-graph and so has no Asset and no filename.
+    labels: dict[str, str] = field(default_factory=dict)
+    plan: list[dict] = field(default_factory=list)
+    triggers: list[str] = field(default_factory=list)
+    checkpoint_pinned: bool = False
     continues: bool = False
-    # How many of the source segment's last frames the seam inherits. 1 is the
-    # classic seam — the last frame becomes this segment's first. More pins the
-    # whole run as never-denoised context at the head of this segment's
-    # timeline, so the model reads real motion instead of guessing it from a
-    # still; those frames are re-generated and trimmed off after decode. Only
-    # the counts the video VAE's temporal grid can encode standalone.
     feather: int = 1
-    # Timeline only: the previous segment's audio tail rides in as a reference so
-    # the sound carries across the seam. Independent of `continues` — a hard cut
-    # whose music keeps playing is an ordinary thing to want.
     continues_audio: bool = False
     audio_tail_s: float = 0.0
-    # The two-pass upscale, when the resolution slider is past the native edge
-    # and the user has not chosen "direct". `width`/`height` above are then the
-    # native-capped canvas the first pass samples at; this is where the second
-    # pass takes it.
     refine: Refine | None = None
+    # Selective segment re-rendering & locking
+    locked: bool = False
+    cached_video: str | None = None
 
     def encodes_video(self):
-        """Whether building this segment's conditioning calls `vae.encode`.
-
-        True when there is a keyframe or a visual reference to turn into a
-        condition latent — the encoder reaches for the video VAE only inside
-        `if keyframes:`. A text-only segment encodes no picture and so needs the
-        video VAE at decode time only, which is why `render` gates the loader on
-        this rather than wiring it in unconditionally: an unused VAE resident
-        during sampling is VRAM the DiT could have had.
-        """
         return bool(self.continues or self.first_frame or self.last_frame
                     or self.ref_images or self.ref_videos)
 
     def encodes_audio(self):
-        """Whether building this segment's conditioning calls `audio_vae.encode`.
-
-        True for a continuing sound seam, a reference-audio block, or a reference
-        video cited with its soundtrack — the three things the encoder turns into
-        an audio latent (`_encode_ref_audio`). A picture-only video reference does
-        not count, which is the same line `render_still` draws when it decides
-        whether to build the audio loader at all. Otherwise the audio VAE is a
-        decode-time loader only — the counterpart to `encodes_video`, gated the
-        same way for the same reason.
-        """
         return bool(self.continues_audio or self.ref_audios
                     or any(v.track == "picture+sound" for v in self.ref_videos))
 
 
 def lora_modes(entry):
-    """The checkpoints a LoRA entry claims. Missing or unrecognised means both."""
     claimed = tuple(m for m in (entry.get("modes") or ()) if m in CHECKPOINTS)
     return claimed or CHECKPOINTS
 
 
 def active_loras(entries, checkpoint):
-    """The entries that will actually be patched onto `checkpoint`, in order.
-
-    Lives here rather than in `lora.py` so that the trigger words and the weights
-    can never disagree about which LoRAs are in the run — `lora.py` imports this.
-    This module stays free of torch and ComfyUI, which is also what keeps it
-    testable.
-    """
     active = []
     for entry in entries or []:
         if not entry.get("name") or entry.get("enabled") is False:
@@ -251,12 +139,6 @@ def active_loras(entries, checkpoint):
 
 
 def collect_triggers(entries):
-    """The trigger words of the LoRAs in the run, in order, deduped.
-
-    Deduped case-insensitively but kept in the casing they were written with: two
-    LoRAs from the same family routinely share a token, and repeating it in the
-    prompt would weight it twice for no reason the user asked for.
-    """
     triggers = []
     seen = set()
     for entry in entries:
@@ -270,12 +152,6 @@ def collect_triggers(entries):
 
 
 def _parse_trim(handle, kind, raw):
-    """`{"start": s, "end": s}` -> (start, end) seconds on the source timeline.
-
-    Absent means the whole file, which is the default everywhere. Only time-based
-    media can be cut: a still has no timeline to cut on, and silently accepting a
-    trim on one would hide a mistake in the blob.
-    """
     if raw is None:
         return None
     if kind not in ("video", "audio"):
@@ -315,17 +191,10 @@ def _parse_assets(raw):
         if not filename:
             raise CompileError(f"@{handle}: no filename")
 
-        # Defaulted per kind rather than globally — see DEFAULT_REF_SIZE. Audio
-        # has no size to speak of and is left on the dataclass default, which
-        # nothing downstream reads.
         ref_size = item.get("ref_size") or DEFAULT_REF_SIZE.get(kind, "match")
         if ref_size not in ("match", "max"):
             raise CompileError(f"@{handle}: ref_size must be 'match' or 'max'")
 
-        # Only a reference image has anything to narrow: a keyframe is bound
-        # whole by the alignment line, and video/audio narrowing is `track`'s
-        # job. Refused rather than ignored, so a blob claiming a person-only
-        # end frame does not queue quietly meaning something else.
         takes = item.get("takes") or "full"
         if takes not in TAKES:
             raise CompileError(
@@ -350,12 +219,6 @@ def _parse_assets(raw):
 
 
 def _parse_track(handle, kind, item):
-    """Which streams of a reference video are referenced. Video only.
-
-    Blobs written before the picture/sound split carry the `with_audio` boolean
-    instead; it says the same thing about the two states it could express, so it
-    is read as one rather than being migrated on disk.
-    """
     if kind != "video":
         if item.get("track"):
             raise CompileError(f"@{handle}: only video has a track selection")
@@ -370,8 +233,6 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
     has_refs = bool(ref_images or ref_videos or ref_audios)
     has_frames = first_frame is not None or last_frame is not None
 
-    # Continuing *is* having a start frame — it is the source segment's last
-    # one — so a segment cannot also name a file for the slot.
     if continues and first_frame is not None:
         raise CompileError(
             "this segment continues from an earlier one, so its start frame is "
@@ -379,13 +240,6 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
             "or turn continuation off"
         )
 
-    # FL2VA and Ref2VA are two different DiT checkpoints. The hosted API can mix
-    # a start frame with references in one call; the open weights cannot, so the
-    # UI greys one out against the other. Refuse loudly rather than silently
-    # dropping whichever the user cared about less. A *continuing* segment is
-    # the exception: its inherited frames ride in as pinned guides that
-    # payload.py places on the target timeline, which Ref2VA reads alongside
-    # its references — so a seam no longer forces a checkpoint choice.
     if has_refs and has_frames:
         raise CompileError(
             "Start/end frames and references need different checkpoints "
@@ -408,13 +262,10 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
         if total > MAX_REF_FILES:
             raise CompileError(f"at most {MAX_REF_FILES} reference files total ({total} given)")
         if not ref_images and not ref_videos:
-            # Per the model card: audio is never a standalone reference.
             raise CompileError("reference audio needs at least one reference image or video alongside it")
         return "REF2VA"
 
     if continues:
-        # The inherited frame fills the first slot, so this is I2VA on its own
-        # and FL2VA once the segment also names an end frame.
         return "FL2VA" if last_frame is not None else "I2VA"
     if first_frame is not None and last_frame is not None:
         return "FL2VA"
@@ -426,18 +277,6 @@ def _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, co
 
 
 def _resolve_checkpoint(mode, raw):
-    """Which weights the generation runs on, given the mode and the user's pin.
-
-    The mode says how the request is *encoded*; the checkpoint says which weights
-    it is encoded for. Those normally follow each other, but not always: FL2VA
-    and Ref2VA are two trainings of one architecture, so keyframe conditioning is
-    a payload Ref2VA can also take, and running start/end frames through it is a
-    legitimate thing to want.
-
-    The reverse is not a preference. Reference blocks have nothing to attend to
-    in FL2VA, and the result would be a quietly wrong video rather than an error,
-    so pinning against a REF2VA request is refused here.
-    """
     choice = raw or "auto"
     if choice not in ("auto",) + CHECKPOINTS:
         raise CompileError(f"unknown checkpoint {choice!r}")
@@ -454,20 +293,6 @@ def _resolve_checkpoint(mode, raw):
 
 
 def plan_references(ref_images, ref_videos, ref_audios):
-    """The one ordered walk that both the labels and the DiT payload come from.
-
-    `encode.py` executes this plan step by step rather than re-deriving the order
-    from the three lists, so the ordinals in the prompt and the tensors in the
-    payload cannot drift apart — there is only one order and both sides read it
-    from here.
-
-    A reference video with a soundtrack produces two steps: its `soundtrack`
-    comes first and takes an `<Audio j>`, then the video itself takes its
-    `<Video k>`. That is the presentation order the tokenizer expects.
-
-    A video referenced for its sound alone never reaches `ref_videos` at all —
-    it arrives in `ref_audios` and is walked as a plain audio reference.
-    """
     plan = []
     picture = video = audio = 0
 
@@ -487,8 +312,6 @@ def plan_references(ref_images, ref_videos, ref_audios):
 
 
 def _labels_from_plan(plan):
-    """handle -> label. A video with a soundtrack owns two, so the soundtrack's
-    is keyed `"<handle>:audio"`."""
     labels = {}
     for step in plan:
         key = step["asset"].handle
@@ -499,13 +322,6 @@ def _labels_from_plan(plan):
 
 
 def _keyframe_labels(first_frame, last_frame, continues=False):
-    """handle -> `<Picture N>` for the keyframe modes.
-
-    A continuing segment's start frame is a tensor from the previous segment, so
-    it has no handle to map — but it is still presented to the tokenizer first
-    and still consumes `<Picture 1>`. Counting it without keying it is what keeps
-    an end frame in the same segment correctly labelled `<Picture 2>`.
-    """
     labels = {}
     ordinal = 0
     if continues:
@@ -520,17 +336,6 @@ def _keyframe_labels(first_frame, last_frame, continues=False):
 
 
 def _substitute(prompt, labels, assets, where="prompt"):
-    """Replace every `@handle` with its H3 label.
-
-    Only handles that name a real asset are touched, so ordinary prose ("meet me
-    @ 5") survives. A handle-shaped token with no asset behind it is an error:
-    it means an asset was deleted and the prompt now refers to something that
-    will not be in the payload.
-
-    `where` names the field in the error, because this runs over more than the
-    prompt: the refiner writes `@handles` into the reference sections and the
-    two audio fields too, and they are substituted with the same labels.
-    """
     known = {a.handle for a in assets}
     dangling = sorted({h for h in HANDLE_RE.findall(prompt) if h not in known})
     if dangling:
@@ -542,17 +347,6 @@ def _substitute(prompt, labels, assets, where="prompt"):
 
 
 def refined_body(data):
-    """The refiner's prose for this request, or None if it is not to be used.
-
-    A refined body is stored with its `@handles` intact rather than with H3's
-    ordinals in it, which is what lets it be treated as an ordinary prompt from
-    here on: `_substitute` assigns the labels at queue time exactly as it does
-    for typed text, so adding or removing an asset re-labels a refined prompt
-    correctly instead of leaving it pointing at the tensor that used to be there.
-
-    `enabled: false` is the toggle in the panel — the rewrite is kept so it can
-    be switched back on, and the user's own sentence is used meanwhile.
-    """
     refined = data.get("refined")
     if not isinstance(refined, dict) or refined.get("enabled") is False:
         return None
@@ -561,18 +355,6 @@ def refined_body(data):
 
 
 def refined_scope(data):
-    """What a refined body stands for: `"shot"`, or None for the whole request.
-
-    A rewrite made since the global prompt became the refiner's own field is
-    the shot alone — `scope: "shot"` — and the global prompt is joined in front
-    of it at compile time exactly as it is for typed text, which is what keeps
-    the timeline's global box live after refining. A blob without the marker
-    was written when the rewrite absorbed the join, and is left whole: joining
-    the global onto one of those would say it twice.
-
-    None when there is no usable rewrite at all, so callers can gate the join
-    on the scope without re-checking `refined_body`.
-    """
     refined = data.get("refined")
     if not isinstance(refined, dict) or refined.get("enabled") is False:
         return None
@@ -582,7 +364,6 @@ def refined_scope(data):
 
 
 def refined_sections(data):
-    """The reference form's three extra sections, when a refiner wrote them."""
     refined = data.get("refined")
     if not isinstance(refined, dict) or refined.get("enabled") is False:
         return None
@@ -594,7 +375,6 @@ def refined_sections(data):
 
 
 def audio_tail_seconds(raw):
-    """The requested tail length in seconds, clamped to something sendable."""
     if raw is None:
         return DEFAULT_AUDIO_TAIL_S
     try:
@@ -607,7 +387,6 @@ def audio_tail_seconds(raw):
 
 
 def refine_denoise(raw):
-    """The blob's `refine_denoise`, defaulted and clamped. Raises on non-numbers."""
     if raw is None:
         return DEFAULT_REFINE_DENOISE
     try:
@@ -618,12 +397,6 @@ def refine_denoise(raw):
 
 
 def first_pass_edge(raw, short_edge):
-    """The short edge the first of two passes samples at: the blob's
-    `sample_edge`, defaulted to the native edge and clamped between the
-    canvas floor and the lower of the target and native. The first pass
-    exists to stay on-distribution, so above native it buys nothing, and
-    above the target there would be nothing left to refine up to.
-    """
     ceiling = min(int(short_edge), canvas.NATIVE_SHORT_EDGE)
     if raw is None:
         return ceiling
@@ -635,18 +408,7 @@ def first_pass_edge(raw, short_edge):
 
 
 def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=None,
-                    continues_audio=False, shots=1, feather=1):
-    """`creator_data` dict -> `Compiled`.
-
-    `image_size_lookup(filename) -> (width, height)` supplies the keyframe
-    dimensions for the adaptive canvas in the image modes. It is injected so
-    this module stays free of disk access and stays unit-testable.
-
-    `continues` and `canvas_spec` are the timeline's two additions and are both
-    off in the single-generation path: the first says the start frame arrives as
-    a tensor from the previous segment, the second pins the geometry the first
-    segment resolved onto every segment after it.
-    """
+                    continues_audio=False, shots=1, feather=1, locked=False, cached_video=None):
     if not isinstance(data, dict):
         raise CompileError("creator_data must be a JSON object")
 
@@ -661,10 +423,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 
     refs = [a for a in assets if a.role == "reference"]
     ref_images = [a for a in refs if a.kind == "image"]
-    # A video referenced for its soundtrack alone is an audio reference and
-    # nothing else: it takes an <Audio> label, no <Video> one, and its picture is
-    # never encoded. Which bucket a file lands in is settled here, once, so the
-    # limits, the plan and the loader all count it the same way.
     ref_videos = [a for a in refs if a.kind == "video" and a.track != "sound"]
     ref_audios = [a for a in refs if a.kind == "audio" or (a.kind == "video" and a.track == "sound")]
 
@@ -682,11 +440,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
             "not continue from an earlier one"
         )
     audio_tail_s = audio_tail_seconds(data.get("audio_tail_s")) if continues_audio else 0.0
-    # A feathered seam pins the tail end-aligned with the inherited frames on
-    # this segment's own timeline, so a tail longer than the pinned run would
-    # reach back past the clip's origin into coordinates nothing was trained
-    # on. Clamped to the overlap instead — the two are the tail of the same
-    # source and should cover the same instants.
     if feather > 1 and continues_audio:
         audio_tail_s = min(audio_tail_s, feather / canvas.FPS)
 
@@ -698,22 +451,8 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         plan = []
         labels = _keyframe_labels(first_frame, last_frame, continues)
 
-    # The refiner's prose stands in for the user's sentence and is substituted the
-    # same way — it holds the same `@handles`, which is the whole reason it is
-    # stored in that form. Switching the panel's toggle off falls back here
-    # rather than anywhere downstream, so nothing else has to know it exists.
     body = _substitute(refined_body(data) or str(data.get("prompt") or ""), labels, assets)
 
-    # Trigger words come from the LoRAs that are actually in this run — an entry
-    # set to the other checkpoint contributes neither weights nor words. Keyed on
-    # the routed checkpoint rather than the mode, so pinning moves the words and
-    # the weights together. They go in front, which is the convention every LoRA
-    # is documented against, and after substitution because they are literal
-    # words with no @handles in them.
-    #
-    # In front of the *body*, not of the finished prompt: the keyframe-alignment
-    # instruction has to be the prompt's first line, so words prefixed above it
-    # would push it out of position.
     triggers = collect_triggers(active_loras(data.get("loras"), checkpoint))
     if triggers:
         prefix = ", ".join(triggers)
@@ -723,10 +462,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     frames = canvas.frames_for_seconds(seconds_shown)
     short_edge = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
 
-    # The inherited run is re-generated at the head of this segment and trimmed
-    # off after decode, so it spends this segment's frames without delivering
-    # any. It must stay a small fraction of the clip: at half or more, what is
-    # left after the trim is shorter than the overlap that produced it.
     if frames < 2 * feather:
         raise CompileError(
             f"a {feather}-frame feather needs a segment of at least "
@@ -735,15 +470,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
             f"only {frames}"
         )
 
-    # A render whose first pass sits under the slider goes one of two ways: one
-    # pass at the slider's size ("direct" — past native, off-distribution), or
-    # a pass at the first-pass edge that a second pass refines up to the target
-    # ("two_pass", the default). The first-pass edge is native unless the blob
-    # lowers it, so past native two passes happen on their own, and under it
-    # only when `sample_edge` asks — which is how a blob written before the
-    # setting existed keeps meaning what it meant. The still branch pins
-    # "direct": it upscales through the single-image VAE instead and has no
-    # refine pass to hand this to.
     mode_raw = str(data.get("upscale") or UPSCALE_MODES[0])
     if mode_raw not in UPSCALE_MODES:
         raise CompileError(f"unknown upscale mode {mode_raw!r}")
@@ -751,12 +477,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     two_pass = first_edge < short_edge and mode_raw == "two_pass"
     sample_edge = first_edge if two_pass else short_edge
 
-    # The instruction line carries the real duration to two decimals, so this has
-    # to come after the frame count and never off `duration_s`.
-    #
-    # Substituted like the body: the reference form cites `<Audio N>` in the
-    # soundscape, and the refiner stores that citation as `@aud-1` exactly as it
-    # does in a shot body.
     soundscape = _substitute(str(data.get("soundscape") or ""), labels, assets,
                              where="overall_soundscape")
     music = _substitute(str(data.get("music") or ""), labels, assets,
@@ -767,37 +487,11 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
                     for name, text in sections.items()}
     prompt = contextir.compose(
         mode, body, soundscape, music, canvas.seconds_for_frames(frames),
-        # The inherited tail is presented to the tokenizer as <Audio 1>, so the
-        # prompt has to say what it is or the label points at nothing. Phrased
-        # the way the reference guide defines its own labels. Only on the
-        # classic seam: a REF2VA segment's references own the audio numbering,
-        # and a feathered seam pins the tail on this segment's own timeline —
-        # in both, the tail rides unlabelled and the line would point at
-        # nothing.
         preamble=contextir.AUDIO_SEAM_LINE
                  if continues_audio and mode != "REF2VA" and feather == 1 else "",
-        # Which shot the end frame is reached by. A one-pass render says so
-        # outright — it assembled the description and counted the cards' shots —
-        # and any body that numbers its own shots says so by carrying them, which
-        # is a refined Creator prompt with the model's cuts in it. The larger
-        # wins: a card may write several shots inside the one the timeline
-        # allotted it, and the last of those is the one holding the end frame.
         shots=max(int(shots or 1), contextir.count_shots(body)),
-        # Only ever a refiner's: the reference form's other three sections cannot
-        # be derived from a sentence, so without them a REF2VA body is left
-        # exactly as it has always been.
         sections=sections)
 
-    # In the image modes the aspect comes from the keyframe (the hosted API calls
-    # this "adaptive"); the slider still owns the scale. The first frame wins
-    # when both are set, because the encoder treats it as the geometry anchor
-    # and cover-crops the last frame onto the canvas it defines.
-    #
-    # A pinned canvas overrides the lot: within a timeline the geometry was
-    # settled by segment 1 and every later segment has to land on it, or the
-    # frames cannot be concatenated at the end. `continues` also removes the only
-    # anchor a later segment could have had — the inherited frame is already at
-    # the canvas size, so there is nothing to adapt to.
     anchor = first_frame or last_frame
     if canvas_spec is not None:
         width, height = canvas_spec.width, canvas_spec.height
@@ -815,9 +509,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         clamped = False
         ratio_from_image = False
 
-    # The refine target is resolved off the same ratio the first pass settled
-    # on — a pinned timeline canvas included — so the two passes always agree
-    # about the shape and disagree only about the scale.
     refine = None
     if two_pass:
         target = canvas.resolve_canvas(ratio, short_edge)
@@ -853,31 +544,19 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         audio_tail_s=audio_tail_s,
         feather=feather,
         refine=refine,
+        locked=bool(locked),
+        cached_video=cached_video,
     )
 
 
 # ---- timeline ---------------------------------------------------------------
 
-# How a timeline becomes video.
-#
-# "chained" is the original: every segment is its own generation and they are
-# concatenated, so the clip can run to any length and a segment can start from
-# the previous one's decoded last frame.
-#
-# "single" is one generation. The segments stop being separate renders and become
-# the shots of one Context-IR description — `[Shot 2] At 00:05.000, ...` — which
-# is the format the model documents and was trained on. Nothing is decoded and
-# re-encoded in the middle, so there is no seam to carry a frame or a tail across
-# and no roundtrip drift; the whole clip's picture and sound are generated at
-# once. The price is that everything the pass can only have one of — mode,
-# checkpoint, LoRA stack, seed — is now the timeline's rather than the segment's.
 RENDER_MODES = ("chained", "single")
 
 _HANDLE_PREFIX = {"image": "img", "video": "vid", "audio": "aud"}
 
 
 def render_mode(data):
-    """Which of `RENDER_MODES` a timeline blob asks for. Absent means chained."""
     mode = data.get("render") or "chained"
     if mode not in RENDER_MODES:
         raise CompileError(f"unknown render mode {mode!r}")
@@ -885,33 +564,11 @@ def render_mode(data):
 
 
 def _join_prompt(global_prompt, segment_prompt):
-    """The global prompt in front of the segment's own.
-
-    Two lines rather than a comma splice: the global prompt is a standing
-    description of the piece and the segment's is what happens in this shot, and
-    running them together as one sentence reads as one clause qualifying the
-    other. The only `@handles` with meaning in the global prompt are the
-    reference pool's: citing one there injects the asset into every segment
-    (see `cited_pool`), so `_substitute` finds it attached wherever the join
-    lands. A segment-asset handle stays what it always was — a name that means
-    a different file in every card, and prose to this pass.
-    """
     parts = [p for p in (global_prompt.strip(), str(segment_prompt or "").strip()) if p]
     return "\n".join(parts)
 
 
 def merge_loras(global_entries, segment_entries):
-    """The timeline's LoRAs plus a segment's own, as one stack.
-
-    Global first, then the segment's, so a turbo LoRA meant for the whole piece
-    is patched before anything a single shot adds. A segment naming a LoRA the
-    timeline already carries replaces it rather than stacking a second copy of
-    the same weights at two strengths — the more specific entry is the one the
-    user was editing when they set it.
-
-    Trigger words follow the entries, because `collect_triggers` walks whatever
-    `active_loras` returns and this is what it will be handed.
-    """
     segment_entries = list(segment_entries or [])
     named = {e.get("name") for e in segment_entries if isinstance(e, dict)}
     kept = [e for e in (global_entries or [])
@@ -920,22 +577,6 @@ def merge_loras(global_entries, segment_entries):
 
 
 def timeline_pool(data):
-    """The timeline's own reference pool, validated: assets any segment may cite.
-
-    Attached once, on the timeline, and injected into exactly the segments
-    whose text cites the asset's handle. Cited per segment, a character sheet
-    rides into shots 2 and 5 and no other; cited in the *global prompt*, the
-    join carries the citation into every segment, which is the attach-once,
-    applies-everywhere gesture. Injection stays cite-gated rather than
-    unconditional because an uncited reference is not free: it forces the
-    segment onto the Ref2VA checkpoint (refusing any keyframe segment
-    outright), costs packed-sequence rows through every sampling step, and
-    would put the whole pool into every segment's cache key.
-
-    Only references: a keyframe is a fact about one segment's opening or
-    closing frame, so a pool entry claiming a frame role is a mistake, not a
-    feature to resolve.
-    """
     raw = data.get("assets")
     if not raw:
         return []
@@ -951,18 +592,6 @@ def timeline_pool(data):
 
 
 def cited_pool(pool, request, extra_texts=()):
-    """Which pool assets this segment's text cites, in pool order.
-
-    The texts scanned are exactly the ones `compile_request` will substitute:
-    the prompt (or the refined body standing in for it — both, since the
-    toggle can flip after queueing was planned), the refined reference
-    sections, and the two audio fields. A citation anywhere in them is what
-    carries the asset into this segment's generation — and since the chained
-    prompt already holds the global prompt joined in front, a citation *there*
-    is a citation in every segment, which is the whole "attach once, applies
-    everywhere" gesture. `extra_texts` is for callers whose request does not
-    carry those global fields yet (one pass joins them later).
-    """
     if not pool:
         return []
     texts = [str(request.get("prompt") or ""),
@@ -982,14 +611,6 @@ def cited_pool(pool, request, extra_texts=()):
 
 
 def _inject_pool(pool, request, extra_texts=()):
-    """The cited pool assets, merged in front of the segment's own list.
-
-    In front, so a reference shared by several segments keeps the low ordinals
-    and the same `<Picture N>` wherever the citing sets agree. A segment whose
-    own list already uses a cited handle keeps its own — the more specific
-    entry is the one the user was editing, the same rule `merge_loras` applies
-    to a shadowed name.
-    """
     cited = cited_pool(pool, request, extra_texts)
     if not cited:
         return request.get("assets")
@@ -1000,12 +621,6 @@ def _inject_pool(pool, request, extra_texts=()):
 
 
 def timeline_segments(data):
-    """The segment list off a timeline blob, validated. Shared by both render modes.
-
-    `MAX_SEGMENTS` means two different things depending on the mode — sampler
-    passes per queue when chained, shots in one description when single — but the
-    number is a sanity bound on a hand-edited blob either way, so it is one cap.
-    """
     if not isinstance(data, dict):
         raise CompileError("timeline_data must be a JSON object")
 
@@ -1021,12 +636,6 @@ def timeline_segments(data):
 
 
 def _continue_source(raw, index):
-    """`continue_from` off a segment dict -> a 0-based source index, or None.
-
-    None means "the previous segment" — the default seam, and what anything
-    unusable quietly becomes. Only a source strictly before the previous
-    segment is worth recording: naming the previous one is saying nothing.
-    """
     try:
         number = int(raw)
     except (TypeError, ValueError):
@@ -1035,71 +644,39 @@ def _continue_source(raw, index):
 
 
 def timeline_payloads(data, image_size_lookup=None):
-    """`timeline_data` dict -> one self-contained payload per segment, in play order.
-
-    A payload is everything one segment needs and nothing the others do: a
-    single-generation request with the global prompt already folded in, whether
-    it starts from an earlier segment's last frame (the previous one unless the
-    seam names another), and the canvas the whole timeline is held to.
-
-    Splitting before compiling is what makes the cache useful. The segments run
-    as separate nodes and a node's cache key is its inputs, so handing each one
-    the whole timeline would mean editing the last shot re-generated all of them.
-    A payload only changes when its own segment does.
-    """
     segments = timeline_segments(data)
     global_prompt = str(data.get("prompt") or "")
     pool = timeline_pool(data)
-    # A pool handle written in the global prompt is a citation in *every*
-    # segment — the join puts it in front of each one, and the scan below reads
-    # the joined prompt. That is the attach-once gesture: a character sheet
-    # cited globally rides into the whole strip without a per-segment mention.
-    # The one thing it cannot ride into is a keyframe segment, and that clash
-    # is named against the global prompt below rather than left to surface as
-    # a checkpoint error on a segment nobody edited.
     global_cited = {asset.handle for asset in pool} & set(HANDLE_RE.findall(global_prompt))
     payloads = []
 
     for index, segment in enumerate(segments):
         request = dict(segment)
-        # Lifted out of the request and onto the payload: they are facts about
-        # the seam in front of this segment, not about the generation.
         request.pop("continue", None)
         request.pop("continue_audio", None)
         request.pop("continue_from", None)
         request.pop("feather", None)
+        
+        # Extract lock/caching metadata
+        locked = bool(segment.get("locked"))
+        cached_video = segment.get("cached_video") or None
+
         request["prompt"] = _join_prompt(global_prompt, segment.get("prompt"))
-        # A shot-scoped rewrite gets the same join: it stands in for the
-        # segment's own sentence, not for the piece, so the global prompt goes
-        # in front of it here exactly as it goes in front of typed text — which
-        # is what keeps the timeline's global box a live input after refining.
-        # An unmarked rewrite absorbed the join when it was written and is left
-        # whole; see `refined_scope`.
         if refined_scope(segment) == "shot":
             request["refined"] = {**segment["refined"],
                                   "body": _join_prompt(global_prompt,
                                                        segment["refined"].get("body"))}
         request["aspect"] = data.get("aspect", "16:9")
         request["short_edge"] = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
-        # The two-pass choice travels with the canvas it is a property of.
         for key in ("upscale", "sample_edge", "refine_denoise"):
             request.pop(key, None)
             if key in data:
                 request[key] = data[key]
         request["loras"] = merge_loras(data.get("loras"), segment.get("loras"))
-        # The soundscape and the score are properties of the piece, not of one
-        # shot — a cut is not where the room tone changes. A segment may still
-        # say its own; an empty one inherits rather than clearing.
         for key in ("soundscape", "music"):
             request[key] = str(segment.get(key) or data.get(key) or "")
-        # The tail length is the timeline's — one seam sounding different from
-        # the next is not a thing anyone tunes per cut.
         request["audio_tail_s"] = data.get("audio_tail_s", DEFAULT_AUDIO_TAIL_S)
-        # The piece's own references, where this segment cites them — its own
-        # text, or the global prompt riding in front of it. After every text
-        # field above is final, so the scan reads exactly what will be
-        # substituted; a segment citing none is byte-identical to one compiled
-        # before the pool existed, which is what keeps its cache key still.
+        
         merged_assets = _inject_pool(pool, request)
         if merged_assets is not request.get("assets"):
             request["assets"] = merged_assets
@@ -1119,28 +696,15 @@ def timeline_payloads(data, image_size_lookup=None):
                     )
         payloads.append({
             "request": request,
-            # Segment 1 has nothing in front of it, so the flags are ignored there
-            # rather than rejected: they are leftovers from reordering, not a
-            # mistake worth refusing a whole timeline over.
             "continue": index > 0 and bool(segment.get("continue")),
-            # Independent of the picture: a hard cut whose music keeps playing is
-            # an ordinary thing to want, and so is a match cut that resets the
-            # sound. Two switches on the seam rather than one with three states.
             "continue_audio": index > 0 and bool(segment.get("continue_audio")),
+            "locked": locked,
+            "cached_video": cached_video,
         })
-        # Which earlier segment the seam inherits from — 1-based in the segment
-        # data because that is the number on the card, 0-based on the payload
-        # because that is the index the emitter joins on. Absent means the
-        # previous segment, which is also what an out-of-range value falls back
-        # to: like the flags above, a stale source is a leftover from
-        # reordering, not a mistake worth refusing a whole timeline over.
         if payloads[-1]["continue"] or payloads[-1]["continue_audio"]:
             source = _continue_source(segment.get("continue_from"), index)
             if source is not None:
                 payloads[-1]["continue_from"] = source
-        # The seam's width. Validated in compile_request, where the segment's
-        # frame count is known; only carried when it says something — absent
-        # means the classic single-frame seam, like the other seam keys.
         if payloads[-1]["continue"]:
             try:
                 feather = int(segment.get("feather") or 1)
@@ -1150,8 +714,6 @@ def timeline_payloads(data, image_size_lookup=None):
             if feather > 1:
                 payloads[-1]["feather"] = feather
 
-    # Resolved the way a lone generation would resolve it — segment 1 may take
-    # its aspect from its own keyframe — then imposed on the rest.
     try:
         first = compile_request(payloads[0]["request"], image_size_lookup)
     except CompileError as exc:
@@ -1170,12 +732,6 @@ def timeline_payloads(data, image_size_lookup=None):
 
 
 def _asset_dict(asset):
-    """`Asset` -> the blob shape `_parse_assets` reads. The inverse of parsing.
-
-    Only what differs from the default is written, so the merged request looks
-    like something a user could have typed and diffs cleanly against a segment's
-    own list.
-    """
     out = {"handle": asset.handle, "kind": asset.kind, "role": asset.role,
            "filename": asset.filename}
     if asset.track:
@@ -1190,12 +746,6 @@ def _asset_dict(asset):
 
 
 def _agree(values, what, blank=""):
-    """The one value the shots agree on, or an error naming the disagreement.
-
-    One pass has one of each of these. A shot setting its own is a deliberate
-    override in a chained timeline and simply has nowhere to go here, so it is
-    refused rather than quietly resolved in favour of whichever shot came first.
-    """
     distinct = [v for v in dict.fromkeys(values) if v and v != blank]
     if len(distinct) > 1:
         raise CompileError(
@@ -1206,53 +756,25 @@ def _agree(values, what, blank=""):
 
 
 def single_payload(data):
-    """`timeline_data` -> one payload, the whole timeline as a single generation.
-
-    The segments stop being renders and become the shots of one Context-IR
-    description. What that costs is everything a single pass can only have one
-    of, and each of those is resolved here rather than deferred:
-
-    - **One reference pool.** Handles are allocated per segment, so `img-1`
-      means a different file in each of them. Every segment's attachments are
-      merged — same file, role and trim is the same reference, which is the point:
-      a face cited in shot 1 and again in shot 4 is one `<Picture N>` — and each
-      shot's prompt is rewritten onto the merged handles before the labels are
-      assigned. There is no second labelling scheme; `compile_request` does it.
-    - **One keyframe pair.** A start frame opens the clip and an end frame closes
-      it, so they belong to the first and last shot and nowhere else.
-    - **One LoRA stack, one checkpoint, one soundscape.** Folded and checked for
-      agreement rather than per shot.
-
-    The seam flags are ignored, not refused: there are no seams in one pass, and
-    a timeline switched over from chained mode carries them harmlessly.
-    """
     segments = timeline_segments(data)
     last_index = len(segments)
     global_prompt = str(data.get("prompt") or "").strip()
     pool = timeline_pool(data)
     pool_handles = {asset.handle for asset in pool}
-    # The global prompt opens shot 1's description and the global audio fields
-    # are merged into the one request, so a pool citation in any of them is
-    # shot 1's to carry — the merge below then owns it for the whole clip.
     global_texts = (global_prompt,
                     str(data.get("soundscape") or ""),
                     str(data.get("music") or ""))
 
-    assets = []          # the merged reference list, in first-appearance order
-    position_of = {}     # dedup key -> index into `assets`
-    counters = {}        # kind -> how many merged handles of it exist
-    shots = []           # (cut time in seconds, text) per shot
+    assets = []
+    position_of = {}
+    counters = {}
+    shots = []
     at = 0.0
     stack = data.get("loras")
     with_refs, with_frames = [], []
 
     for number, segment in enumerate(segments, start=1):
         try:
-            # A cited pool reference joins this shot exactly as it joins a
-            # chained segment — the global texts count as shot 1's, since that
-            # is the shot the join lands on. The merge below dedups on the
-            # handle, so a sheet cited in shots 1 and 4 lands in the pool once
-            # and takes one <Picture N> — which is the point of citing it twice.
             parsed = _parse_assets(_inject_pool(
                 pool, segment, extra_texts=global_texts if number == 1 else ()))
         except CompileError as exc:
@@ -1276,11 +798,6 @@ def single_payload(data):
             else:
                 with_frames.append(number)
 
-            # A pool asset keys — and keeps — its own handle: the global prompt
-            # is prepended to shot 1's text *without* the shot's rename pass,
-            # so a citation there only resolves if the merged list still calls
-            # the asset what the pool does. Its handle is globally unique
-            # already, which is the ref- prefix's whole job.
             pooled = asset.handle in pool_handles
             key = (asset.handle if pooled else None,
                    asset.kind, asset.role, asset.filename, asset.track,
@@ -1296,25 +813,12 @@ def single_payload(data):
                         asset, handle=f"{_HANDLE_PREFIX[asset.kind]}-{counters[asset.kind]}"))
             rename[asset.handle] = assets[position].handle
 
-        # A refined shot replaces the typed one here rather than downstream,
-        # because the merged request is a single generation and `compile_request`
-        # would otherwise see one `refined` blob standing for the whole strip.
         written = refined_body(segment)
 
-        # One pass, single-pass substitution: a rename map applied in two passes
-        # could turn this shot's img-1 into img-2 and then that into img-3.
         text = HANDLE_RE.sub(
             lambda m: "@" + rename.get(m.group(1), m.group(1)),
             written or str(segment.get("prompt") or ""),
         ).strip()
-        # The standing description of the piece opens the description, which is
-        # where the guide puts the style and the initial composition — in front
-        # of typed text, and in front of a shot-scoped rewrite, which stands in
-        # for the shot alone. Only a rewrite from before the scope marker
-        # existed absorbed the global itself and is not given it a second time;
-        # see `refined_scope`. A terminator is added when the user left none,
-        # because without one the two clauses run together into a sentence
-        # neither of them is.
         if number == 1 and global_prompt and (not written
                                               or refined_scope(segment) == "shot"):
             joiner = "" if global_prompt[-1] in ".!?,;:—" else "."
@@ -1324,8 +828,6 @@ def single_payload(data):
 
         stack = merge_loras(stack, segment.get("loras"))
 
-    # Named here rather than left to `_derive_mode`'s merged view, which can only
-    # say that the timeline has both and not which shots to go and look at.
     if with_refs and with_frames:
         raise CompileError(
             f"shot {with_frames[0]} has a start/end frame and shot {with_refs[0]} has "
@@ -1342,20 +844,14 @@ def single_payload(data):
         "prompt": body,
         "assets": [_asset_dict(a) for a in assets],
         "loras": stack,
-        # The whole clip is one generation, so there is one duration and it snaps
-        # to the 17n+5 grid once, at the end — not per shot.
         "duration_s": at,
         "aspect": data.get("aspect", "16:9"),
         "short_edge": data.get("short_edge", canvas.NATIVE_SHORT_EDGE),
-        # The two-pass choice is the timeline's, like the canvas it belongs to.
         **{key: data[key] for key in ("upscale", "sample_edge", "refine_denoise") if key in data},
     }
     for key in ("soundscape", "music"):
         request[key] = _agree(
             [str(data.get(key) or "")] + [str(s.get(key) or "") for s in segments], key)
-    # One pass is one reference pool, so the reference form's analysis sections
-    # describe the whole clip and are the timeline's rather than a shot's. Only
-    # the sections: the body is the assembled shot list above.
     sections = refined_sections(data)
     if sections:
         request["refined"] = {"sections": sections}
@@ -1363,19 +859,11 @@ def single_payload(data):
     if pin != "auto":
         request["checkpoint"] = pin
 
-    # `shots` is counted off the finished description rather than taken as the
-    # number of cards, because a card may number several shots of its own. The
-    # end frame is reached by the last of them, whichever card wrote it.
-    #
-    # No canvas: with nothing to concatenate there is nothing to hold to one
-    # geometry, so a start frame sets the aspect adaptively exactly as it does in
-    # a lone generation.
     return {"request": request, "shots": contextir.count_shots(body),
             "continue": False, "continue_audio": False}
 
 
 def compile_segment(payload, image_size_lookup=None):
-    """One payload from `timeline_payloads` or `single_payload` -> `Compiled`."""
     spec = payload.get("canvas")
     return compile_request(
         payload["request"], image_size_lookup,
@@ -1383,23 +871,16 @@ def compile_segment(payload, image_size_lookup=None):
         continues_audio=bool(payload.get("continue_audio")),
         shots=int(payload.get("shots", 1)),
         feather=int(payload.get("feather", 1)),
+        locked=bool(payload.get("locked")),
+        cached_video=payload.get("cached_video"),
         canvas_spec=CanvasSpec(**spec) if spec else None)
 
 
 def compile_single(data, image_size_lookup=None):
-    """`timeline_data` -> the one `Compiled` a one-pass render generates."""
     return compile_segment(single_payload(data), image_size_lookup)
 
 
 def compile_timeline(data, image_size_lookup=None):
-    """`timeline_data` dict -> one `Compiled` per segment, in play order.
-
-    Each segment is a whole generation, as capable as a lone Creator node —
-    same references, same LoRAs, same checkpoint routing. Only three things are
-    the timeline's rather than the segment's: the prompt every segment inherits,
-    the canvas they must all share to be concatenable at the end, and whether a
-    segment starts from the previous one's last frame.
-    """
     compiled = []
     for index, payload in enumerate(timeline_payloads(data, image_size_lookup)):
         try:
