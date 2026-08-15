@@ -15,6 +15,7 @@ import { viewUrl, probeAudio } from "./api.js";
 import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
 import { MIN_SECONDS, MAX_SECONDS, describeRatio, isTrainedLength } from "./canvas.js";
+import { app } from "../../../scripts/app.js";
 
 const TRACK_CHIP = {
   "picture+sound": { text: "sound on", next: "picture" },
@@ -81,6 +82,7 @@ export class CreatorEditor {
     this.ownsStage = !stage;
 
     this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [
+      this.prompt.chipsBar,
       this.prompt.root,
       this.refinePanel.root,
     ]);
@@ -90,7 +92,6 @@ export class CreatorEditor {
       this.assetsHost,
       this.loraHost,
       el("div", { class: "mmc-panel" }, [
-        this.prompt.chipsBar,
         this.promptScroll,
         this.pillsHost,
       ]),
@@ -612,7 +613,7 @@ export class CreatorEditor {
 
     const refined = S.twoPass(state);
     const resPill = el("button", {
-      class: "mmc-pill",
+      class: "mmc-pill mmc-pill-res",
       title: refined
         ? t("Sampled at a {edge} px short edge, refined up to {width} × {height} by a second pass.",
             { edge: S.sampleEdge(state), width: geometry.width, height: geometry.height })
@@ -625,6 +626,7 @@ export class CreatorEditor {
         ? `${S.sampleEdge(state)} → ${geometry.width} × ${geometry.height}`
         : `${geometry.width} × ${geometry.height}` }),
     ]);
+    this.resPill = resPill;
 
     return el("div", { class: "mmc-pills" }, [
       ...(this.continuePill ? [this.renderContinue()] : []),
@@ -747,9 +749,14 @@ export class CreatorEditor {
   }
 
   openResolution(anchor) {
-    openResolutionPopover(anchor, this.state, () => {
-      const asset = S.frameAsset(this.state, "first_frame") || S.frameAsset(this.state, "last_frame");
-      return S.resolved(this.state, asset ? this.sizes.get(asset.filename) : null);
-    }, () => this.commit());
+    openResolutionPopover(
+      () => (this.resPill?.isConnected ? this.resPill : (this.root?.querySelector(".mmc-pill-res") || anchor)),
+      this.state,
+      () => {
+        const asset = S.frameAsset(this.state, "first_frame") || S.frameAsset(this.state, "last_frame");
+        return S.resolved(this.state, asset ? this.sizes.get(asset.filename) : null);
+      },
+      () => this.commit()
+    );
   }
 }

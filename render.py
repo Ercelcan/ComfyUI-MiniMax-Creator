@@ -1,42 +1,4 @@
-"""One generation, as a graph. Shared by both nodes.
-
-Both the Creator and the Timeline own their sampler, and neither can be an
-ordinary node because of it: a node that samples has to *be* the sampler, and
-ComfyUI has no way to say that except by returning a subgraph. So both compile
-their blob to payloads and hand them here, and this emits
-
-    loaders -> segment -> [accelerators] -> [preview] -> KSampler
-            -> VAEDecode + VAEDecodeAudio -> CreateVideo -> SaveVideo
-
-once per payload, joining them end to end. The Creator passes one payload and
-the Timeline passes one per segment; a single-payload render is the same code
-with the loop running once, which is why there is no second implementation of it
-and must not be. Everything the two nodes disagree about — how the blob becomes
-payloads, what the widgets are called — stays in the nodes.
-
-The chaining is the only part a one-payload render does not exercise: segment N
-starting from segment N-1's decoded last frame, and the pairwise join that
-concatenates them. Both are driven off the compiled payload rather than off a
-flag, so a Creator render simply never asks for them.
-
-**Both ends of that chain used to be the user's problem.** The loaders were five
-sockets on the node and the video was two outputs somebody had to wire a save
-node to, which made a node built to need no wiring need six. `models.py` builds
-the loaders here now, and the tail below muxes and saves. Neither node has a
-socket left.
-
-**`set_override_display_id` is what puts the finished video back in the node.**
-An expanded node's UI result is broadcast against its own id, which is our id
-plus a `GraphBuilder` prefix and is on nobody's canvas. Stamping the parent's id
-on the save node makes `execution.py` file its `executed` message under the node
-the user is actually looking at, so the body can play what it just made without
-anything being faked or wired.
-
-Node ids are written as strings rather than imported, because they are ComfyUI
-registry keys and not Python names — `MiniMaxH3TimelineSegment` is still called
-that for both callers, since renaming it would only churn the tests for a label
-nothing outside an expanded graph ever sees.
-"""
+"""One generation, as a graph. Shared by both nodes."""
 
 import json
 from dataclasses import dataclass
@@ -55,17 +17,11 @@ TRIM_NODE = "MiniMaxH3SeamTrim"
 JOIN_NODE = "MiniMaxH3TimelineJoin"
 SAVE_NODE = "MiniMaxH3Save"
 
-# Where a render lands when the blob does not say. Under a folder of its own,
-# because the node writes one every queue now and mixing them into the root of
-# output/ would bury whatever else is in there. `outputs` owns the value and
-# what a typed one is allowed to be.
 FILENAME_PREFIX = outputs.VIDEO_PREFIX
 
 
 @dataclass(frozen=True)
 class Sampling:
-    """The sampler settings both nodes expose under the same widget names."""
-
     seed: int = 0
     steps: int = 20
     cfg: float = 1.0
@@ -75,19 +31,6 @@ class Sampling:
 
 @dataclass(frozen=True)
 class Links:
-    """The loaders, as links into the graph they were built in.
-
-    Links rather than loaded objects throughout: these go into the subgraph, and
-    ComfyUI hashes input *values* for its cache — a model object hashes as
-    `Unhashable`, so passing the real thing would make every expanded node miss
-    on every queue.
-
-    A checkpoint nothing routes to is `None` and has no loader in the graph at
-    all. That is the point of `models.emit_links` taking the set: both MODEL
-    sockets used to have to be connected even though one generation samples with
-    exactly one of them, so every queue loaded weights it never touched.
-    """
-
     clip: Any
     vae: Any
     audio_vae: Any
@@ -99,12 +42,6 @@ class Links:
 
 
 def compile_all(payloads, labels):
-    """Payloads -> `Compiled`, failing with the caller's own name for each one.
-
-    Done before a single node is emitted so that a request which cannot compile,
-    or which routes to a checkpoint nothing is connected to, fails now rather
-    than after the first sampler pass has already run.
-    """
     out = []
     for index, payload in enumerate(payloads):
         where = labels[index] if index < len(labels) else f"Segment {index + 1}"
@@ -116,12 +53,6 @@ def compile_all(payloads, labels):
 
 
 def routed(compiled, labels):
-    """`{checkpoint: the label of the first generation that reached for it}`.
-
-    Which weights this render needs, and who to blame when one of them was never
-    picked. Ordered by first use so the error names the earliest segment rather
-    than an arbitrary one.
-    """
     where = {}
     for index, one in enumerate(compiled):
         label = labels[index] if index < len(labels) else f"Segment {index + 1}"
@@ -131,30 +62,8 @@ def routed(compiled, labels):
 
 def emit(payloads, labels, weights, sampling, acceleration, unique_id,
          filename_prefix=FILENAME_PREFIX):
-    """-> the graph, which the caller finalizes. Nothing comes back out of it.
-
-    `labels[i]` names payload i in any error raised about it — "Segment 2", or
-    "This generation" where there is only one of them. `unique_id` is the calling
-    node's, and is stamped on the save node so the finished video is reported
-    against the node the user is looking at. `filename_prefix` is where the
-    result lands under output/; the callers get it from `outputs.video`, which
-    has already refused anything unusable.
-    """
-    # All three of these raise, and all three are cheap: an accelerator whose
-    # pack is not installed, a request that cannot compile, or weights that were
-    # never picked should say so before anything is queued rather than after the
-    # first segment has sampled.
     accel.plan(acceleration)
-    # Before compiling, and before the payloads become segment cache keys: a
-    # standing route is the same statement the per-request pin makes, said once
-    # for every generation instead of once per generation.
     payloads = [weights.routed(payload) for payload in payloads]
-    # Which segment each payload is, for the stage's "now rendering segment N"
-    # chip — the segment node announces it when it executes. Only where there
-    # are several: a lone generation has no position worth reporting. The index
-    # alone, never the total: a payload's index is stable when a segment is
-    # appended, so earlier segments keep their cache keys, where a total would
-    # invalidate the whole strip for adding one shot at the end.
     if len(payloads) > 1:
         payloads = [{**payload, "progress": {"index": index + 1}}
                     for index, payload in enumerate(payloads)]
@@ -164,24 +73,15 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
 
     graph = GraphBuilder()
     links = models.emit_links(graph, weights, set(where))
-    joined = None           # (images, audio) for everything emitted so far
-    decoded = []            # every payload's decoded (images, audio), in order —
-                            # a seam defaults to the previous one but may name
-                            # any earlier segment via the payload's continue_from
+    joined = None
+    decoded = []
+    last_latent = None
 
     for index, one in enumerate(compiled):
         inputs = {
             "clip": links.clip,
-            # sort_keys so an unchanged payload serialises identically every
-            # time — this string is the segment node's cache key.
             "segment_data": json.dumps(payloads[index], sort_keys=True),
         }
-        # The VAEs are wired into the encoder only when this segment actually
-        # encodes with them — a keyframe or a sound seam. A text-only segment
-        # touches neither until decode, and a decode node runs after sampling
-        # where the DiT no longer needs the room. Wiring them here regardless
-        # would load both before the first step and, on tight VRAM, push part of
-        # the model into per-step recompute for no encode that uses them.
         if one.encodes_video():
             inputs["vae"] = links.vae
         if one.encodes_audio():
@@ -193,61 +93,30 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
         source = decoded[payloads[index].get("continue_from", index - 1)] \
             if index else (None, None)
         if one.continues:
-            # Only the tail, not the whole batch: the source segment's images
-            # are a video and what this one inherits is its last moment — or,
-            # feathered, its last few. Inserted here rather than after every
-            # segment, so a render of hard cuts has no dead nodes in it and a
-            # Creator render has none at all. The count rides only on feathered
-            # seams, so a classic seam's node inputs stay byte-identical.
             inputs["prev_image"] = graph.node(
                 LAST_FRAME_NODE, image=source[0],
                 **({"count": one.feather} if one.feather > 1 else {})).out(0)
         if one.continues_audio:
-            # `one.audio_tail_s` rather than the timeline's setting directly:
-            # compile clamps it to a feathered seam's overlap, and this is
-            # where that decision reaches the graph.
             inputs["prev_audio"] = graph.node(
                 AUDIO_TAIL_NODE, audio=source[1], seconds=one.audio_tail_s).out(0)
 
         segment = graph.node(SEGMENT_NODE, **inputs)
-
-        # The distilled H3 checkpoints run at cfg 1.0, where the negative is
-        # skipped outright, so there is nothing here worth a socket on the node.
         against = graph.node("ConditioningZeroOut", conditioning=segment.out(1)).out(0)
 
-        # After the segment node, which is where the LoRAs are patched on — both
-        # packs want to sit between the model patches and the sampler, and
-        # FirstBlockCache refuses to run downstream of another DiT block
-        # replacement. Off, this is `segment.out(0)` unchanged.
         model = accel.graph_apply(graph, segment.out(0), acceleration)
-        # Last patch before the sampler: it wraps OUTER_SAMPLE, so it wants to be
-        # outside the accelerators rather than under them. Adds nothing when the
-        # pack is absent or no decoder was picked.
         model = models.graph_preview(graph, model, weights)
 
         sampled = graph.node(
             "KSampler",
             model=model, positive=segment.out(1), negative=against,
             latent_image=segment.out(2),
-            # Same seed on every segment would give consecutive shots the same
-            # noise, which reads as a stutter rather than as continuity. With one
-            # payload this is just the seed.
             seed=sampling.seed + index, steps=sampling.steps, cfg=sampling.cfg,
             sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
             denoise=1.0,
         )
+        last_latent = sampled.out(0)
 
         if one.refine:
-            # The two-pass upscale: the first pass sampled at the smaller
-            # first-pass canvas, and this regenerates it at the target size
-            # from the same context.
-            # A second segment node, pinned to the target canvas, re-encodes
-            # the keyframes and references at that size so their condition
-            # latents match the upscaled video latent — then the refine pass
-            # interpolates the picture up, re-noises it partway down the
-            # schedule, and samples again with the soundtrack riding through
-            # un-noised. Pinning the canvas also ends the recursion: a pinned
-            # target compiles with nothing left to refine to.
             spec = {"width": one.refine.width, "height": one.refine.height,
                     "ratio": one.ratio, "label": one.ratio_label,
                     "from_image": one.ratio_from_image, "clamped": one.ratio_clamped}
@@ -255,10 +124,6 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             refine_inputs["segment_data"] = json.dumps(
                 {**payloads[index], "canvas": spec}, sort_keys=True)
             second = graph.node(SEGMENT_NODE, **refine_inputs)
-            # Patched the same way as the first pass, because it is the same
-            # run at a different size: cfg 1.0 skips the negative, the LoRAs
-            # come with the segment node, the accelerators and the preview
-            # decoder sit in the same places.
             refine_against = graph.node(
                 "ConditioningZeroOut", conditioning=second.out(1)).out(0)
             refine_model = accel.graph_apply(graph, second.out(0), acceleration)
@@ -272,19 +137,11 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                 sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
                 denoise=one.refine.denoise,
             )
+            last_latent = sampled.out(0)
 
-        # The H3 latent is a nested (video, audio) pair; core's two decoders each
-        # unbind the half they want. `VAEDecodeAudio` rather than
-        # `LTXVAudioVAEDecode`, which also accepts this latent and is what the H3
-        # templates do *not* use: it returns the decoder's output as-is, where
-        # this one attenuates anything hot enough to clip on the way to a file.
         images = graph.node("VAEDecode", samples=sampled.out(0), vae=links.vae).out(0)
         audio = graph.node("VAEDecodeAudio", samples=sampled.out(0), vae=links.audio_vae).out(0)
         if one.feather > 1:
-            # A feathered segment re-generates the run it inherited at its own
-            # head; joined untrimmed, the source's tail would play twice. The
-            # trimmed pair is also what later seams inherit from — their tail
-            # is identical either way, and this is the segment as delivered.
             trimmed = graph.node(TRIM_NODE, images=images, audio=audio, frames=one.feather)
             images, audio = trimmed.out(0), trimmed.out(1)
         decoded.append((images, audio))
@@ -292,40 +149,26 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
         if joined is None:
             joined = (images, audio)
         else:
-            # Folded pairwise rather than gathered into one variadic node, so the
-            # join needs no dynamic inputs and works for any payload count.
             pair = graph.node(JOIN_NODE,
                               images_a=joined[0], audio_a=joined[1],
                               images_b=images, audio_b=audio)
             joined = (pair.out(0), pair.out(1))
 
     emit_tail(graph, joined[0], joined[1], unique_id, filename_prefix)
-    return graph
+
+    result_links = (
+        joined[0],
+        joined[1],
+        links.model_fl2va,
+        links.model_ref2va,
+        links.vae,
+        links.clip,
+        last_latent,
+    )
+    return graph, result_links
 
 
 def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
-    """Mux the frames and the sound into a file, and report it against `unique_id`.
-
-    H3 generates picture and sound together and they should leave together, which
-    used to mean wiring both outputs into somebody else's save node and getting
-    the frame rate wrong. `canvas.FPS` is the rate the frame counts were snapped
-    to, so it is the only rate this can be.
-
-    `MiniMaxH3Save` rather than core's `CreateVideo` + `SaveVideo`: `SaveVideo`'s
-    `codec` is a `DynamicCombo`, whose value is assembled from the frontend's
-    dynamic schema rather than being the plain string it looks like, and a
-    built graph has no frontend to assemble it. Ours takes the two tensors it is
-    already holding and writes the file.
-
-    The display-id stamp is the whole reason the node can show its own result —
-    see the module docstring.
-
-    The quality target is read here, once, and travels into the graph as an
-    ordinary input. That is what makes it take effect on a re-queue: an output
-    node with unchanged inputs is a cache hit, so a save node that read the
-    setting itself would keep writing yesterday's quality until something else
-    about the render changed.
-    """
     save = graph.node(SAVE_NODE, images=images, audio=audio,
                       fps=float(canvas.FPS), filename_prefix=filename_prefix,
                       crf=settings.video_crf())
@@ -334,22 +177,12 @@ def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
 
 
 class _NoExportedLinks(io.NodeOutput):
-    """A `NodeOutput` that expands to a graph and exports nothing from it.
-
-    Neither node has an output socket, so an expansion from either one hands
-    nothing back to the graph around it. `NodeOutput.result` collapses "no
-    values" to `None`, but the empty tuple is what `execution.py` wants: it
-    takes `len()` of the result to find which of the subgraph's outputs are
-    links the parent exports, and `None` is a `TypeError` rather than "none of
-    them". The rest of the expansion — including the save node that makes the
-    file — is already in the graph and runs regardless.
-    """
-
     @property
     def result(self):
         return ()
 
 
-def expanded(graph):
-    """-> the node return for a finished graph. See `_NoExportedLinks`."""
-    return _NoExportedLinks(expand=graph.finalize())
+def expanded(graph, outputs=()):
+    if not outputs:
+        return _NoExportedLinks(expand=graph.finalize())
+    return io.NodeOutput(*outputs, expand=graph.finalize())

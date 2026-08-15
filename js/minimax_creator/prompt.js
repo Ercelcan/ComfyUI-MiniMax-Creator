@@ -48,9 +48,14 @@ export class PromptBox {
       "data-placeholder": t("Describe your video, use @ to reference images, videos, audio, or elements"),
     });
 
+    this.wordCountEl = el("span", { class: "mmc-prompt-wordcount", text: "0 words" });
+
     this.chipsBar = el("div", { class: "mmc-prompt-chips-bar" });
 
-    this.root.addEventListener("input", () => this.onEdit());
+    this.root.addEventListener("input", () => {
+      this.onEdit();
+      this.updateWordCount();
+    });
     this.root.addEventListener("keydown", (event) => this.onKeyDown(event), true);
     this.root.addEventListener("paste", (event) => this.onPaste(event));
     this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 150));
@@ -60,6 +65,13 @@ export class PromptBox {
     }
 
     this.renderChipsBar();
+  }
+
+  updateWordCount() {
+    const text = this.getValue().trim();
+    const words = text ? text.split(/\s+/).filter(Boolean).length : 0;
+    const chars = text.length;
+    this.wordCountEl.textContent = words ? `${words} words · ${chars} chars` : "";
   }
 
   renderChipsBar() {
@@ -74,8 +86,45 @@ export class PromptBox {
       onpointerdown: (e) => e.stopPropagation(),
     }, [icon("camera", 14), el("span", { text: t("Camera & Style") })]);
 
+    const copyBtn = el("button", {
+      class: "mmc-ghost mmc-prompt-tool-btn",
+      text: t("📋 Copy"),
+      title: t("Copy prompt text to clipboard"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: async (e) => {
+        e.stopPropagation();
+        const text = this.getValue().trim();
+        if (text) {
+          await navigator.clipboard?.writeText(text);
+          copyBtn.textContent = t("✓ Copied");
+          setTimeout(() => { copyBtn.textContent = t("📋 Copy"); }, 1500);
+        }
+      },
+    });
+
+    const clearBtn = el("button", {
+      class: "mmc-ghost mmc-prompt-tool-btn",
+      text: t("✕ Clear"),
+      title: t("Clear prompt text"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (e) => {
+        e.stopPropagation();
+        this.setValue("");
+        this.hooks.onInput("");
+        this.updateWordCount();
+      },
+    });
+
+    const topBar = el("div", { class: "mmc-prompt-top-row" }, [
+      toggleBtn,
+      el("span", { style: { flex: "1" } }),
+      copyBtn,
+      clearBtn,
+      this.wordCountEl,
+    ]);
+
     if (!this.showChips) {
-      this.chipsBar.replaceChildren(toggleBtn);
+      this.chipsBar.replaceChildren(topBar);
       return;
     }
 
@@ -90,11 +139,12 @@ export class PromptBox {
           e.stopPropagation();
           this.insertTextAtCursor(`${phrase}, `);
           this.onEdit();
+          this.updateWordCount();
         },
       }))),
     ]));
 
-    this.chipsBar.replaceChildren(toggleBtn, ...groups);
+    this.chipsBar.replaceChildren(topBar, ...groups);
   }
 
   getValue() {
@@ -111,6 +161,7 @@ export class PromptBox {
   setValue(text) {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
+    this.updateWordCount();
   }
 
   build(text) {
@@ -153,6 +204,7 @@ export class PromptBox {
   refresh() {
     if (document.activeElement === this.root) return;
     this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
+    this.updateWordCount();
   }
 
   onEdit() {
@@ -168,6 +220,7 @@ export class PromptBox {
     const text = event.clipboardData?.getData("text/plain") ?? "";
     this.insertTextAtCursor(text.replace(/\r\n?/g, "\n"));
     this.onEdit();
+    this.updateWordCount();
   }
 
   onKeyDown(event) {
@@ -185,6 +238,7 @@ export class PromptBox {
       event.preventDefault();
       this.insertTextAtCursor("\n");
       this.onEdit();
+      this.updateWordCount();
     }
   }
 
@@ -231,6 +285,7 @@ export class PromptBox {
       this.root.appendChild(this.chip(handle));
       this.root.appendChild(document.createTextNode(" "));
       this.hooks.onInput(this.getValue());
+      this.updateWordCount();
       return;
     }
     const chip = this.chip(handle);
@@ -243,6 +298,7 @@ export class PromptBox {
     selection.removeAllRanges();
     selection.addRange(after);
     this.hooks.onInput(this.getValue());
+    this.updateWordCount();
   }
 
   async openMenu(query) {

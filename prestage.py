@@ -1,35 +1,4 @@
-"""The MiniMax H3 PreStage node: stills for the pipeline, made on the left.
-
-The Creator consumes images — a start frame, an end frame, references, style
-sheets — and until this node existed it had no way to make one. The PreStage
-generates them locally with Krea 2, Ideogram 4.0 (both open weights, both native
-in core) or MiniMax H3 itself, and saves them where the picker already looks, so
-a finished still is one chip away from being the next render's keyframe.
-
-The third of those is a different animal and lives in `compile_still.py` /
-`render_still.py`: H3 is a video model, so a still from it is a video generation
-whose first latent frame is decoded as a picture, through an experimental T=1
-image VAE. It reuses the video pipeline outright — the same segment node, the
-same checkpoints, the same canvas — which is the point of having it: no second
-model family loaded, and a keyframe made by the weights that will render the
-shot it opens.
-
-It is built exactly like the Creator, because it is driven exactly like the
-Creator: zero sockets, one JSON blob the UI owns, weights named by filename,
-and an expanded subgraph that loads, samples, decodes and saves — see
-`creator_node.py`'s docstring for why a node that samples cannot be an ordinary
-node. The one difference is social rather than structural: a PreStage is a
-property of the shot being set up, not a node the user hunts the menu for, so
-the frontend spawns and removes it from a pill on the Creator/Timeline body
-(`js/minimax_creator/prestage.js`) rather than expecting it to be placed by
-hand. It still *is* an ordinary node underneath — placeable, copyable,
-saveable — because anything else would fight LiteGraph for no benefit.
-
-Queueing both nodes at once is deliberately not an ordering: the hand-off is by
-file, so there is no execution edge to get wrong, and ComfyUI's input-hash
-caching makes an untouched PreStage a cache hit on the queue that renders the
-video.
-"""
+"""The MiniMax H3 PreStage node: stills for the pipeline, made on the left."""
 
 import json
 
@@ -49,12 +18,7 @@ DEFAULT_DATA = json.dumps({
     "loras": [],
     "turbo": {"on": False, "quality": compile_image.DEFAULT_TURBO_QUALITY, "saved": None},
     "quality": compile_image.DEFAULT_IDEOGRAM_QUALITY,
-    # Where the still lands under output/. Its own default, so the gallery
-    # sorts stills apart from finished renders. See `outputs`.
     "output_prefix": outputs.IMAGE_PREFIX,
-    # The H3 branch: how long a clip it samples and which of that clip's latent
-    # frames becomes the picture, plus the generation itself in the Creator's
-    # own shape — because it is one. See `compile_still`.
     "minimax": {
         "frames": compile_still.DEFAULT_FRAMES,
         "latent_index": compile_still.DEFAULT_LATENT_INDEX,
@@ -62,12 +26,7 @@ DEFAULT_DATA = json.dumps({
                     "aspect": "16:9", "short_edge": canvas.NATIVE_SHORT_EDGE,
                     "output_prefix": outputs.IMAGE_PREFIX, "models": {}},
     },
-    # Per-arch sub-blocks, so switching the model pill never forgets the other
-    # side's files. Empty rather than guessed — the UI fills it from the
-    # listing route, exactly as the Creator's block is filled.
     "models": {"krea2": {}, "ideogram4": {}, "minimax": {}},
-    # A hint for the frontend's peer discovery, never authoritative: node ids
-    # renumber on paste, so the pill re-derives the relationship by scan.
     "peer": None,
 }, indent=2)
 
@@ -88,10 +47,6 @@ class MiniMaxH3PreStage(io.ComfyNode):
             ),
             enable_expand=True,
             is_output_node=True,
-            # The same sampler row, under the same names, as the two video
-            # nodes — a control that means the same thing is not called
-            # something else here. Defaults are Krea 2 RAW's; the arch and
-            # turbo pills rewrite them.
             inputs=[
                 io.String.Input("prestage_data", multiline=True, default=DEFAULT_DATA),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True),
@@ -103,15 +58,14 @@ class MiniMaxH3PreStage(io.ComfyNode):
                                default=compile_image.KREA_RAW["scheduler"],
                                tooltip="Krea 2 samples on this schedule. Ideogram 4 owns its own resolution-shifted schedule and ignores it."),
             ],
-            outputs=[],
+            outputs=[
+                io.Image.Output("image", display_name="image"),
+            ],
             hidden=[io.Hidden.unique_id],
         )
 
     @classmethod
     def fingerprint_inputs(cls, prestage_data, **kwargs):
-        """Re-run when a referenced file changes on disk — same contract as the
-        Creator: media is addressed by filename, so mtimes are all ComfyUI has
-        to notice a replaced file by."""
         import os
 
         from . import lora
@@ -124,7 +78,6 @@ class MiniMaxH3PreStage(io.ComfyNode):
             init = data.get("init")
             if isinstance(init, dict):
                 names.append(init.get("filename"))
-            # The H3 branch keeps its media in a creator-shaped request.
             still = (data.get("minimax") or {}).get("request") or {}
             names.extend(asset.get("filename") for asset in still.get("assets") or [])
             entries = list(data.get("loras") or []) + list(still.get("loras") or [])
@@ -149,41 +102,34 @@ class MiniMaxH3PreStage(io.ComfyNode):
         except json.JSONDecodeError as exc:
             raise ValueError(f"prestage_data is not valid JSON: {exc}") from exc
 
-        # The H3 branch is a video render that keeps one latent frame, so it
-        # compiles and emits through the video path rather than through the
-        # image models' — see `compile_still`. Same widgets, same blob, same
-        # save node; everything between them is the other pipeline.
         if data.get("arch") == compile_still.ARCH:
             try:
                 plan = compile_still.compile_still(data)
             except compile_image.CompileError as exc:
                 raise ValueError(str(exc)) from exc
-            # The request owns the weights, because it is an ordinary creator
-            # request — see `compile_still`.
             request = plan.request
-            graph = render_still.emit(
+            graph, results = render_still.emit(
                 plan,
                 render_still.weights_from_blob(request),
                 render.Sampling(seed=seed, steps=steps, cfg=cfg,
                                 sampler_name=sampler_name, scheduler=scheduler),
                 cls.hidden.unique_id,
                 filename_prefix=outputs.image(request, settings.image_prefix()))
-            return render.expanded(graph)
+            return render.expanded(graph, results)
 
         try:
             payload = compile_image.compile_prestage(data, media.image_size)
         except compile_image.CompileError as exc:
             raise ValueError(str(exc)) from exc
 
-        graph = render_image.emit(
+        graph, results = render_image.emit(
             payload,
             render_image.ImageWeights.from_blob(data),
             render.Sampling(seed=seed, steps=steps, cfg=cfg,
                             sampler_name=sampler_name, scheduler=scheduler),
             cls.hidden.unique_id,
-            # Refused before anything is sampled — see MiniMaxH3Creator.execute.
             filename_prefix=outputs.image(data, settings.image_prefix()))
-        return render.expanded(graph)
+        return render.expanded(graph, results)
 
 
 class MiniMaxH3SaveImage(io.ComfyNode):
@@ -243,20 +189,6 @@ class MiniMaxH3SaveImage(io.ComfyNode):
 
 
 class MiniMaxH3StillLatent(io.ComfyNode):
-    """One temporal slice of a sampled H3 latent, as an ordinary image latent.
-
-    H3 samples a NestedTensor pair — video `[B,24,T,H/16,W/16]` and audio — and
-    this takes the video half's frame `index` and hands it on as a plain latent
-    of length 1. That is the tensor the experimental T=1 image VAE was fitted
-    to: the H3 VAE is causal on the 17k+5 <-> 5k+2 grid, so latent frame 0 is a
-    function of pixel frame 0 alone and is exactly what encoding a single image
-    produces (core's own `downscale_ratio` returns 1 latent frame for 1 image).
-
-    Negative indexes from the end, so -1 is the clip's last latent frame. The
-    audio half is dropped here rather than never generated: the DiT samples the
-    pair together, and a still simply does not read one of them.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -276,9 +208,6 @@ class MiniMaxH3StillLatent(io.ComfyNode):
     @classmethod
     def execute(cls, samples, index) -> io.NodeOutput:
         latent = samples["samples"]
-        # The pair arrives nested from the sampler and un-nested from anything
-        # that has already taken it apart; both are worth accepting, because
-        # this node is also the obvious place to point a hand-built graph.
         video = latent.unbind()[0] if getattr(latent, "is_nested", False) else latent
         if video.ndim != 5:
             raise ValueError(
@@ -293,8 +222,6 @@ class MiniMaxH3StillLatent(io.ComfyNode):
                 f"Latent frame {index} does not exist: this clip packs into "
                 f"{total} latent frames (0..{total - 1})."
             )
-        # Contiguous rather than a view, so nothing downstream holds the whole
-        # sampled clip alive to read one frame of it.
         return io.NodeOutput({"samples": video[:, :, resolved:resolved + 1].contiguous()})
 
 

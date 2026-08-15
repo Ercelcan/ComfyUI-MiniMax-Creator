@@ -514,6 +514,31 @@ export class RefinePanel {
     return !!refined && (refined.source ?? "") !== (this.getState().prompt ?? "");
   }
 
+  getFullPromptText() {
+    const state = this.getState();
+    const refined = this.refined;
+    if (!refined) return state.prompt || "";
+    
+    const parts = [];
+    if (refined.sections) {
+      for (const [name, text] of Object.entries(refined.sections)) {
+        if (text && text.trim()) parts.push(`${name}:\n${text.trim()}`);
+      }
+    }
+    if (refined.body && refined.body.trim()) {
+      const isRef = Boolean(refined.sections);
+      const header = isRef ? "detailed_description:" : "integrated_multimodal_description:";
+      parts.push(`${header}\n${refined.body.trim()}`);
+    }
+    if (state.soundscape && state.soundscape.trim()) {
+      parts.push(`overall_soundscape:\n${state.soundscape.trim()}`);
+    }
+    if (state.music && state.music.trim()) {
+      parts.push(`non_diegetic_music:\n${state.music.trim()}`);
+    }
+    return parts.join("\n\n");
+  }
+
   textarea(get, set, { rows = 3, placeholder = "", className = "mmc-refined-box" }) {
     const box = el("textarea", {
       class: className, rows: String(rows), placeholder,
@@ -538,6 +563,22 @@ export class RefinePanel {
     const parts = [];
     if (refined) {
       const on = refined.enabled !== false;
+      
+      const copyBtn = el("button", {
+        class: "mmc-ghost mmc-copy-btn",
+        style: { fontSize: "11px" },
+        text: t("📋 Copy all"),
+        title: t("Copy full Context-IR formatted prompt (all sections, description and sound)"),
+        onclick: async () => {
+          const full = this.getFullPromptText();
+          if (full) {
+            await navigator.clipboard?.writeText(full);
+            copyBtn.textContent = t("✓ Copied all");
+            setTimeout(() => { copyBtn.textContent = t("📋 Copy all"); }, 1500);
+          }
+        },
+      });
+
       parts.push(el("div", { class: "mmc-refined-head" }, [
         el("button", {
           class: `mmc-refined-toggle${on ? " on" : ""}`,
@@ -549,7 +590,7 @@ export class RefinePanel {
             this.onCommit?.();
             this.render();
           },
-        }, [el("span", { class: "mmc-dot" }), el("span", { text: on ? t("refined") : t("refined (off)") })]),
+        }, [el("span", { class: "mmc-dot" }), el("span", { text: on ? t("refined (active)") : t("refined (off)") })]),
         ...(refined.model ? [el("span", { class: "mmc-refined-model", text: refined.model })] : []),
         ...(refined.template ? [el("span", {
           class: "mmc-refined-model",
@@ -568,8 +609,10 @@ export class RefinePanel {
           title: t("Your prompt has changed since this was written. It still queues as it stands — refine again to fold the change in."),
         })] : []),
         el("span", { style: { flex: "1" } }),
+        copyBtn,
         el("button", {
           class: "mmc-ghost",
+          style: { fontSize: "11px" },
           text: this.collapsed ? t("Expand") : t("Collapse"),
           title: this.collapsed ? t("Expand the refined text box") : t("Collapse the refined text box"),
           onclick: () => {
@@ -578,32 +621,35 @@ export class RefinePanel {
           },
         }),
         el("button", {
-          class: "mmc-ghost", text: t("Revert"),
+          class: "mmc-ghost",
+          style: { fontSize: "11px" },
+          text: t("Revert"),
           title: t("Throw the rewrite away and go back to your own prompt. The soundscape and score it wrote go with it."),
           onclick: () => this.clear(),
         }),
       ]));
 
-      parts.push(el("div", {
-        class: "mmc-refined-lede",
-        text: on
-          ? t("Queued instead of the prompt above, not alongside it.")
-          : t("Off — the prompt above is queued as you wrote it."),
-      }));
-
       if (!this.collapsed) {
         if (this.seen) {
           parts.push(el("details", { class: "mmc-refined-fold" }, [
-            el("summary", { text: t("what the model saw in your images") }),
-            el("div", { class: "mmc-refine-hint mmc-refined-seen", text: this.seen }),
+            el("summary", { text: t("👁 What the model saw in your images") }),
+            el("div", { class: "mmc-refined-seen", text: this.seen }),
           ]));
         }
 
+        const words = (refined.body || "").trim().split(/\s+/).filter(Boolean).length;
+        const wordBadge = el("span", { class: "mmc-refined-wordcount", text: `${words} words` });
+
         this.bodyBox = this.textarea(
           () => refined.body,
-          (value) => { refined.body = value; },
+          (value) => { 
+            refined.body = value;
+            const w = value.trim().split(/\s+/).filter(Boolean).length;
+            wordBadge.textContent = `${w} words`;
+          },
           { rows: 5, placeholder: t("The rewritten description.") });
-        parts.push(this.bodyBox);
+        
+        parts.push(el("div", { class: "mmc-refined-hero" }, [this.bodyBox, wordBadge]));
 
         if (refined.sections) {
           const sections = el("div", { class: "mmc-refined-sections" });
@@ -613,11 +659,11 @@ export class RefinePanel {
               this.textarea(
                 () => refined.sections[name],
                 (value) => { refined.sections[name] = value; },
-                { rows: 3, className: "mmc-refined-box mmc-tl-small" }),
+                { rows: 3, className: "mmc-refined-sub-box" }),
             ]));
           }
           const fold = el("details", { class: "mmc-refined-fold" }, [
-            el("summary", { text: t("reference analysis — where your @references are defined") }),
+            el("summary", { text: t("🏷 Reference Analysis & Retention") }),
             sections,
           ]);
           fold.open = true;
@@ -633,7 +679,7 @@ export class RefinePanel {
           this.textarea(
             () => state.soundscape,
             (value) => { state.soundscape = value; },
-            { rows: 3, className: "mmc-refined-box mmc-tl-small",
+            { rows: 3, className: "mmc-refined-sub-box",
               placeholder: t("Everything heard in the room. Empty leaves it to the model; N/A is silence.") }),
         ]),
         el("label", { class: "mmc-tl-field" }, [
@@ -641,7 +687,7 @@ export class RefinePanel {
           this.textarea(
             () => state.music,
             (value) => { state.music = value; },
-            { rows: 3, className: "mmc-refined-box mmc-tl-small",
+            { rows: 3, className: "mmc-refined-sub-box",
               placeholder: t("The score only the audience hears. Empty leaves it to the model.") }),
         ]),
       ]));

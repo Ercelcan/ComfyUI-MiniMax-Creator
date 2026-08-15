@@ -1,36 +1,4 @@
-"""Preferences that belong to this ComfyUI rather than to a workflow.
-
-The line this file draws: a workflow says what the piece *is* — the prompt, the
-references, the duration. This says how this machine writes it. Two people
-opening the same `.json` should get the same shot, and should not also be made
-to agree about how many megabytes it may take or which folder on their own disk
-it lands in.
-
-Encoding quality was the first thing on this side of the line; the output
-folders followed it, for the same reason and one more. A prefix stored per node
-meant every node was a place the answer could differ, so a workflow with a
-Creator, a Timeline and a pre-stage in it had three, and moving a project to
-another machine carried someone else's folder names along with it.
-
-So it is not in `creator_data` and it is not a widget. It is one small JSON file
-that the settings page writes and the save node reads.
-
-**Where it lives, and why not under `user/default/`.** The picker's favorites go
-through the frontend's userdata API, which files them per ComfyUI user. This
-cannot: it is read while a queued prompt executes, and an execution has no
-request behind it and therefore no user. A file that the settings page wrote to
-one place and the node read from another would be a setting that silently does
-nothing. One file beside `user/`, read the same way by both.
-
-This file decides what a setting is *allowed* to be; `js/minimax_creator/
-settings.js` decides what the page *offers*. They are not mirrors and there is
-no mirror test: the encoder's whole scale is legal here, so a value typed into
-the file by hand is honoured and shown, while the page offers the four points on
-it worth choosing between.
-
-Nothing here imports torch or ComfyUI at module scope — `tests/test_settings.py`
-runs it standalone, the same way `outputs.py` is tested.
-"""
+"""Preferences that belong to this ComfyUI rather than to a workflow."""
 
 import json
 import os
@@ -39,20 +7,10 @@ from . import outputs
 
 FILE = "minimax_creator.settings.json"
 
-# libx264's own scale, verbatim: 0 is (near) lossless and 51 is unwatchable.
-# Refusing anything outside it here means the number reaching the encoder is
-# always a number the encoder has an answer for.
 MIN_CRF = 0
 MAX_CRF = 51
-
-# What libx264 picks when nothing tells it otherwise, which is exactly what this
-# pack wrote before the setting existed. Passing it explicitly changes no file.
 DEFAULT_CRF = 23
 
-# Where the two kinds of file land under ComfyUI's output directory. Prefixes,
-# not folders: core's `filename_prefix` names the folder *and* the stem every
-# file in it is numbered off, and expands `%year%`-style tokens per render.
-# `outputs.py` owns what one is allowed to be.
 DEFAULT_VIDEO_PREFIX = outputs.VIDEO_PREFIX
 DEFAULT_IMAGE_PREFIX = outputs.IMAGE_PREFIX
 
@@ -60,23 +18,17 @@ DEFAULTS = {
     "video_crf": DEFAULT_CRF,
     "video_prefix": DEFAULT_VIDEO_PREFIX,
     "image_prefix": DEFAULT_IMAGE_PREFIX,
+    "enable_preview": True,
 }
 
 
 def clean(raw):
-    """A settings blob -> the settings this pack will use. Unknown keys dropped.
-
-    Raises ValueError on a key that is present and unusable, so the route can
-    refuse it rather than store a value the node would then ignore. A missing
-    key is not an error: it is the default, and a file written by an older
-    version is missing every key added since.
-    """
+    """A settings blob -> the settings this pack will use. Unknown keys dropped."""
     if not isinstance(raw, dict):
         raise ValueError("settings must be an object")
     clean_settings = dict(DEFAULTS)
     if "video_crf" in raw and raw["video_crf"] is not None:
         crf = raw["video_crf"]
-        # `True` is an int in Python and would sail through as crf 1.
         if isinstance(crf, bool) or not isinstance(crf, (int, float)) or crf != int(crf):
             raise ValueError("video_crf must be a whole number")
         crf = int(crf)
@@ -86,13 +38,12 @@ def clean(raw):
     for key, fallback in (("video_prefix", DEFAULT_VIDEO_PREFIX),
                           ("image_prefix", DEFAULT_IMAGE_PREFIX)):
         if key in raw and raw[key] is not None:
-            # `outputs.clean` is what the save nodes are held to, so a prefix
-            # that would be refused at the end of a render is refused here
-            # instead — while it is still a field somebody is editing.
             try:
                 clean_settings[key] = outputs.clean(raw[key], fallback)
             except outputs.PrefixError as exc:
                 raise ValueError(f"{key}: {exc}") from exc
+    if "enable_preview" in raw and raw["enable_preview"] is not None:
+        clean_settings["enable_preview"] = bool(raw["enable_preview"])
     return clean_settings
 
 
@@ -104,13 +55,7 @@ def path():
 
 
 def load():
-    """The stored settings, with every key filled in.
-
-    A file that cannot be read or cannot be understood reads as the defaults —
-    which is what this pack did before anyone opened the settings page, and what
-    the page will show, so a value that did not survive is visibly gone rather
-    than quietly in force.
-    """
+    """The stored settings, with every key filled in."""
     try:
         with open(path(), "r", encoding="utf-8") as handle:
             return clean(json.load(handle))
@@ -119,13 +64,10 @@ def load():
 
 
 def save(raw):
-    """Store a settings blob and hand back what was stored. Raises ValueError on
-    a value this pack will not write."""
+    """Store a settings blob and hand back what was stored."""
     stored = clean(raw)
     target = path()
     os.makedirs(os.path.dirname(target), exist_ok=True)
-    # Written whole and moved into place: the save node reads this file while
-    # renders are queued, and a half-written one would read as the defaults.
     temporary = f"{target}.tmp"
     with open(temporary, "w", encoding="utf-8") as handle:
         json.dump(stored, handle, indent=2)
@@ -146,3 +88,8 @@ def video_prefix():
 def image_prefix():
     """Where pre-stage stills land, unless the blob names somewhere itself."""
     return load()["image_prefix"]
+
+
+def enable_preview():
+    """Whether the live preview box is enabled by default."""
+    return load().get("enable_preview", True)

@@ -116,6 +116,14 @@ export class Stage {
     }
   }
 
+  get previewDisabled() {
+    try {
+      return localStorage.getItem("mmc-preview-disabled") === "true";
+    } catch {
+      return false;
+    }
+  }
+
   toggleKeepVideo() {
     const next = !this.keepLastVideo;
     try { localStorage.setItem("mmc-stage-keep-video", String(next)); } catch {}
@@ -245,10 +253,12 @@ export class Stage {
         this.progress = null;
         this.segment = null;
         this.error = null;
-        if (this.state === "done" && !this.keepLastVideo) {
-          this.state = "sampling";
-          this.releaseFrame();
-          this.frame = null;
+        if (!this.previewDisabled) {
+          if (this.state === "done" && !this.keepLastVideo) {
+            this.state = "sampling";
+            this.releaseFrame();
+            this.frame = null;
+          }
         }
         this.renderReadout();
         break;
@@ -264,7 +274,7 @@ export class Stage {
           if (!best || (entry.max ?? 0) > (best.max ?? 0)) best = entry;
         }
         if (!best) break;
-        if (this.state !== "sampling") {
+        if (this.state !== "sampling" && !this.previewDisabled) {
           this.begin();
           this.render();
         }
@@ -281,12 +291,12 @@ export class Stage {
           if (!this.ours(parentId) && !this.ours(nodeId) && !this.ours(displayId)) break;
         }
         this.metaFrameAt = Date.now();
-        if (this.state !== "sampling") this.begin();
+        if (this.state !== "sampling" && !this.previewDisabled) this.begin();
         this.releaseFrame();
         this.frameUrl = URL.createObjectURL(detail.blob);
         this.frame = this.frameUrl;
         this.frameIsClip = false;
-        this.render();
+        if (!this.previewDisabled) this.render();
         break;
       }
 
@@ -294,12 +304,12 @@ export class Stage {
         const blob = detail instanceof Blob ? detail : detail.blob;
         if (!blob) break;
         if (this.metaFrameAt && Date.now() - this.metaFrameAt < 2000) break;
-        if (this.state !== "sampling") this.begin();
+        if (this.state !== "sampling" && !this.previewDisabled) this.begin();
         this.releaseFrame();
         this.frameUrl = URL.createObjectURL(detail.blob);
         this.frame = this.frameUrl;
         this.frameIsClip = false;
-        this.render();
+        if (!this.previewDisabled) this.render();
         break;
       }
 
@@ -309,11 +319,11 @@ export class Stage {
           this.progress = { step: detail.step ?? 0, total: detail.total };
         }
         if (!detail.image) break;
-        if (this.state !== "sampling") this.begin();
+        if (this.state !== "sampling" && !this.previewDisabled) this.begin();
         this.releaseFrame();
         this.frame = `data:${detail.mime || "image/jpeg"};base64,${detail.image}`;
         this.frameIsClip = (detail.mime || "").startsWith("video/");
-        this.render();
+        if (!this.previewDisabled) this.render();
         break;
       }
 
@@ -322,7 +332,9 @@ export class Stage {
         const saved = detail.output?.mmc_video?.[0] ?? detail.output?.mmc_image?.[0] ?? detail.output?.videos?.[0] ?? detail.output?.gifs?.[0] ?? detail.output?.images?.[0];
         if (!saved) break;
         this.stopMedia();
-        this.state = "done";
+        if (!this.previewDisabled) {
+          this.state = "done";
+        }
         this.progress = null;
         this.result = {
           url: outputUrl(saved),
@@ -334,7 +346,7 @@ export class Stage {
         clearInterval(this.ticker);
         this.releaseFrame();
         this.frame = null;
-        this.render();
+        if (!this.previewDisabled) this.render();
         break;
       }
 

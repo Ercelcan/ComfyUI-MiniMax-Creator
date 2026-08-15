@@ -150,13 +150,34 @@ export function mountOverlay(overlay, onEscape) {
 }
 
 export function placeNear(popover, anchor, { above = true } = {}) {
+  let lastLeft = null;
+  let lastTop = null;
+  const getAnchor = typeof anchor === "function" ? anchor : () => anchor;
+
   const place = () => {
-    const rect = anchor.getBoundingClientRect();
+    const target = getAnchor();
+    if (!target || !target.isConnected) {
+      if (lastLeft !== null && lastTop !== null) {
+        popover.style.left = `${lastLeft}px`;
+        popover.style.top = `${lastTop}px`;
+      }
+      return;
+    }
+    const rect = target.getBoundingClientRect();
+    if (rect.width === 0 && rect.height === 0) {
+      if (lastLeft !== null && lastTop !== null) {
+        popover.style.left = `${lastLeft}px`;
+        popover.style.top = `${lastTop}px`;
+      }
+      return;
+    }
     const box = popover.getBoundingClientRect();
     const left = Math.max(8, Math.min(rect.left, window.innerWidth - box.width - 8));
     const top = above && rect.top - box.height - 8 > 8
       ? rect.top - box.height - 8
       : Math.min(rect.bottom + 8, window.innerHeight - box.height - 8);
+    lastLeft = left;
+    lastTop = Math.max(8, top);
     popover.style.left = `${left}px`;
     popover.style.top = `${Math.max(8, top)}px`;
   };

@@ -35,8 +35,17 @@ export const css = `
   display: flex; flex-direction: column; gap: 10px;
   padding: 12px; box-sizing: border-box;
   height: 100% !important; width: 100% !important;
-  min-width: 100% !important; max-width: 100% !important;
+  min-width: 440px !important;
+  min-height: 320px !important;
   overflow: hidden;
+  transition: width .15s ease, margin-right .15s ease;
+}
+
+/* When output sockets are enabled, leave the right 115px lane completely clear for canvas sockets & wire dragging */
+.mmc-root.mmc-has-outputs {
+  width: calc(100% - 115px) !important;
+  margin-right: 115px !important;
+  box-sizing: border-box !important;
 }
 
 .mmc-prestage-host { display: flex; flex-direction: column; height: 100%; min-height: 0; width: 100%; }

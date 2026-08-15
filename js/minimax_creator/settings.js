@@ -1,36 +1,11 @@
 // The settings page: the preferences that belong to this ComfyUI rather than to
 // a workflow. Opened from the rail's Settings tool, beside the Gallery.
-//
-// The line it draws is `settings.py`'s: a workflow says what the piece is, and
-// this says how this machine writes it. Nothing here is saved into creator_data,
-// so a `.json` shared with someone else renders the same shot at whatever
-// quality their own copy of ComfyUI is set to.
-//
-// Every control writes through the moment it is touched — the same deal the LoRA
-// manager has, and for the same reason: a page with a Save button has a state
-// where what you see and what is stored disagree, and Done is then two different
-// promises. Done here only closes.
-//
-// The server is the only copy. Nothing is cached between openings: the file can
-// be edited by hand, and a page that showed a remembered value would be showing
-// something the next render will not use.
-//
-// Two tabs, because the page now answers two questions that are not the same
-// question: how good the file is, and where it goes. Both are this machine's
-// rather than the workflow's, which is the only reason they share a page.
 
 import { el, mountOverlay } from "./dom.js";
 import { loadSettings, saveSettings } from "./api.js";
 import { t } from "./i18n.js";
 import { TOKENS, cleanPrefix, folderOf, stemOf, examplePath } from "./outputs.js";
 
-// libx264's own quality scale: lower is better and bigger, and six points is
-// roughly double the file size. Four points on it, because the encoder's full
-// 0–51 makes forty useless values as reachable as the four good ones — the size
-// claims below all come off that one rule, so the rows cannot drift apart.
-//
-// `settings.py` decides what is *allowed* (the whole scale, so a hand-edited
-// file is honoured); this decides what is *offered*.
 const QUALITY = [
   { crf: 28, label: "Draft",
     note: "Smallest files, about half of Standard. Fine for checking timing; "
@@ -53,12 +28,13 @@ export function openSettings() {
 const TABS = [
   { key: "quality", label: "Quality" },
   { key: "folders", label: "Folders" },
+  { key: "preview", label: "Preview" },
 ];
 
 class SettingsPage {
   constructor(resolve) {
     this.resolve = resolve;
-    this.settings = null;   // until the server answers
+    this.settings = null;
     this.problem = null;
     this.tab = TABS[0].key;
   }
@@ -102,13 +78,6 @@ class SettingsPage {
     this.render();
   }
 
-  /**
-   * Write one setting through, and take the server's answer over the click.
-   *
-   * Painted first so the radio moves under the pointer, then corrected if the
-   * reply disagrees. The correction is the point: a value the server refused
-   * must not be left on screen looking chosen.
-   */
   async set(patch) {
     const previous = this.settings;
     this.settings = { ...this.settings, ...patch };
@@ -126,8 +95,6 @@ class SettingsPage {
   show(tab) {
     if (tab === this.tab) return;
     this.tab = tab;
-    // The problem line belongs to the control that produced it, so it does not
-    // follow you to a tab where it means nothing.
     this.problem = null;
     this.render();
   }
@@ -136,8 +103,6 @@ class SettingsPage {
     this.unmount();
     this.resolve();
   }
-
-  // ---- render ---------------------------------------------------------------
 
   render() {
     if (!this.settings) {
@@ -149,15 +114,14 @@ class SettingsPage {
     }
     this.body.replaceChildren(
       ...(this.problem ? [el("div", { class: "mmc-set-problem", text: this.problem })] : []),
-      ...(this.tab === "quality" ? [this.renderQuality()] : this.renderFolders()),
+      ...(this.tab === "quality" ? [this.renderQuality()]
+         : this.tab === "folders" ? this.renderFolders()
+         : [this.renderPreview()]),
     );
   }
 
   renderQuality() {
     const current = this.settings.video_crf;
-    // A file edited by hand can hold any point on the scale. Shown as its own
-    // row rather than silently rounded to the nearest tier — it is in force,
-    // so it has to be visible, and picking a tier is how you leave it.
     const rows = QUALITY.some((tier) => tier.crf === current)
       ? QUALITY
       : [{ crf: current, label: "Custom",
@@ -178,10 +142,6 @@ class SettingsPage {
             el("span", { class: "mmc-set-opt-label", text: t(tier.label) }),
             el("span", { class: "mmc-set-opt-note", text: t(tier.note) }),
           ]),
-          // The real encoder value, on every row. The rest of this pack shows
-          // the exact filename and the exact pixel size under the friendly
-          // word; a quality control that said only "Fine" would be the one
-          // place in it that asks you to take an adjective on trust.
           el("span", { class: "mmc-set-value", text: t("crf {crf}", { crf: tier.crf }) }),
         ]))),
         el("div", { class: "mmc-set-foot" }, [
@@ -195,20 +155,43 @@ class SettingsPage {
       ]);
   }
 
-  // ---- folders ---------------------------------------------------------------
+  renderPreview() {
+    const current = this.settings.enable_preview !== false;
+    const rows = [
+      { enabled: true, label: "Enabled",
+        note: "Automatically show live satellite preview box during sampling and generation." },
+      { enabled: false, label: "Disabled",
+        note: "Keep the preview box hidden. Generations run in the background without popping up the preview box." },
+    ];
 
-  /**
-   * Where the two kinds of file land: one section, one card, two rows.
-   *
-   * The two prefixes are one setting asked twice, so they read as two rows of
-   * one card the way the quality tiers do — two full sections was the same
-   * heading, description and token row said twice, and the second telling
-   * taught nothing the first had not.
-   *
-   * This used to be a pill on every node, which meant every node was a place
-   * the answer could differ and a shared workflow arrived carrying somebody
-   * else's folder names. It is one answer per machine now.
-   */
+    return this.section("Preview", "Live Preview Box",
+      "Controls whether the floating preview box automatically appears during generation.",
+      [
+        el("div", { class: "mmc-set-choices" }, rows.map((opt) => el("button", {
+          class: "mmc-opt mmc-set-opt",
+          "aria-checked": opt.enabled === current,
+          onclick: () => {
+            if (opt.enabled !== current) {
+              try { localStorage.setItem("mmc-preview-disabled", String(!opt.enabled)); } catch {}
+              this.set({ enable_preview: opt.enabled });
+            }
+          },
+        }, [
+          el("span", { class: "mmc-radio" }),
+          el("span", { class: "mmc-set-opt-text" }, [
+            el("span", { class: "mmc-set-opt-label", text: t(opt.label) }),
+            el("span", { class: "mmc-set-opt-note", text: t(opt.note) }),
+          ]),
+          el("span", { class: "mmc-set-value", text: opt.enabled ? t("on") : t("off") }),
+        ]))),
+        el("div", { class: "mmc-set-foot" }, [
+          el("span", {
+            text: t("When disabled, you can still open the preview box manually by clicking the Preview button in the node toolbar."),
+          }),
+        ]),
+      ]);
+  }
+
   renderFolders() {
     return [
       this.section("Output", "Folders",
@@ -231,19 +214,6 @@ class SettingsPage {
     ];
   }
 
-  /**
-   * One destination: a name, the field, and the single line it resolves to.
-   *
-   * Written through on Enter or on leaving the field rather than on every
-   * keystroke — the rest of the page writes on a click, and a click is finished
-   * where a half-typed path is not. What is live is the *reading*: the line
-   * under the field moves as you type, folder half dim and filename bright,
-   * because a prefix is two things at once and "renders/H3" being a file called
-   * H3 rather than a folder called H3 is the one surprise this page holds.
-   *
-   * The token chips only exist while the field has focus — CSS, off
-   * :focus-within — so the page at rest is two fields, not sixteen buttons.
-   */
   folderRow(key, title, description, extension) {
     const stored = this.settings[key];
     const field = el("input", {
@@ -269,10 +239,6 @@ class SettingsPage {
       problem.textContent = error ?? "";
       problem.style.display = error ? "" : "none";
       example.replaceChildren(...(error ? [] : [
-        // One line: the folder half dim, the file half bright. The colour break
-        // is the split nobody expects — "minimax/renders/H3" is a file called
-        // H3 in a folder called renders, not a folder called H3 — and a break
-        // in the path itself says that better than labels beside it did.
         el("span", { class: "mmc-out-dim", text: "→ " }),
         el("span", {
           class: "mmc-out-dim",
@@ -285,9 +251,6 @@ class SettingsPage {
 
     const commit = () => {
       const { prefix, error } = paint();
-      // A path that does not parse is left on screen to be fixed rather than
-      // stored or silently reverted — nothing has changed on disk yet, and the
-      // line under it says what is wrong.
       if (error || prefix === this.settings[key]) return;
       this.set({ [key]: prefix });
     };
@@ -303,17 +266,6 @@ class SettingsPage {
       field,
       problem,
       example,
-      // Core expands these when the file is written. Buttons because nobody
-      // guesses the spelling of `%year%`, and a folder per shoot date is the
-      // most useful thing this field does. The chips say the word and the
-      // field receives the token: `%year%` is core's syntax and the stored
-      // value, not something anyone should have to read on a button — the
-      // reading underneath shows what it turns into the moment it lands.
-      // Inserting is typing, not finishing: it repaints the reading and leaves
-      // the write to Enter or blur, the same deal the keyboard has — a commit
-      // here would re-render the page and yank the field (row and caret both)
-      // out from under the second click. pointerdown is swallowed so the click
-      // does not blur the field first.
       el("div", { class: "mmc-out-tokens" }, [
         el("span", { class: "mmc-out-tokens-key", text: t("insert") }),
         ...TOKENS.map((token) => el("button", {
@@ -332,8 +284,6 @@ class SettingsPage {
     ]);
   }
 
-  /** One setting, under a section heading. The heading repeats down the page as
-   *  more of them arrive; grouping is what keeps this readable at ten. */
   section(group, title, description, controls) {
     return el("div", { class: "mmc-set-section" }, [
       el("div", { class: "mmc-note-key", text: t(group) }),

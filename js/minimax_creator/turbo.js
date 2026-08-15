@@ -149,19 +149,25 @@ const QUALITY_TITLE = {
       + "Past 8 they over-sharpen rather than improve.",
 };
 
+// Truncate long model file names for the pill UI while keeping the full string in tooltips
+const shortName = (name, maxLen = 18) => {
+  if (!name) return "";
+  const base = name.split("/").pop().replace(/\.[^.]+$/, "");
+  return base.length > maxLen ? `${base.slice(0, maxLen - 2)}…` : base;
+};
+
 export function turboPills({ container, value, set, onCommit }) {
   const turbo = container.turbo;
   const on = turbo.on && engaged(container);
-  const short = (name) => name.split("/").pop().replace(/\.[^.]+$/, "");
 
   let labelText = t("turbo off");
   if (on) {
     if (turbo.lora && turbo.ref_lora && turbo.lora !== turbo.ref_lora) {
-      labelText = t("turbo · {fl} / {ref}", { fl: short(turbo.lora), ref: short(turbo.ref_lora) });
+      labelText = t("turbo · {fl} / {ref}", { fl: shortName(turbo.lora, 12), ref: shortName(turbo.ref_lora, 12) });
     } else if (turbo.lora) {
-      labelText = t("turbo · {name}", { name: short(turbo.lora) });
+      labelText = t("turbo · {name}", { name: shortName(turbo.lora, 20) });
     } else if (turbo.ref_lora) {
-      labelText = t("turbo · Ref: {name}", { name: short(turbo.ref_lora) });
+      labelText = t("turbo · Ref: {name}", { name: shortName(turbo.ref_lora, 20) });
     } else {
       labelText = t("turbo · merged");
     }

@@ -49,7 +49,6 @@ function installInputGuard() {
     const active = document.activeElement;
     const isMmc = isMmcInput(active);
 
-    // Check if clipboard contains an image or media file
     const items = Array.from(e.clipboardData?.items ?? []);
     const fileItem = items.find((item) => item.kind === "file");
 
@@ -93,6 +92,60 @@ const SIDE = { [PRESTAGE]: "left" };
 
 const SPAWN_GAP = 28;
 const STASH = "mmc_prestage_stash";
+
+const OUTPUT_SOCKETS = {
+  [CREATOR]: [
+    { name: "images", type: "IMAGE" },
+    { name: "audio", type: "AUDIO" },
+    { name: "model_fl2va", type: "MODEL" },
+    { name: "model_ref2va", type: "MODEL" },
+    { name: "vae", type: "VAE" },
+    { name: "clip", type: "CLIP" },
+    { name: "latent", type: "LATENT" },
+  ],
+  [TIMELINE]: [
+    { name: "images", type: "IMAGE" },
+    { name: "audio", type: "AUDIO" },
+    { name: "model_fl2va", type: "MODEL" },
+    { name: "model_ref2va", type: "MODEL" },
+    { name: "vae", type: "VAE" },
+    { name: "clip", type: "CLIP" },
+    { name: "latent", type: "LATENT" },
+  ],
+  [PRESTAGE]: [
+    { name: "image", type: "IMAGE" },
+  ],
+};
+
+function syncOutputs(node) {
+  const schemaOutputs = OUTPUT_SOCKETS[node.comfyClass];
+  if (!schemaOutputs) return;
+
+  const enabled = node.properties?.show_outputs === true;
+  const rootEl = node.mmcBody?.root || node.mmcBody?.editor?.root;
+
+  if (!enabled) {
+    if (node.outputs && node.outputs.length > 0) {
+      node.savedOutputs = node.outputs;
+      node.outputs = [];
+    }
+    if (rootEl) rootEl.classList.remove("mmc-has-outputs");
+  } else {
+    if (!node.outputs || node.outputs.length === 0) {
+      node.outputs = node.savedOutputs || schemaOutputs.map((o) => ({
+        name: o.name,
+        type: o.type,
+        links: null,
+      }));
+    }
+    if (rootEl) rootEl.classList.add("mmc-has-outputs");
+  }
+
+  const [minW, minH] = MIN_SIZE[node.comfyClass] || [620, 520];
+  const targetW = enabled ? minW + 115 : minW;
+  node.size = [Math.max(node.size?.[0] ?? 0, targetW), Math.max(node.size?.[1] ?? 0, minH)];
+  node.setDirtyCanvas?.(true, true);
+}
 
 const nodeById = (graph, id) =>
   (graph?._nodes ?? []).find((n) => String(n.id) === String(id)) ?? null;
@@ -240,6 +293,37 @@ function attach(node, build) {
       if (!body) return null;
       node.mmcBody = body;
 
+      const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+      const hasOutputs = node.properties?.show_outputs === true;
+      const initialW = hasOutputs ? minWidth + 115 : minWidth;
+      node.size = [Math.max(node.size?.[0] ?? 0, initialW), Math.max(node.size?.[1] ?? 0, minHeight)];
+
+      // Keep DOM widget anchored at top
+      node.widgets_start_y = 0;
+
+      const origComputeSize = node.computeSize;
+      node.computeSize = function (out) {
+        const sz = origComputeSize ? origComputeSize.apply(this, arguments) : [minWidth, minHeight];
+        const withOutputs = node.properties?.show_outputs === true;
+        const curMinW = withOutputs ? minWidth + 115 : minWidth;
+        out = out || [0, 0];
+        out[0] = Math.max(sz[0] || 0, curMinW);
+        out[1] = Math.max(sz[1] || 0, minHeight);
+        return out;
+      };
+
+      const origOnResize = node.onResize;
+      node.onResize = function (size) {
+        if (size) {
+          const withOutputs = node.properties?.show_outputs === true;
+          const curMinW = withOutputs ? minWidth + 115 : minWidth;
+          size[0] = Math.max(size[0], curMinW);
+          size[1] = Math.max(size[1], minHeight);
+        }
+        origOnResize?.apply(this, arguments);
+        try { node.setDirtyCanvas?.(true, true); } catch {}
+      };
+
       if (body.root) {
         body.root.style.width = "100%";
         body.root.style.height = "100%";
@@ -247,12 +331,11 @@ function attach(node, build) {
         node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
           serialize: false,
           hideOnZoom: false,
-          getMinHeight: () => 200,
+          getMinHeight: () => minHeight - 60,
         });
       }
 
-      const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
-      node.size = [Math.max(node.size?.[0] ?? 0, minWidth), Math.max(node.size?.[1] ?? 0, minHeight)];
+      syncOutputs(node);
 
       const satellite = body.stage
         ? new Satellite({ node, stage: body.stage, side: SIDE[node.comfyClass] ?? "right" })
@@ -263,10 +346,6 @@ function attach(node, build) {
         try { removed?.apply(this, arguments); } catch {}
         try { body.destroy?.(); } catch {}
         try { satellite?.destroy(); } catch {}
-      };
-
-      node.onResize = function (size) {
-        try { node.setDirtyCanvas?.(true, true); } catch {}
       };
 
       try { node.setDirtyCanvas?.(true, true); } catch {}
@@ -352,6 +431,11 @@ app.registerExtension({
   name: "minimax.creator",
 
   async nodeCreated(node) {
+    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+    if (node.size) {
+      node.size[0] = Math.max(node.size[0] || 0, minWidth);
+      node.size[1] = Math.max(node.size[1] || 0, minHeight);
+    }
     if (node.comfyClass === CREATOR) {
       createCreatorBody(node);
     } else if (node.comfyClass === TIMELINE) {
@@ -362,6 +446,11 @@ app.registerExtension({
   },
 
   loadedGraphNode(node) {
+    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+    if (node.size) {
+      node.size[0] = Math.max(node.size[0] || 0, minWidth);
+      node.size[1] = Math.max(node.size[1] || 0, minHeight);
+    }
     if (WIDGET[node.comfyClass] && !node.mmcBody) {
       if (node.comfyClass === CREATOR) createCreatorBody(node);
       else if (node.comfyClass === TIMELINE) createTimelineBody(node);
@@ -369,6 +458,9 @@ app.registerExtension({
     }
     const body = node.mmcBody;
     if (!body) return;
+
+    syncOutputs(node);
+
     if (node.comfyClass === CREATOR) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[CREATOR]);
       if (widget) {
@@ -400,13 +492,27 @@ app.registerExtension({
     const original = nodeType.prototype.getExtraMenuOptions;
     nodeType.prototype.getExtraMenuOptions = function (canvas, options) {
       original?.apply(this, arguments);
-      options.push({
-        content: t("Copy {name} JSON", { name }),
-        callback: () => {
-          const widget = this.widgets?.find((w) => w.name === name);
-          if (widget) navigator.clipboard?.writeText(widget.value);
+
+      const node = this;
+      const outputsActive = node.properties?.show_outputs === true;
+
+      options.push(
+        {
+          content: outputsActive ? t("Hide Output Sockets") : t("Show Output Sockets"),
+          callback: () => {
+            node.properties = node.properties || {};
+            node.properties.show_outputs = !outputsActive;
+            syncOutputs(node);
+          },
         },
-      });
+        {
+          content: t("Copy {name} JSON", { name }),
+          callback: () => {
+            const widget = this.widgets?.find((w) => w.name === name);
+            if (widget) navigator.clipboard?.writeText(widget.value);
+          },
+        }
+      );
       return options;
     };
   },

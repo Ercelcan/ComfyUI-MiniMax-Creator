@@ -4,7 +4,12 @@ export const css = `
   stroke-linecap: round; stroke-linejoin: round;
 }
 
-.mmc-rail { display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: space-between; flex-shrink: 0; }
+.mmc-rail {
+  display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: space-between; flex-shrink: 0;
+}
+.mmc-has-outputs .mmc-rail {
+  padding-right: 80px;
+}
 .mmc-rail-group { display: flex; gap: 8px; flex-wrap: wrap; }
 .mmc-rail-group:last-child { margin-left: auto; }
 .mmc-tool {
@@ -39,16 +44,21 @@ export const css = `
   color: #fff;
 }
 
-.mmc-prompt-chips-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 4px; flex-shrink: 0; }
+.mmc-prompt-chips-bar { display: flex; flex-direction: column; gap: 6px; margin-bottom: 6px; flex-shrink: 0; }
+.mmc-prompt-top-row { display: flex; align-items: center; gap: 8px; width: 100%; flex-wrap: wrap; }
 .mmc-chip-toggle {
-  display: inline-flex; align-items: center; gap: 6px; align-self: flex-start;
+  display: inline-flex; align-items: center; gap: 6px;
   padding: 4px 10px; border-radius: 12px; background: var(--mmc-surface-2);
   border: 1px solid var(--mmc-line); color: var(--mmc-dim); font-size: 11px;
   font-family: inherit; cursor: pointer; transition: all .12s ease;
 }
 .mmc-chip-toggle:hover { color: var(--mmc-text); background: var(--mmc-surface-3); }
 .mmc-chip-toggle.on { color: var(--mmc-accent); border-color: rgba(240,166,60,.4); }
-.mmc-chip-group { display: flex; flex-direction: column; gap: 4px; }
+.mmc-prompt-tool-btn { font-size: 11px; padding: 2px 6px; color: var(--mmc-dim); cursor: pointer; }
+.mmc-prompt-tool-btn:hover { color: var(--mmc-text); }
+.mmc-prompt-wordcount { font-size: 11px; color: var(--mmc-off); font-family: ui-monospace, Menlo, monospace; }
+
+.mmc-chip-group { display: flex; flex-direction: column; gap: 4px; padding-top: 4px; }
 .mmc-chip-group-label { font-size: 10px; text-transform: uppercase; letter-spacing: .06em; color: var(--mmc-off); }
 .mmc-quick-chip { font-size: 11px; padding: 3px 8px; text-align: left; }
 
@@ -84,28 +94,33 @@ export const css = `
 
 .mmc-panel {
   background: var(--mmc-surface); border: 1px solid var(--mmc-line);
-  border-radius: 20px; padding: 12px 14px; display: flex; flex-direction: column;
-  gap: 10px; flex: 1; min-height: 0; overflow: hidden; position: relative;
+  border-radius: 20px; padding: 14px 16px 12px; display: flex; flex-direction: column;
+  gap: 10px; flex: 1 1 auto; min-height: 180px; overflow: hidden; position: relative;
 }
 .mmc-prompt-scroll {
-  flex: 1; min-height: 60px; overflow-y: auto; overflow-x: hidden;
+  flex: 1 1 auto; min-height: 100px; overflow-y: auto; overflow-x: hidden;
   display: flex; flex-direction: column; gap: 10px; padding-right: 4px;
 }
-.mmc-prompt-scroll::-webkit-scrollbar { width: 5px; }
+.mmc-prompt-scroll::-webkit-scrollbar { width: 6px; height: 6px; }
 .mmc-prompt-scroll::-webkit-scrollbar-thumb { background: var(--mmc-surface-3); border-radius: 3px; }
 .mmc-prompt-scroll::-webkit-scrollbar-thumb:hover { background: var(--mmc-dim); }
 
 .mmc-prompt {
-  min-height: 54px; max-height: 200px; resize: vertical;
-  background: none; border: 0; outline: none;
-  color: var(--mmc-text); font-family: inherit; font-size: 15px; line-height: 1.6;
+  flex: 1 1 auto; width: 100%; min-height: 90px;
+  background: none; border: 0; outline: none; box-sizing: border-box;
+  color: var(--mmc-text); font-family: inherit; font-size: 14.5px; line-height: 1.6;
   white-space: pre-wrap; word-break: break-word; overflow-y: auto;
+  padding: 2px 2px 10px;
 }
 .mmc-prompt:empty::before {
   content: attr(data-placeholder); color: #6a6a6a; pointer-events: none;
 }
 .mmc-prompt.superseded { opacity: .42; }
 .mmc-prompt.superseded:focus { opacity: .72; }
+.mmc-prompt::-webkit-scrollbar { width: 6px; height: 6px; }
+.mmc-prompt::-webkit-scrollbar-thumb { background: var(--mmc-surface-3); border-radius: 3px; }
+.mmc-prompt::-webkit-scrollbar-thumb:hover { background: var(--mmc-dim); }
+
 .mmc-ref {
   display: inline-block; padding: 1px 7px; margin: 0 1px; border-radius: 7px;
   background: color-mix(in srgb, var(--tag, var(--mmc-accent)) 14%, transparent);

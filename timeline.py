@@ -1,46 +1,10 @@
 """A clip made of several shots, in one of two ways.
 
-**Chained** is what the graph machinery below is for: one generation per segment,
-concatenated, with segment N able to start from segment N-1's decoded last frame.
-It buys length — there is no bound on the finished clip — at the cost of a real
-seam at every join.
+Chained: one generation per segment, concatenated, with segment N able to start
+from segment N-1's decoded last frame.
 
-**One pass** is the other reading of the same timeline. H3's own prompt format is
-already a shot list with cut times (`[Shot 2] At 00:05.000, the camera cuts to
-...`), so the segments can be compiled into a single multi-shot description and
-generated in one go. Nothing is decoded and re-encoded mid-clip, which is what
-removes the seam entirely: continuity, sound and colour carry because they were
-never broken. `compile.single_payload` does the whole of it — the timeline
-becomes one ordinary request and everything downstream is unchanged. What it
-costs is anything one pass can only have one of: one mode, one checkpoint, one
-LoRA stack, one seed, and no per-segment continuation to switch.
-
-The rest of this module is the chained path.
-
-The Creator node hands out conditioning and lets the graph own the sampler. A
-timeline cannot: segment 2 starts from segment 1's *decoded* last frame, so the
-chain has a data dependency that only exists downstream of sampling. Returning
-conditioning N times would not express it, and feeding the result back into the
-node's own input would be a cycle the executor refuses to run.
-
-So this node builds the graph instead of being a node in it. `execute` compiles
-the timeline, emits one `segment -> KSampler -> decode` chain per segment with
-each chain's last frame wired into the next, and returns that subgraph through
-ComfyUI's `expand` mechanism. The "feed the result back" is a genuine forward
-edge in a generated graph, not a loop.
-
-Two consequences worth knowing before reading further:
-
-- **This node owns the sampler.** It has to, because it is the thing writing the
-  KSampler into the graph. That is the price of chaining and the reason this is
-  a second node rather than a mode of the first — the Creator's contract, where
-  you wire your own sampler, is still the better one for a single clip.
-- **Editing a segment only re-runs that segment and the ones after it.** What
-  buys that is easy to lose: each segment node is handed its own payload rather
-  than the whole timeline, so a payload changes only when its own segment does.
-  Hand a segment the whole blob and editing the last shot re-generates all of
-  them. The loaders `models.emit_links` writes are ordinary nodes keyed on their
-  filenames, so they cache the same way and are built once for the whole chain.
+One pass: the segments are compiled into a single multi-shot description and
+generated in one go.
 """
 
 import json
@@ -60,14 +24,8 @@ DEFAULT_DATA = json.dumps({
     "aspect": "16:9",
     "short_edge": 768,
     "loras": [],
-    # The piece's own reference pool — a character sheet, a location plate —
-    # cited by handle from any segment's text and injected into exactly the
-    # segments that cite it. See `compile.timeline_pool`.
     "assets": [],
-    # Where the finished clip lands under output/. See `outputs`.
     "output_prefix": outputs.VIDEO_PREFIX,
-    # Which files to load. Empty here rather than guessed: a fresh node has no
-    # idea what is on this machine, and the UI fills it from the listing route.
     "models": {},
     "segments": [
         {"prompt": "", "assets": [], "loras": [], "duration_s": 6, "checkpoint": "auto"},
@@ -83,13 +41,6 @@ def _parse(timeline_data):
 
 
 def _announce(unique_id, progress):
-    """Broadcast which segment is being built, keyed to the emitting node.
-
-    `mmc_segment` carries the expanded node's own id — the Timeline's plus a
-    GraphBuilder prefix — which `stage.js` prefix-matches exactly as it does
-    for the sampler's preview frames. Sent through the running PromptServer;
-    a graph executed without one (the test harness) has nobody to tell.
-    """
     from server import PromptServer
 
     server = getattr(PromptServer, "instance", None)
@@ -98,7 +49,6 @@ def _announce(unique_id, progress):
 
 
 def _stamps(data):
-    """Mtimes of every file any segment names, for `fingerprint_inputs`."""
     import os
 
     out = []
@@ -109,10 +59,6 @@ def _stamps(data):
         except Exception:
             out.append(None)
 
-    # The timeline's own LoRAs are patched onto every segment, so a replaced file
-    # has to invalidate the node just as a segment's own would. The reference
-    # pool is the same story on the asset side: a cited pool file rides into
-    # segments, so replacing it has to re-render them.
     for entry in data.get("loras", []) or []:
         stamp(lora.resolve, entry, "name")
     for asset in data.get("assets", []) or []:
@@ -142,38 +88,19 @@ class MiniMaxH3Timeline(io.ComfyNode):
                 "from the previous one's last frame. One pass: the same segments become "
                 "the shots of a single generation, cut times and all."
             ),
-            # This node returns a subgraph rather than tensors — see the module
-            # docstring for why it cannot be an ordinary node. It is also an
-            # output node: it saves the finished clip itself, which is what lets
-            # it have no output sockets either.
             enable_expand=True,
             is_output_node=True,
             inputs=[
-                # No model sockets. The weights are named in `timeline_data` and
-                # `models.emit_links` builds the loaders inside the subgraph —
-                # see that module for why that is better than five wires.
                 io.String.Input("timeline_data", multiline=True, default=DEFAULT_DATA),
                 io.Int.Input("seed", default=0, min=0, max=0xffffffffffffffff, control_after_generate=True,
                     tooltip="Chained: segment k runs on seed + k, so consecutive shots are not the same noise with different prompts. One pass: there is one generation, so it is just the seed."),
                 io.Int.Input("steps", default=20, min=1, max=10000),
-                # The released H3 checkpoints are CFG-distilled, so guidance is
-                # already in the weights and 1.0 is the value they were trained
-                # to run at. Left as an ordinary widget: it is a default, not a
-                # constraint, and anyone who wants to push it can.
                 io.Float.Input("cfg", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01),
-                # What the official H3 templates sample with. Left to the combo's
-                # own default this would be `euler`, which is simply the first
-                # name in core's list — a 20-step H3 render is visibly worse for
-                # it, and that is the whole difference between this node and a
-                # hand-wired Creator graph copied off the template.
                 io.Combo.Input("sampler_name", options=comfy.samplers.KSampler.SAMPLERS,
                                default="res_multistep"),
                 io.Combo.Input("scheduler", options=comfy.samplers.KSampler.SCHEDULERS,
                                default="simple",
                                tooltip="The templates use 'simple'; for reference-heavy prompts they suggest 'beta' or 'normal' instead."),
-                # Both accelerators are other people's nodes and both are off
-                # until asked for — see `accel.py`. They patch the model, so they
-                # cost nothing to leave off and nothing here reimplements them.
                 io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off",
                     tooltip="FirstBlockCache: skip the rest of the DiT on steps where the first block barely moved. 'fast' is the pack's recommended preset. Needs ComfyUI-MiniMaxH3-FirstBlockCache."),
                 io.Boolean.Input("spectrum", default=False,
@@ -181,9 +108,15 @@ class MiniMaxH3Timeline(io.ComfyNode):
                 io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01,
                     tooltip="Spectrum's video spectral share. Higher is faster and further from a native render. Ignored unless 'spectrum' is on."),
             ],
-            # Nothing comes out either: the render is saved and shown in the node
-            # body, so there is no socket for a graph to hang off.
-            outputs=[],
+            outputs=[
+                io.Image.Output("images", display_name="images"),
+                io.Audio.Output("audio", display_name="audio"),
+                io.Model.Output("model_fl2va", display_name="model_fl2va"),
+                io.Model.Output("model_ref2va", display_name="model_ref2va"),
+                io.Vae.Output("vae", display_name="vae"),
+                io.Clip.Output("clip", display_name="clip"),
+                io.Latent.Output("latent", display_name="latent"),
+            ],
             hidden=[io.Hidden.unique_id],
         )
 
@@ -199,12 +132,6 @@ class MiniMaxH3Timeline(io.ComfyNode):
                 block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
         data = _parse(timeline_data)
 
-        # The two render modes differ entirely in how the timeline is *compiled*
-        # and not at all in what is built from the result. Chained gives one
-        # payload per segment and `render.emit` wires them together; single gives
-        # exactly one payload holding the whole timeline as a multi-shot
-        # description, and the same loop runs once — no seam, so no last-frame or
-        # audio-tail node, and no join, because there is nothing to join to.
         single = compiler.render_mode(data) == "single"
         payloads = ([compiler.single_payload(data)]
                     if single else
@@ -212,7 +139,7 @@ class MiniMaxH3Timeline(io.ComfyNode):
         labels = (["This one-pass render"] if single else
                   [f"Segment {i + 1}" for i in range(len(payloads))])
 
-        graph = render.emit(
+        graph, result_links = render.emit(
             payloads, labels,
             models.Weights.from_blob(data),
             render.Sampling(seed=seed, steps=steps, cfg=cfg,
@@ -220,20 +147,11 @@ class MiniMaxH3Timeline(io.ComfyNode):
             accel.Settings(block_cache=block_cache, spectrum=spectrum,
                            spectrum_blend=spectrum_blend),
             cls.hidden.unique_id,
-            # Refused before anything is sampled — see MiniMaxH3Creator.execute.
             filename_prefix=outputs.video(data, settings.video_prefix()))
-        return render.expanded(graph)
+        return render.expanded(graph, result_links)
 
 
 class MiniMaxH3TimelineSegment(io.ComfyNode):
-    """One segment of a timeline — the Creator node's job for one shot.
-
-    Written into the graph by `MiniMaxH3Timeline` and not meant to be placed by
-    hand. It takes a self-contained payload rather than the timeline plus an
-    index, so that its cache key changes when *this* segment changes and not
-    when any other one does.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -244,18 +162,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
             is_dev_only=True,
             inputs=[
                 io.Clip.Input("clip"),
-                # Optional because a text-only segment encodes no picture: the
-                # video VAE is reached for only when there is a keyframe or a
-                # visual reference to turn into a condition latent, so the graph
-                # leaves it unwired otherwise and the loader stays a decode-time
-                # cost. Absent when it *is* needed raises below rather than
-                # reaching a None inside the encoder.
                 io.Vae.Input("vae", optional=True),
-                # Optional for the same reason on the sound side: nothing on the
-                # encode path touches the audio VAE unless the request carries
-                # reference audio or a sound seam. The PreStage's still branch
-                # emits this node without one either way. Both raise below if it
-                # is missing rather than reaching a None.
                 io.Vae.Input("audio_vae", optional=True),
                 io.String.Input("segment_data", multiline=True),
                 io.Model.Input("model_fl2va", optional=True),
@@ -270,9 +177,6 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 io.Conditioning.Output(display_name="positive"),
                 io.Latent.Output(),
             ],
-            # For the "now rendering segment N" report — the announce below
-            # names this node, whose id is the Timeline's plus a GraphBuilder
-            # prefix, and the stage prefix-matches it back to the node body.
             hidden=[io.Hidden.unique_id],
         )
 
@@ -290,24 +194,12 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 prev_image=None, prev_audio=None) -> io.NodeOutput:
         payload = _parse(segment_data)
 
-        # Which segment the queue has reached, told to the stage the moment
-        # this segment starts encoding — the sampler that follows reports steps
-        # but not whose they are, and on a long strip "23 / 40" says nothing
-        # about where in the piece you are. `render.emit` stamps the index onto
-        # multi-segment payloads only, so a Creator render announces nothing.
-        # A cached segment never executes and so never announces, which is
-        # right: the stage should name the segment actually being made.
         progress = payload.get("progress")
         if progress:
             _announce(cls.hidden.unique_id, progress)
 
         compiled = compiler.compile_segment(payload, image_size_lookup=media.image_size)
 
-        # Both VAEs are wired only when the encoder will actually reach for them
-        # (`render` gates on the same two predicates), so a missing one here is a
-        # graph that decided this segment needs no encode with it. Named before
-        # any of it runs: a hand-built graph should hear which input is missing
-        # rather than meet a None inside the encoder.
         if vae is None and compiled.encodes_video():
             raise ValueError(
                 "This generation encodes a keyframe or a visual reference, so it "
@@ -320,14 +212,6 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 "on 'audio_vae'."
             )
 
-        # `prompt_override` replaces the composed prompt verbatim, after
-        # compiling — routing, canvas and references are all still worked out
-        # from the request, and only the text the DiT reads is swapped. It has no
-        # control of its own any more: the node has no sockets, and the refiner's
-        # editable rewrite is the same escape hatch with a UI on it. Still read
-        # here because a hand-written blob may carry one, and because it lives
-        # inside the string this node caches on, so changing it re-runs the
-        # generation exactly as editing the prompt would.
         override = payload.get("prompt_override")
         if override:
             compiled.prompt = override
@@ -363,11 +247,6 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 )
             loaded[encoder.PREV_AUDIO] = {"audio": prev_audio}
         if compiled.continues or compiled.continues_audio:
-            # What core's payload assembly cannot express — keyframes alongside
-            # references, guides at real timeline positions — is repaired just
-            # before the forward; `payload.py` says exactly what and why. Inert
-            # on a seam that needs neither, so every seam wears it rather than
-            # this node re-deriving which ones do.
             model = payload_repair.repair(model)
 
         cond, latent = encoder.encode(clip, vae, audio_vae, compiled, loaded)
@@ -375,13 +254,6 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
 
 
 class MiniMaxH3AudioTail(io.ComfyNode):
-    """The end of a decoded soundtrack — what the next segment's sound continues from.
-
-    The picture's counterpart is one frame; sound's is a stretch of it, because a
-    single sample says nothing about a room. How long is `compile.DEFAULT_AUDIO_TAIL_S`
-    and why it is short is argued there.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -405,8 +277,6 @@ class MiniMaxH3AudioTail(io.ComfyNode):
         wanted = max(1, int(round(float(seconds) * rate)))
         if waveform.shape[-1] == 0:
             raise ValueError("no audio to continue from")
-        # A segment shorter than the tail hands over everything it has rather
-        # than being padded: silence we invented is not what came before.
         return io.NodeOutput({"waveform": waveform[..., -wanted:], "sample_rate": rate})
 
 
@@ -421,9 +291,6 @@ class MiniMaxH3LastFrame(io.ComfyNode):
             is_dev_only=True,
             inputs=[
                 io.Image.Input("image"),
-                # A feathered seam inherits a run instead of a single frame.
-                # Optional so a classic seam's graph — and its cache keys —
-                # look exactly as they always have.
                 io.Int.Input("count", default=1, min=1, max=64, optional=True),
             ],
             outputs=[io.Image.Output()],
@@ -433,8 +300,6 @@ class MiniMaxH3LastFrame(io.ComfyNode):
     def execute(cls, image, count=1) -> io.NodeOutput:
         count = max(1, int(count))
         if image.shape[0] < count:
-            # Padding or repeating frames would pin motion that never happened;
-            # the seam's width has to come down instead.
             raise ValueError(
                 f"the source segment has {image.shape[0]} frames and this seam "
                 f"inherits {count} — shorten the feather or lengthen the source"
@@ -444,14 +309,6 @@ class MiniMaxH3LastFrame(io.ComfyNode):
 
 
 class MiniMaxH3SeamTrim(io.ComfyNode):
-    """A feathered segment minus the run it inherited.
-
-    The pinned context occupies the first frames of the segment's own timeline
-    and is re-generated there, so an untrimmed join would play the source's
-    tail twice. Trimmed after decode — picture and the matching stretch of
-    sound together, so the two stay in phase across the cut.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -474,8 +331,6 @@ class MiniMaxH3SeamTrim(io.ComfyNode):
         if frames <= 0:
             return io.NodeOutput(images, audio)
         if images.shape[0] <= frames:
-            # compile refuses a feather of half the segment or more, so hitting
-            # this means the graph was built against different arithmetic.
             raise ValueError(
                 f"cannot trim {frames} inherited frames off a "
                 f"{images.shape[0]}-frame segment"
@@ -489,12 +344,6 @@ class MiniMaxH3SeamTrim(io.ComfyNode):
 
 
 class MiniMaxH3TimelineJoin(io.ComfyNode):
-    """Two segments' picture and sound, end to end.
-
-    Folded pairwise by the Timeline node, so joining N segments is N-1 of these
-    rather than one node with a variable number of inputs.
-    """
-
     @classmethod
     def define_schema(cls):
         return io.Schema(
@@ -515,8 +364,6 @@ class MiniMaxH3TimelineJoin(io.ComfyNode):
     @classmethod
     def execute(cls, images_a, audio_a, images_b, audio_b) -> io.NodeOutput:
         if images_a.shape[1:] != images_b.shape[1:]:
-            # The timeline pins one canvas across every segment precisely so this
-            # cannot happen; if it has, something upstream resized one of them.
             raise ValueError(
                 f"segments are different sizes and cannot be joined: "
                 f"{images_a.shape[2]}x{images_a.shape[1]} vs {images_b.shape[2]}x{images_b.shape[1]}"
@@ -602,8 +449,7 @@ class MiniMaxH3Save(io.ComfyNode):
             "gifs": [output_item],
         })
 
-# Registered by `creator_node.MiniMaxCreatorExtension` — one extension for the
-# package, so there is one place that says what this node pack contains.
+
 NODES = [MiniMaxH3Timeline, MiniMaxH3TimelineSegment, MiniMaxH3LastFrame,
          MiniMaxH3SeamTrim, MiniMaxH3AudioTail, MiniMaxH3TimelineJoin,
          MiniMaxH3Save]
