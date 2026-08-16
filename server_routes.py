@@ -1,27 +1,9 @@
-"""Listing routes for the asset picker and the LoRA manager.
-
-The picker browses ComfyUI/input, so the only thing the frontend cannot work out
-for itself is what is in there. Image thumbnails reuse core's `/api/view`, and
-uploads reuse core's `/api/upload/image` (which despite the name is what
-LoadVideo and LoadAudio post to as well), so neither needs a route here.
-
-Video does need routes of its own: `/view` serves the whole clip, which is the
-wrong thing to hand a 140 px grid cell or a waveform canvas. See preview.py.
-
-LoRAs need both routes of their own. `/view` only serves input, output and temp,
-so it cannot reach models/loras, and whatever sidecar sits next to each file has
-to be read server-side. What those sidecars *are* is `lorameta.py`'s problem —
-half a dozen tools write half a dozen layouts, and nothing here knows which one
-filled this folder.
-
-The settings pair at the bottom is the one thing here that is not a listing. It
-has to be a route rather than the frontend's userdata API for the reason
-`settings.py` opens with: the save node reads the same file while a prompt runs,
-and only the server can hand both ends the same path.
-"""
+"""HTTP & WebSocket server routes for asset browsing, previews, and timeline export."""
 
 import asyncio
+import json
 import os
+import xml.etree.ElementTree as ET
 
 from aiohttp import web
 
@@ -30,16 +12,7 @@ from server import PromptServer
 
 from . import lorameta, models, preview, settings
 
-# The picker builds its grid lazily and paginates, so the cap only bounds the
-# listing's JSON payload (~2 MB at this size). Newest first, so when a folder
-# does exceed it the cap drops the least interesting files, and the picker
-# says so on the last page.
 MAX_ASSETS = 20000
-
-# How many LoRAs get the full sidecar treatment in one listing. A collection of
-# a few thousand is normal, and reading a JSON file plus listing two directories
-# for every one of them is seconds of work — so only the newest MAX_LORAS are
-# described, and the manager says so and offers the folder picker instead.
 MAX_LORAS = 600
 
 
@@ -51,14 +24,7 @@ def _classify(filename):
 
 
 def _scan(root, annotation=""):
-    """Walk one media folder. `annotation` is ComfyUI's ` [output]` suffix.
-
-    Carried inside `path` rather than as a separate field because the path is
-    the one thing that survives into creator_data: every consumer downstream —
-    the thumb and probe routes here, `media.resolve` at execute time — already
-    goes through `get_annotated_filepath`, so an annotated path is a file the
-    whole pipeline can reach with no second load path.
-    """
+    """Scans media directory for valid image/video/audio assets."""
     for directory, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
         for filename in sorted(filenames):
@@ -68,16 +34,6 @@ def _scan(root, annotation=""):
             if kind is None:
                 continue
             path = os.path.join(directory, filename)
-            # A symlink pointing outside the root is a file this pack cannot
-            # open: `get_annotated_filepath` resolves the link and then refuses
-            # it for leaving the folder, so listing it would offer a thumbnail
-            # that fails at execute time with "not in the input folder any
-            # more" — about a file that is plainly sitting right there.
-            #
-            # Not worked around: the containment check is core's and is the
-            # thing standing between a crafted filename and the rest of the
-            # disk. Symlinking media into input/ does not work; the flag that
-            # does is `--input-directory`, and the README says so.
             if os.path.islink(path) and not folder_paths.is_within_directory(root, path):
                 continue
             subfolder = os.path.relpath(directory, root)
@@ -99,7 +55,6 @@ def _scan(root, annotation=""):
 
 
 def _input_path(request):
-    """The absolute path behind a `?filename=` query, or None if it is not ours."""
     filename = request.query.get("filename", "")
     if not filename or not folder_paths.exists_annotated_filepath(filename):
         return None
@@ -107,48 +62,31 @@ def _input_path(request):
 
 
 def _read_header(path):
-    import av  # ComfyUI's own decoder stack; imported here so the listing route never needs it.
+    import av
 
     with av.open(path) as container:
+        duration = float(container.duration / av.time_base) if container.duration else None
+        has_audio = bool(container.streams.audio)
         return {
-            "has_audio": bool(container.streams.audio),
-            "duration": float(container.duration / av.time_base) if container.duration else None,
+            "has_audio": has_audio,
+            "duration": duration,
         }
 
 
 @PromptServer.instance.routes.get("/minimax_creator/probe")
 async def probe_asset(request):
-    """Does this clip carry a soundtrack?
-
-    A reference video is attached with its sound on by default, which is only the
-    right default when there is sound to bind — otherwise the generation would
-    fail at queue time on a file the user never claimed was noisy. No browser
-    reports the presence of an audio track portably, so the answer comes from
-    here. It reads the container header, not the media.
-
-    `has_audio: null` means the question could not be answered; the caller keeps
-    its own default rather than guessing silence.
-    """
     path = _input_path(request)
     if path is None:
         return web.json_response({"has_audio": None, "error": "not in the input folder"}, status=404)
     try:
-        # Opening a container reads and seeks; on a network share that is long
-        # enough to be felt, and anything blocking here blocks the whole server —
-        # the prompt queue and the websocket included.
         loop = asyncio.get_running_loop()
         return web.json_response(await loop.run_in_executor(None, _read_header, path))
-    except Exception as exc:  # noqa: BLE001 — an unreadable file is the caller's problem, later
+    except Exception as exc:
         return web.json_response({"has_audio": None, "error": str(exc)})
 
 
 @PromptServer.instance.routes.get("/minimax_creator/thumb")
 async def asset_thumb(request):
-    """A JPEG still of one clip, for a picker cell.
-
-    404 rather than a placeholder: the cell falls back to an icon, and inventing
-    an image here would make an undecodable file look like a fine one.
-    """
     path = _input_path(request)
     if path is None:
         return web.Response(status=404)
@@ -157,48 +95,26 @@ async def asset_thumb(request):
         return web.Response(status=404)
     return web.FileResponse(thumb, headers={
         "Content-Type": "image/jpeg",
-        # The caller stamps the source mtime into the URL, so a given URL really
-        # does name one immutable frame — replacing the file changes the URL.
         "Cache-Control": "public, max-age=31536000, immutable",
     })
 
 
 @PromptServer.instance.routes.get("/minimax_creator/peaks")
 async def asset_peaks(request):
-    """Waveform peaks for the segment editor's timeline, normalised to 0..1.
-
-    `peaks: null` means there is nothing to draw — no audio track, or a track
-    that decoded to silence — and the timeline stays plain, which is exactly what
-    it does when this is unavailable altogether.
-    """
     path = _input_path(request)
     if path is None:
-        return web.json_response({"peaks": None}, status=404)
+        return web.json_response({"peaks": None, "duration": 0}, status=404)
     result = await preview.waveform(path)
     if result is None:
-        return web.json_response({"peaks": None})
-    # Not cached by the browser: the answer is keyed by mtime server-side, and
-    # this is one small request per editor opening rather than one per cell.
+        return web.json_response({"peaks": None, "duration": 0})
     return web.json_response(result, headers={"Cache-Control": "no-cache"})
 
 
 def _lora_names():
-    """Every registered LoRA, as a forward-slash relative name.
-
-    `get_filename_list` yields native separators; the manager stores these names
-    in creator_data and posts them back, so they are normalised once here and
-    stay one shape everywhere. `get_full_path` accepts either on both platforms.
-    """
     return [name.replace(os.sep, "/") for name in folder_paths.get_filename_list("loras")]
 
 
 def _folder_counts(names):
-    """Every folder that holds LoRAs, with how many are under it.
-
-    Counts are inclusive of nested folders — picking `Wan` and finding nothing
-    because the files sit in `Wan/character` would make the picker useless. The
-    root entry is the empty string, which is how the manager asks for all of them.
-    """
     counts = {"": len(names)}
     for name in names:
         parts = name.split("/")[:-1]
@@ -212,17 +128,7 @@ def _in_folder(name, folder):
 
 
 def _collect_loras(folder, refresh=False):
-    """The rows for one folder, newest first, capped at MAX_LORAS.
-
-    Two passes on purpose. Stat-ing every candidate is cheap and is the only way
-    to know which ones are the newest; reading sidecars is not, so it happens
-    only for the ones that survive the cap.
-    """
     if refresh:
-        # The manager's Rescan. `lorameta` holds a directory listing for a short
-        # while and a row for as long as nothing beside the file changes, which
-        # between them cannot notice a sidecar edited in place — so the button
-        # that exists to say "look again" has to actually mean it.
         lorameta.forget()
     names = _lora_names()
     found = []
@@ -249,9 +155,6 @@ def _collect_loras(folder, refresh=False):
 
 @PromptServer.instance.routes.get("/minimax_creator/loras")
 async def list_loras(request):
-    # Thousands of files means thousands of stat calls and hundreds of sidecar
-    # reads. On the event loop that is the prompt queue and the websocket held
-    # up for as long as it takes.
     folder = request.query.get("folder", "").strip("/")
     refresh = request.query.get("refresh") == "1"
     loop = asyncio.get_running_loop()
@@ -259,21 +162,10 @@ async def list_loras(request):
 
 
 def _lora_path(request):
-    """The absolute path behind a `?name=`, or None.
-
-    `get_full_path` normalises the name against the registered lora folders,
-    which is also what keeps a crafted name inside them.
-    """
     return folder_paths.get_full_path("loras", request.query.get("name", ""))
 
 
 def _serve(path, data):
-    """A media file, or bytes that were never a file, as a response.
-
-    Embedded cover images and ModelSpec thumbnails live inside the safetensors
-    header and have no filename to hand aiohttp, so they are served from memory
-    with a type sniffed off their first bytes.
-    """
     if path is not None:
         return web.FileResponse(path)
     if data is not None:
@@ -284,11 +176,6 @@ def _serve(path, data):
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_preview")
 async def lora_preview(request):
-    """Serve the card image or clip for one LoRA, from wherever it was found.
-
-    Core's `/view` is limited to input/output/temp, so models/loras is out of its
-    reach.
-    """
     path = _lora_path(request)
     if path is None:
         return web.Response(status=404)
@@ -299,32 +186,16 @@ async def lora_preview(request):
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_detail")
 async def lora_detail(request):
-    """Everything one LoRA's detail sheet needs, in one request: whatever the
-    sidecars beside it know, the showcase with its generation recipes, and what
-    the safetensors header itself says either way.
-    """
     name = request.query.get("name", "")
     path = folder_paths.get_full_path("loras", name)
     if path is None:
         return web.json_response({"error": "no such LoRA"}, status=404)
-    # Reading a header on a network share, plus a handful of sidecars, is I/O
-    # the event loop must not sit on.
     loop = asyncio.get_running_loop()
     return web.json_response(await loop.run_in_executor(None, lorameta.detail, name, path))
 
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_showcase")
 async def lora_showcase(request):
-    """Serve one showcase file by its index in the detail's showcase list.
-
-    `?thumb=1` asks for the generated thumbnail instead — the filmstrip's
-    request — and falls back to the full media when there is none, which is the
-    normal state of a video showcase and of every gallery but CiviMeta's.
-
-    The list is recomputed rather than remembered between the two requests: a
-    server that held one per open sheet would be holding decoded cover images
-    for every LoRA anyone had looked at.
-    """
     path = _lora_path(request)
     if path is None:
         return web.Response(status=404)
@@ -348,28 +219,12 @@ async def lora_showcase(request):
 
 @PromptServer.instance.routes.get("/minimax_creator/models")
 async def list_models(request):
-    """What the weights control can offer: one file list per field.
-
-    The node has no model sockets any more, so this is the only way the UI knows
-    what is installed. It also reports whether KJNodes' preview override is
-    present, because the taeh3 preview is the one control here that depends on
-    somebody else's pack being loaded.
-    """
-    # Four `get_filename_list` calls, each of which may walk a model directory
-    # that has never been scanned. On the event loop that is the prompt queue and
-    # the websocket held up behind it.
     loop = asyncio.get_running_loop()
     return web.json_response(await loop.run_in_executor(None, models.available))
 
 
 @PromptServer.instance.routes.get("/minimax_creator/assets")
 async def list_assets(request):
-    """The picker's grid: `?root=input` (the default) or `?root=output`.
-
-    The output listing is the gallery — finished renders, browsed with the same
-    machinery as the input folder. Its paths come back annotated (` [output]`),
-    which is what lets one of them be attached as a reference: see `_scan`.
-    """
     if request.query.get("root") == "output":
         root, annotation = folder_paths.get_output_directory(), " [output]"
     else:
@@ -377,8 +232,6 @@ async def list_assets(request):
     if not os.path.isdir(root):
         return web.json_response({"assets": [], "truncated": False})
 
-    # A walk with two stat calls per file is nothing on a local disk and minutes
-    # on a network share, and the event loop is also the prompt queue.
     loop = asyncio.get_running_loop()
     assets = await loop.run_in_executor(
         None, lambda: sorted(_scan(root, annotation), key=lambda a: a["mtime"], reverse=True))
@@ -387,11 +240,6 @@ async def list_assets(request):
 
 
 def _clean_subfolder(raw):
-    """A user-typed shelf name as a safe root-relative directory, or None.
-
-    Rejects rather than sanitizes: a name that needs rewriting to be safe is a
-    name the user should see refused, not silently changed.
-    """
     raw = str(raw).strip().strip("/")
     if not raw:
         return ""
@@ -402,20 +250,10 @@ def _clean_subfolder(raw):
 
 
 def _rooted(filename):
-    """A picker path -> `(root, relative, annotation)`, or None if it is not ours.
-
-    The ` [output]` suffix a gallery path carries is what says which folder it
-    came out of, so the two organize routes take their root from the file rather
-    than from a separate parameter that could disagree with it. An unannotated
-    path is an input path, which is the shape every caller used before the
-    gallery could be organized at all.
-    """
     name, base = folder_paths.annotated_filepath(str(filename))
     if base is None:
         base, annotation = folder_paths.get_input_directory(), ""
     else:
-        # Only the two roots the picker browses. `[temp]` is a real annotation
-        # core would resolve, and nothing in this pack should be rearranging it.
         if os.path.realpath(base) != os.path.realpath(folder_paths.get_output_directory()):
             return None
         annotation = " [output]"
@@ -424,22 +262,13 @@ def _rooted(filename):
 
 @PromptServer.instance.routes.post("/minimax_creator/move")
 async def move_asset(request):
-    """Move one file into another subfolder of the root it already lives in —
-    the picker's drag-a-thumbnail-onto-a-shelf.
-
-    Renders organize the same way input files do. They *arrive* sorted, because
-    the output prefix decides where a render lands (see `outputs.py`), but where
-    a file was written is not where it has to stay: a keeper gets dragged out of
-    the dated folder it landed in and onto a shelf of its own.
-    """
     body = await request.json()
     subfolder = _clean_subfolder(body.get("subfolder", ""))
     if subfolder is None:
         return web.json_response({"error": "bad folder name"}, status=400)
     rooted = _rooted(body.get("filename", ""))
     if rooted is None:
-        return web.json_response({"error": "that file is not in a folder the picker browses"},
-                                 status=400)
+        return web.json_response({"error": "that file is not in a folder the picker browses"}, status=400)
     root, filename, annotation = rooted
 
     source = os.path.realpath(os.path.join(root, filename))
@@ -451,65 +280,191 @@ async def move_asset(request):
         return web.json_response({"error": "bad folder name"}, status=400)
     target = os.path.join(target_dir, os.path.basename(source))
     if os.path.realpath(target) == source:
-        return web.json_response({"path": filename + annotation})  # already there
+        return web.json_response({"path": filename + annotation})
     if os.path.exists(target):
         return web.json_response({"error": "a file with that name is already there"}, status=409)
 
     os.makedirs(target_dir, exist_ok=True)
     os.rename(source, target)
+
+    # If there is an associated .safetensors latent companion, move it too
+    base_src, _ = os.path.splitext(source)
+    comp_src = f"{base_src}.safetensors"
+    if os.path.isfile(comp_src):
+        base_tgt, _ = os.path.splitext(target)
+        comp_tgt = f"{base_tgt}.safetensors"
+        try:
+            os.rename(comp_src, comp_tgt)
+        except OSError:
+            pass
+
     relative = os.path.relpath(target, root).replace(os.sep, "/")
-    # Annotated on the way back out, so the moved file is still addressable as
-    # the same kind of thing it was: an attached render has to keep saying
-    # `[output]` or `media.resolve` would look for it under input/.
     return web.json_response({"path": relative + annotation})
 
 
 @PromptServer.instance.routes.post("/minimax_creator/delete")
 async def delete_asset(request):
-    """Delete one file — organize mode's other action. Files only, never
-    directories: a shelf whose last file goes simply drops out of the listing.
-
-    A workflow that still references the file will fail at execute time with
-    media.resolve's "not in the input folder any more", which is the honest
-    answer — the picker cannot know what every saved workflow points at.
-
-    Deleting a *render* is the case worth pausing on, and it is deliberate: a
-    gallery you cannot throw anything out of stops being a gallery after a
-    week's rendering. The picker asks first, and there is no undo, which is the
-    same deal the input folder has always had.
-    """
     body = await request.json()
     rooted = _rooted(body.get("filename", ""))
     if rooted is None:
-        return web.json_response({"error": "that file is not in a folder the picker browses"},
-                                 status=400)
+        return web.json_response({"error": "that file is not in a folder the picker browses"}, status=400)
     root, filename, _ = rooted
     path = os.path.realpath(os.path.join(root, filename))
     if not folder_paths.is_within_directory(root, path) or not os.path.isfile(path):
         return web.json_response({"error": "no such file"}, status=404)
-    os.remove(path)
+    try:
+        os.remove(path)
+        # Automatically delete companion .safetensors latent checkpoint if present
+        base_no_ext, _ = os.path.splitext(path)
+        companion_st = f"{base_no_ext}.safetensors"
+        if os.path.isfile(companion_st):
+            try:
+                os.remove(companion_st)
+            except OSError:
+                pass
+    except OSError as exc:
+        return web.json_response({"error": str(exc)}, status=500)
     return web.json_response({"ok": True})
+
+
+@PromptServer.instance.routes.post("/minimax_creator/clear_cache")
+async def clear_timeline_cache(request):
+    """Purge all intermediate rendered segment videos and .safetensors latent checkpoints from disk."""
+    output_dir = folder_paths.get_output_directory()
+    deleted_files = 0
+    errors = []
+
+    def _purge_sync():
+        nonlocal deleted_files
+        for root, _, filenames in os.walk(output_dir):
+            for fname in filenames:
+                if "_seg" in fname and (fname.endswith(".mp4") or fname.endswith(".safetensors")):
+                    fpath = os.path.join(root, fname)
+                    try:
+                        os.remove(fpath)
+                        deleted_files += 1
+                    except OSError as e:
+                        errors.append(f"{fname}: {e}")
+
+    loop = asyncio.get_running_loop()
+    await loop.run_in_executor(None, _purge_sync)
+
+    return web.json_response({"ok": True, "deleted": deleted_files, "errors": errors})
 
 
 @PromptServer.instance.routes.get("/minimax_creator/settings")
 async def read_settings(request):
-    """What the settings page shows: every key, filled in. See `settings.py`."""
     return web.json_response({"settings": settings.load()})
 
 
 @PromptServer.instance.routes.post("/minimax_creator/settings")
 async def write_settings(request):
-    """Store what the settings page changed and hand back what was stored.
-
-    The reply is the whole settings object rather than an acknowledgement,
-    because it is what the page then shows: a value the server would not write
-    has to be visibly not written, not left on screen looking chosen.
-    """
     try:
         stored = settings.save(await request.json())
     except ValueError as problem:
         return web.json_response({"error": str(problem)}, status=400)
     except OSError as problem:
-        return web.json_response({"error": f"could not write the settings file: {problem}"},
-                                 status=500)
+        return web.json_response({"error": f"could not write the settings file: {problem}"}, status=500)
     return web.json_response({"settings": stored})
+
+
+# ---- EDL & Final Cut Pro XML Export -----------------------------------------
+
+
+def _frames_to_tc(frames, fps=24):
+    total_seconds = int(frames // fps)
+    rem_frames = int(frames % fps)
+    hours = total_seconds // 3600
+    minutes = (total_seconds % 3600) // 60
+    seconds = total_seconds % 60
+    return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{rem_frames:02d}"
+
+
+def _build_cmx3600_edl(timeline_data, fps=24):
+    segments = timeline_data.get("segments", [])
+    lines = ["TITLE: MINIMAX_TIMELINE_EXPORT", "FCM: NON-DROP FRAME", ""]
+    current_rec_frame = 0
+
+    for idx, seg in enumerate(segments, start=1):
+        dur_s = float(seg.get("duration_s", 6.0))
+        feather = int(seg.get("feather", 39)) if (idx > 1 and seg.get("continue")) else 0
+        effective_frames = max(1, int(round(dur_s * fps)) - feather)
+
+        src_in = feather
+        src_out = src_in + effective_frames
+        rec_in = current_rec_frame
+        rec_out = rec_in + effective_frames
+
+        reel = f"AX_{idx:03d}"
+        lines.append(
+            f"{idx:03d}  {reel:<8} V     C        "
+            f"{_frames_to_tc(src_in, fps)} {_frames_to_tc(src_out, fps)} "
+            f"{_frames_to_tc(rec_in, fps)} {_frames_to_tc(rec_out, fps)}"
+        )
+        clip_name = seg.get("cached_video") or f"Shot_{idx}.mp4"
+        lines.append(f"* FROM CLIP NAME: {os.path.basename(clip_name)}")
+        lines.append("")
+
+        current_rec_frame = rec_out
+
+    return "\n".join(lines)
+
+
+def _build_fcpxml(timeline_data, fps=24):
+    root = ET.Element("xmeml", version="4")
+    seq = ET.SubElement(root, "sequence")
+    ET.SubElement(seq, "name").text = "MiniMax_Timeline_Sequence"
+    ET.SubElement(seq, "duration").text = str(int(round(float(timeline_data.get("duration_s", 6.0)) * fps)))
+
+    rate = ET.SubElement(seq, "rate")
+    ET.SubElement(rate, "timebase").text = str(int(fps))
+    ET.SubElement(rate, "ntsc").text = "FALSE"
+
+    media_el = ET.SubElement(seq, "media")
+    video = ET.SubElement(media_el, "video")
+    track = ET.SubElement(video, "track")
+
+    segments = timeline_data.get("segments", [])
+    current_frame = 0
+
+    for idx, seg in enumerate(segments, start=1):
+        dur_s = float(seg.get("duration_s", 6.0))
+        feather = int(seg.get("feather", 39)) if (idx > 1 and seg.get("continue")) else 0
+        effective_frames = max(1, int(round(dur_s * fps)) - feather)
+
+        clipitem = ET.SubElement(track, "clipitem", id=f"clipitem-{idx}")
+        ET.SubElement(clipitem, "name").text = f"Shot_{idx}"
+        ET.SubElement(clipitem, "duration").text = str(int(round(dur_s * fps)))
+        ET.SubElement(clipitem, "start").text = str(current_frame)
+        ET.SubElement(clipitem, "end").text = str(current_frame + effective_frames)
+        ET.SubElement(clipitem, "in").text = str(feather)
+        ET.SubElement(clipitem, "out").text = str(feather + effective_frames)
+
+        current_frame += effective_frames
+
+    return ET.tostring(root, encoding="utf-8", xml_declaration=True).decode("utf-8")
+
+
+@PromptServer.instance.routes.post("/minimax_creator/export_timeline")
+async def export_timeline_file(request):
+    try:
+        body = await request.json()
+        export_format = str(body.get("format", "edl")).lower()
+        timeline_data = body.get("timeline", {})
+
+        fps = 24
+        if export_format == "xml":
+            content = _build_fcpxml(timeline_data, fps)
+            filename = "minimax_sequence.xml"
+        else:
+            content = _build_cmx3600_edl(timeline_data, fps)
+            filename = "minimax_sequence.edl"
+
+        return web.json_response({
+            "ok": True,
+            "filename": filename,
+            "content": content,
+            "format": export_format,
+        })
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)

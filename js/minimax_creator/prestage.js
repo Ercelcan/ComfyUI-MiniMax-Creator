@@ -13,7 +13,6 @@ import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
 import { app } from "../../../scripts/app.js";
 
-
 const QUALITY_TITLE = {
   quality: "48 steps on the tight schedule — the hosted service's 'Quality' tier.",
   default: "20 steps — the hosted service's default tier.",
@@ -241,7 +240,16 @@ export class PreStageEditor {
           class: "mmc-tool mmc-tool-primary",
           title: t("Queue prompt in ComfyUI to generate this image"),
           onclick: () => {
-            try { app.queuePrompt(0); } catch {}
+            try {
+              const id = typeof this.nodeId === "function" ? this.nodeId() : this.nodeId;
+              if (id !== null && id !== undefined && app.queuePrompt) {
+                app.queuePrompt(0, [id]);
+              } else {
+                app.queuePrompt(0);
+              }
+            } catch {
+              try { app.queuePrompt(0); } catch {}
+            }
           },
         }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
         el("button", {

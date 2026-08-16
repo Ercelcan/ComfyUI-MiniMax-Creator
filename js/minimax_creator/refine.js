@@ -124,6 +124,16 @@ export async function refine(payload) {
   return body;
 }
 
+export async function cancelRefine(nodeId) {
+  try {
+    await api.fetchApi("/minimax_creator/refine/cancel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ node_id: String(nodeId || "") }),
+    });
+  } catch {}
+}
+
 export function openSettings(anchor, onChange) {
   const pop = el("div", { class: "mmc-pop mmc-refine-pop" });
   const providerHost = el("div", { class: "mmc-refine-group", style: { padding: "4px 8px 8px" } });
@@ -164,6 +174,7 @@ export function openSettings(anchor, onChange) {
         type: "text",
         value: current.ollamaUrl || "http://localhost:11434",
         placeholder: "http://localhost:11434",
+        spellcheck: "false",
         onchange: (e) => {
           saveSettings({ ollamaUrl: e.target.value.trim() });
           changed();
@@ -180,6 +191,7 @@ export function openSettings(anchor, onChange) {
         type: "text",
         value: current.openaiUrl || "http://localhost:1234/v1",
         placeholder: "http://localhost:1234/v1",
+        spellcheck: "false",
         onchange: (e) => {
           saveSettings({ openaiUrl: e.target.value.trim() });
           changed();
@@ -196,6 +208,7 @@ export function openSettings(anchor, onChange) {
         type: "text",
         value: current.openrouterUrl || "https://openrouter.ai/api/v1",
         placeholder: "https://openrouter.ai/api/v1",
+        spellcheck: "false",
         onchange: (e) => {
           saveSettings({ openrouterUrl: e.target.value.trim() });
           changed();
@@ -207,6 +220,7 @@ export function openSettings(anchor, onChange) {
         type: "password",
         value: current.openrouterKey || "",
         placeholder: "sk-or-v1-...",
+        spellcheck: "false",
         onchange: (e) => {
           saveSettings({ openrouterKey: e.target.value.trim() });
           changed();
@@ -320,6 +334,7 @@ export function openSettings(anchor, onChange) {
       class: "mmc-out-field",
       type: "search",
       placeholder: t("Search model name..."),
+      spellcheck: "false",
       style: { marginBottom: "8px", width: "100%", boxSizing: "border-box" },
       oninput: (e) => {
         const query = e.target.value.toLowerCase().trim();
@@ -447,17 +462,112 @@ export function openSettings(anchor, onChange) {
 }
 
 export class RefinePanel {
-  constructor({ getState, onCommit, audioFields = true, onRevert = null }) {
+  constructor({ getState, onCommit, audioFields = true, onRevert = null, getNodeId = null }) {
     this.getState = getState;
     this.onCommit = onCommit;
     this.audioFields = audioFields;
     this.onRevert = onRevert;
+    this.getNodeId = getNodeId;
     this.problems = [];
     this.seen = "";
     this.collapsed = false;
+
+    this.isStreaming = false;
+    this.streamThought = "";
+    this.streamContent = "";
+    this.tokenCount = 0;
+    this.tokenSpeed = 0;
+
     this.root = el("div", { class: "mmc-refined" });
     this.bodyBox = null;
+
+    this.onStreamEvent = (event) => this.handleStream(event.detail);
+    api.addEventListener("mmc_refine_stream", this.onStreamEvent);
+
     this.render();
+  }
+
+  destroy() {
+    api.removeEventListener("mmc_refine_stream", this.onStreamEvent);
+  }
+
+  handleStream(detail) {
+    if (!detail) return;
+    const targetNode = this.getNodeId?.() ? String(this.getNodeId()) : "";
+    if (detail.node && targetNode && String(detail.node) !== targetNode) return;
+
+    if (detail.done) {
+      this.isStreaming = false;
+      this.render();
+      return;
+    }
+
+    if (!this.isStreaming) {
+      this.isStreaming = true;
+      this.streamThought = "";
+      this.streamContent = "";
+    }
+
+    if (detail.is_thought) {
+      this.streamThought += detail.chunk || "";
+    } else {
+      this.streamContent += detail.chunk || "";
+    }
+
+    this.tokenCount = Number(detail.token_count || 0);
+    this.tokenSpeed = Number(detail.speed || 0);
+    this.renderLiveStream();
+  }
+
+  renderLiveStream() {
+    if (!this.isStreaming) return;
+
+    const meter = el("span", {
+      class: "mmc-stream-meter",
+      text: `${this.tokenCount} tokens · ${this.tokenSpeed} t/s`,
+    });
+
+    const cancelBtn = el("button", {
+      class: "mmc-ghost mmc-stream-cancel-btn",
+      text: t("✕ Cancel"),
+      title: t("Abort generation"),
+      onclick: () => {
+        cancelRefine(this.getNodeId?.() || "");
+        this.isStreaming = false;
+        this.render();
+      },
+    });
+
+    const head = el("div", { class: "mmc-stream-head" }, [
+      el("span", { class: "mmc-refine-spinner" }),
+      el("span", { class: "mmc-stream-label", text: t("Live AI Streaming...") }),
+      el("span", { style: { flex: "1" } }),
+      meter,
+      cancelBtn,
+    ]);
+
+    const parts = [head];
+
+    if (this.streamThought) {
+      const thoughtBlock = el("div", { class: "mmc-stream-thought-text", text: this.streamThought });
+      const fold = el("details", { class: "mmc-refined-fold mmc-stream-thought-fold", open: true }, [
+        el("summary", { text: t("🧠 Model Thinking / Reasoning") }),
+        thoughtBlock,
+      ]);
+      parts.push(fold);
+      setTimeout(() => { thoughtBlock.scrollTop = thoughtBlock.scrollHeight; }, 0);
+    }
+
+    if (this.streamContent) {
+      const liveBox = el("div", { class: "mmc-stream-live-box" }, [
+        el("span", { text: this.streamContent }),
+        el("span", { class: "mmc-stream-cursor", text: "█" }),
+      ]);
+      parts.push(liveBox);
+      setTimeout(() => { liveBox.scrollTop = liveBox.scrollHeight; }, 0);
+    }
+
+    this.root.replaceChildren(...parts);
   }
 
   get refined() {
@@ -465,6 +575,7 @@ export class RefinePanel {
   }
 
   apply(result, shot) {
+    this.isStreaming = false;
     const state = this.getState();
     const replaced = this.refined?.replaced ?? {
       prompt: state.prompt ?? "",
@@ -477,7 +588,7 @@ export class RefinePanel {
       scope: "shot",
       ...(result.sections ? { sections: result.sections } : {}),
       ...(result.skill ? { skill: result.skill } : {}),
-      ...(result.template ? { template: result.template, forced: !!result.forced } : {}),
+      ...(result.template ? { template: result.template, forced: !result.forced } : {}),
       source: state.prompt ?? "",
       model: chosenModel(),
       enabled: true,
@@ -496,11 +607,13 @@ export class RefinePanel {
   }
 
   fail(message) {
+    this.isStreaming = false;
     this.problems = [message];
     this.render();
   }
 
   clear() {
+    this.isStreaming = false;
     const state = this.getState();
     const replaced = state.refined?.replaced;
     delete state.refined;
@@ -523,7 +636,7 @@ export class RefinePanel {
 
   get stale() {
     const refined = this.refined;
-    return !!refined && (refined.source ?? "") !== (this.getState().prompt ?? "");
+    return !refined && (refined.source ?? "") !== (this.getState().prompt ?? "");
   }
 
   getFullPromptText() {
@@ -553,7 +666,13 @@ export class RefinePanel {
 
   textarea(get, set, { rows = 3, placeholder = "", className = "mmc-refined-box" }) {
     const box = el("textarea", {
-      class: className, rows: String(rows), placeholder,
+      class: className,
+      rows: String(rows),
+      placeholder,
+      spellcheck: "false",
+      autocorrect: "off",
+      autocapitalize: "off",
+      autocomplete: "off",
       value: get() ?? "",
       oninput: (event) => { set(event.target.value); this.onCommit?.(); },
     });
@@ -565,6 +684,11 @@ export class RefinePanel {
   }
 
   render() {
+    if (this.isStreaming) {
+      this.renderLiveStream();
+      return;
+    }
+
     const state = this.getState();
     const refined = this.refined;
     const audio = Boolean(state.soundscape?.trim() || state.music?.trim());
@@ -629,18 +753,27 @@ export class RefinePanel {
         }
 
         const words = (refined.body || "").trim().split(/\s+/).filter(Boolean).length;
-        const wordBadge = el("span", { class: "mmc-refined-wordcount", text: `${words} words` });
+        const chars = (refined.body || "").length;
+        const wordBadge = el("span", { class: "mmc-refined-wordcount", text: `${words} words · ${chars} chars` });
 
         this.bodyBox = this.textarea(
           () => refined.body,
           (value) => { 
             refined.body = value;
             const w = value.trim().split(/\s+/).filter(Boolean).length;
-            wordBadge.textContent = `${w} words`;
+            const c = value.length;
+            wordBadge.textContent = `${w} words · ${c} chars`;
           },
           { rows: 5, placeholder: t("The rewritten description.") });
         
-        parts.push(el("div", { class: "mmc-refined-hero" }, [this.bodyBox, wordBadge]));
+        const statusRow = el("div", { class: "mmc-refined-status-row" }, [
+          wordBadge,
+        ]);
+
+        parts.push(el("div", { class: "mmc-refined-hero" }, [
+          this.bodyBox,
+          statusRow,
+        ]));
 
         if (refined.sections) {
           const sections = el("div", { class: "mmc-refined-sections" });
@@ -689,22 +822,40 @@ export class RefinePanel {
   }
 }
 
-export function refineButton({ run, label = "Refine", title, className = "mmc-tool" }) {
+export function refineButton({ run, label = "Refine", title, mode = "auto", className = "" }) {
   let busy = false;
-  const isPill = className.includes("mmc-pill") || className.includes("mmc-nle-btn");
+
+  let effectiveMode = mode;
+  if (effectiveMode === "auto") {
+    if (className.includes("micro")) effectiveMode = "micro";
+    else if (className.includes("pill") || className.includes("deck") || className.includes("nle")) effectiveMode = "pill";
+    else if (className.includes("tool") && !className.includes("micro")) effectiveMode = "rail";
+    else effectiveMode = "pill";
+  }
 
   const spinner = el("span", { class: "mmc-refine-spinner", style: { display: "none" } });
-  const brainIcon = icon("brain", isPill ? 15 : 20);
+  const brainIcon = icon("brain", effectiveMode === "micro" ? 13 : effectiveMode === "pill" ? 14 : 20);
   const text = el("span", { text: t(label) });
 
-  const btnContent = isPill
-    ? [spinner, brainIcon, text]
-    : [el("span", { class: "mmc-tool-icon" }, [spinner, brainIcon]), text];
+  let btnContent;
+  let btnClass;
+
+  if (effectiveMode === "rail") {
+    btnContent = [el("span", { class: "mmc-tool-icon" }, [spinner, brainIcon]), text];
+    btnClass = "mmc-tool";
+  } else if (effectiveMode === "micro") {
+    btnContent = [spinner, brainIcon, text];
+    btnClass = `mmc-micro-tool mmc-micro-refine ${className}`.trim();
+  } else {
+    btnContent = [spinner, brainIcon, text];
+    btnClass = `mmc-nle-deck-refine-btn ${className}`.trim();
+  }
 
   const button = el("button", {
-    class: className,
+    class: btnClass,
     title: title || t("Rewrite prompt with Context-IR AI refiner"),
-    onclick: async () => {
+    onclick: async (e) => {
+      e.stopPropagation();
       if (busy) return;
       busy = true;
       button.classList.add("busy");
@@ -723,8 +874,14 @@ export function refineButton({ run, label = "Refine", title, className = "mmc-to
     },
   }, btnContent);
 
+  const moreClass = effectiveMode === "micro"
+    ? "mmc-micro-more"
+    : effectiveMode === "pill"
+      ? "mmc-refine-pill-more"
+      : "mmc-refine-more";
+
   const more = el("button", {
-    class: "mmc-refine-more",
+    class: moreClass,
     title: chosenModel()
       ? t("{model} — click to change model settings", { model: chosenModel() })
       : t("Choose refiner model"),
@@ -736,11 +893,15 @@ export function refineButton({ run, label = "Refine", title, className = "mmc-to
           : t("Choose refiner model");
       });
     },
-  }, [icon("chevron", 11)]);
+  }, [icon("chevron", effectiveMode === "micro" ? 9 : 10)]);
 
-  if (!isPill) {
-    return el("div", { class: "mmc-tool mmc-refine-split" }, [button, more]);
+  if (effectiveMode === "micro") {
+    return el("div", { class: "mmc-micro-refine-group" }, [button, more]);
   }
 
-  return el("div", { class: "mmc-refine-split pill" }, [button, more]);
+  if (effectiveMode === "pill") {
+    return el("div", { class: "mmc-refine-split pill" }, [button, more]);
+  }
+
+  return el("div", { class: "mmc-tool mmc-refine-split" }, [button, more]);
 }

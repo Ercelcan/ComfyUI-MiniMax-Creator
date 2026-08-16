@@ -30,15 +30,25 @@ registerGlobalMediaHandler();
 
 export function formatTimecode(seconds, fps = 24) {
   if (!Number.isFinite(seconds) || seconds < 0) seconds = 0;
-  const mins = Math.floor(seconds / 60);
+  const hours = Math.floor(seconds / 3600);
+  const mins = Math.floor((seconds % 3600) / 60);
   const secs = Math.floor(seconds % 60);
   const ms = Math.floor((seconds % 1) * 1000);
   const frames = Math.floor((seconds % 1) * fps);
   const pad = (n, len = 2) => String(n).padStart(len, "0");
+
+  const tc = hours > 0
+    ? `${pad(hours)}:${pad(mins)}:${pad(secs)}:${pad(frames)}`
+    : `${pad(mins)}:${pad(secs)}.${pad(ms, 3)}`;
+
   return {
-    timecode: `${pad(mins)}:${pad(secs)}.${pad(ms, 3)}`,
+    timecode: tc,
     framesText: `F${frames}`,
     display: `${pad(mins)}:${pad(secs)}.${pad(ms, 3)} / F${frames}`,
+    hours,
+    mins,
+    secs,
+    frames,
   };
 }
 
@@ -79,7 +89,43 @@ export function drawFrame(canvas, video, maxHeight = 720) {
     canvas.width = width;
     canvas.height = height;
   }
-  canvas.getContext("2d").drawImage(video, 0, 0, width, height);
+  const ctx = canvas.getContext("2d");
+  ctx.drawImage(video, 0, 0, width, height);
+}
+
+export function renderCinemaCanvas(canvas, mediaSource, width = 1280, height = 720) {
+  if (!canvas) return;
+  const dpr = window.devicePixelRatio || 1;
+  const targetW = Math.round(width * dpr);
+  const targetH = Math.round(height * dpr);
+
+  if (canvas.width !== targetW || canvas.height !== targetH) {
+    canvas.width = targetW;
+    canvas.height = targetH;
+  }
+
+  const ctx = canvas.getContext("2d");
+  ctx.save();
+  ctx.scale(dpr, dpr);
+  ctx.fillStyle = "#000000";
+  ctx.fillRect(0, 0, width, height);
+
+  if (mediaSource) {
+    const srcW = mediaSource.videoWidth || mediaSource.naturalWidth || width;
+    const srcH = mediaSource.videoHeight || mediaSource.naturalHeight || height;
+
+    const scale = Math.min(width / srcW, height / srcH);
+    const renderW = Math.round(srcW * scale);
+    const renderH = Math.round(srcH * scale);
+    const offsetX = Math.round((width - renderW) / 2);
+    const offsetY = Math.round((height - renderH) / 2);
+
+    try {
+      ctx.drawImage(mediaSource, offsetX, offsetY, renderW, renderH);
+    } catch {}
+  }
+
+  ctx.restore();
 }
 
 export function svg(paths, size = 22) {
@@ -134,6 +180,13 @@ export const ICONS = {
   volumeMute: `<polygon points="11 5 6 9 2 9 2 15 6 15 11 19 11 5"/><line x1="23" y1="9" x2="17" y2="15"/><line x1="17" y1="9" x2="23" y2="15"/>`,
   download: `<path d="M21 15v4a2 2 0 01-2 2H5a2 2 0 01-2-2v-4M7 10l5 5 5-5M12 15V3"/>`,
   broom: `<path d="M3 21l8-8M14 4l6 6-7 7-6-6 7-7zM18 10l2 2M15 7l2 2"/>`,
+  export: `<path d="M4 12v8a2 2 0 002 2h12a2 2 0 002-2v-8M16 6l-4-4-4 4M12 2v13"/>`,
+  globe: `<circle cx="12" cy="12" r="10"/><path d="M2 12h20M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/>`,
+  clapper: `<path d="M4 4h16a2 2 0 0 1 2 2v12a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V6a2 2 0 0 1 2-2zM2 8h20M7 4v4M12 4v4M17 4v4"/>`,
+  duplicate: `<rect x="9" y="9" width="13" height="13" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1M12 15.5h7M15.5 12v7"/>`,
+  transition: `<path d="M3 16c3-6 5-6 8-2s5 4 9-4"/><path d="M16 6h4v4"/>`,
+  wobblyArrow: `<path d="M3 16c3-6 5-6 8-2s5 4 9-4"/><path d="M16 6h4v4"/>`,
+  eyeOff: `<path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19m-6.72-1.07a3 3 0 1 1-4.24-4.24"/><line x1="1" y1="1" x2="23" y2="23"/>`,
 };
 
 export function icon(name, size = 22) {
@@ -146,22 +199,38 @@ export function floatAbove(node) {
 
 export function dismissable(node, onClose) {
   floatAbove(node);
+  let isClosed = false;
+
   const away = (event) => {
-    if (!node.contains(event.target)) close();
+    if (isClosed) return;
+    if (!node.contains(event.target)) {
+      close();
+    }
   };
+
   const key = (event) => {
-    if (event.key === "Escape") { event.stopPropagation(); close(); }
+    if (event.key === "Escape") {
+      event.stopPropagation();
+      close();
+    }
   };
+
   function close() {
+    if (isClosed) return;
+    isClosed = true;
     document.removeEventListener("pointerdown", away, true);
+    document.removeEventListener("mousedown", away, true);
     document.removeEventListener("keydown", key, true);
     node.remove();
     onClose?.();
   }
+
   setTimeout(() => {
     document.addEventListener("pointerdown", away, true);
+    document.addEventListener("mousedown", away, true);
     document.addEventListener("keydown", key, true);
   }, 0);
+
   return close;
 }
 
@@ -196,25 +265,39 @@ export function placeNear(popover, anchor, { above = true } = {}) {
       }
       return;
     }
+
     const rect = target.getBoundingClientRect();
     if (rect.width === 0 && rect.height === 0) {
-      if (lastLeft !== null && lastTop !== null) {
-        popover.style.left = `${lastLeft}px`;
-        popover.style.top = `${lastTop}px`;
-      }
       return;
     }
+
     const box = popover.getBoundingClientRect();
-    const left = Math.max(8, Math.min(rect.left, window.innerWidth - box.width - 8));
-    const top = above && rect.top - box.height - 8 > 8
-      ? rect.top - box.height - 8
-      : Math.min(rect.bottom + 8, window.innerHeight - box.height - 8);
+    if (box.width === 0 || box.height === 0) {
+      return;
+    }
+
+    let left = rect.left + rect.width / 2 - box.width / 2;
+    left = Math.max(8, Math.min(left, window.innerWidth - box.width - 8));
+
+    let top;
+    if (above && rect.top - box.height - 8 > 8) {
+      top = rect.top - box.height - 8;
+    } else if (rect.bottom + box.height + 8 < window.innerHeight - 8) {
+      top = rect.bottom + 8;
+    } else {
+      top = Math.max(8, Math.min(rect.top - box.height - 8, window.innerHeight - box.height - 8));
+    }
+
     lastLeft = left;
     lastTop = Math.max(8, top);
-    popover.style.left = `${left}px`;
-    popover.style.top = `${Math.max(8, top)}px`;
+    popover.style.left = `${Math.round(left)}px`;
+    popover.style.top = `${Math.round(top)}px`;
   };
+
   place();
+  requestAnimationFrame(place);
+  setTimeout(place, 20);
+
   const observer = new ResizeObserver(() => {
     if (!popover.isConnected) { observer.disconnect(); return; }
     place();

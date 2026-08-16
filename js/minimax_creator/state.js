@@ -1,5 +1,13 @@
-import { ASPECT_PRESETS, FPS, MIN_SHORT_EDGE, NATIVE_SHORT_EDGE, CANVAS_MULTIPLE,
-         framesForSeconds, secondsForFrames, resolveCanvas } from "./canvas.js";
+import {
+  ASPECT_PRESETS,
+  FPS,
+  MIN_SHORT_EDGE,
+  NATIVE_SHORT_EDGE,
+  CANVAS_MULTIPLE,
+  framesForSeconds,
+  secondsForFrames,
+  resolveCanvas,
+} from "./canvas.js";
 import { t } from "./i18n.js";
 
 export const MAX_REF_IMAGES = 9;
@@ -13,20 +21,14 @@ export const TRACKS = ["picture", "picture+sound", "sound"];
 export const DEFAULT_TRACK = "picture";
 
 export const DEFAULT_REF_SIZE = { image: "match", video: "max" };
-
 export const refSize = (asset) => asset.ref_size || DEFAULT_REF_SIZE[asset.kind] || "match";
-
-export const sizeable = (asset) =>
-  asset.role === "reference" && DEFAULT_REF_SIZE[asset.kind] !== undefined;
+export const sizeable = (asset) => asset.role === "reference" && DEFAULT_REF_SIZE[asset.kind] !== undefined;
 
 export const TAKES = ["full", "person", "object", "scene", "style"];
-
 export const takes = (asset) => (TAKES.includes(asset.takes) ? asset.takes : "full");
-
 export const takeable = (asset) => asset.kind === "image" && asset.role === "reference";
 
 export const MODEL_FIELDS = ["fl2va", "ref2va", "clip", "vae", "audio_vae", "preview"];
-
 export const MODEL_LABEL = {
   fl2va: "FL2VA checkpoint",
   ref2va: "Ref2VA checkpoint",
@@ -42,18 +44,13 @@ export const MODEL_HINT = {
   clip: "H3's text encoder. Loaded as CLIPLoader type 'minimax'.",
   vae: "Decodes the picture.",
   audio_vae: "Decodes the sound. H3 always generates some, so this is never optional.",
-  preview: "taeh3, from models/vae_approx — what the live preview decodes through. "
-         + "Without it the preview is latent2rgb, which is colour without detail.",
+  preview: "taeh3, from models/vae_approx — what the live preview decodes through.",
 };
 
 export const MODEL_DTYPES = ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"];
-
 export const ROUTES = ["auto", "fl2va", "ref2va"];
-
 export const nextRoute = (route) => ROUTES[(ROUTES.indexOf(route) + 1) % ROUTES.length];
-
 export const DEVICE_FIELDS = MODEL_FIELDS.filter((field) => field !== "preview");
-
 export const ALWAYS_REQUIRED = ["clip", "vae", "audio_vae"];
 
 export function emptyModels() {
@@ -96,7 +93,6 @@ function serializeModels(models) {
 }
 
 export const IMAGE_VAE_RE = /t1[_-]?image|image[_-]vae/i;
-
 const MODEL_HINTS = {
   fl2va: ["fl2va", "first_last"],
   ref2va: ["ref2va"],
@@ -140,12 +136,9 @@ export function missingModels(models, required) {
 
 export const TURBO_QUALITIES = ["draft", "medium", "good"];
 export const TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
-
 export const TURBO_SAMPLER = "euler";
 export const TURBO_SCHEDULER = "beta";
-
 export const TURBO_RESET = { steps: 20, sampler_name: "res_multistep", scheduler: "simple" };
-
 export const turboStrength = (name) => (/lightx2v/i.test(name || "") ? 0.6 : 1.0);
 
 export function emptyTurbo() {
@@ -170,10 +163,8 @@ export function parseTurbo(raw) {
   if (raw.saved && typeof raw.saved === "object") {
     out.saved = {
       steps: Number(raw.saved.steps) || TURBO_RESET.steps,
-      sampler_name: typeof raw.saved.sampler_name === "string"
-        ? raw.saved.sampler_name : TURBO_RESET.sampler_name,
-      scheduler: typeof raw.saved.scheduler === "string"
-        ? raw.saved.scheduler : TURBO_RESET.scheduler,
+      sampler_name: typeof raw.saved.sampler_name === "string" ? raw.saved.sampler_name : TURBO_RESET.sampler_name,
+      scheduler: typeof raw.saved.scheduler === "string" ? raw.saved.scheduler : TURBO_RESET.scheduler,
     };
   }
   return out;
@@ -221,6 +212,9 @@ const clampRefineDenoise = (value) => {
   return Math.min(MAX_REFINE_DENOISE, Math.max(MIN_REFINE_DENOISE, n));
 };
 
+export const CONTINUITY_MODES = ["latent_mask", "keyframe_still"];
+export const START_MODES = ["t2v", "load_video"];
+
 export function emptyState() {
   return {
     version: 1,
@@ -237,6 +231,7 @@ export function emptyState() {
     sample_edge: NATIVE_SHORT_EDGE,
     refine_denoise: DEFAULT_REFINE_DENOISE,
     checkpoint: "auto",
+    start_mode: "t2v",
     models: emptyModels(),
     turbo: emptyTurbo(),
   };
@@ -255,6 +250,7 @@ export function parseState(raw) {
       }
       if (!CHECKPOINT_CHOICES.includes(state.checkpoint)) state.checkpoint = "auto";
       if (!UPSCALE_MODES.includes(state.upscale)) state.upscale = UPSCALE_MODES[0];
+      if (!START_MODES.includes(state.start_mode)) state.start_mode = "t2v";
       state.sample_edge = clampSampleEdge(state.sample_edge);
       state.refine_denoise = clampRefineDenoise(state.refine_denoise);
       state.models = parseModels(state.models);
@@ -267,8 +263,7 @@ export function parseState(raw) {
       }
       return state;
     }
-  } catch {
-  }
+  } catch {}
   return emptyState();
 }
 
@@ -328,6 +323,11 @@ function serializeCommon(state) {
     loras: serializeLoras(state.loras || []),
     duration_s: state.duration_s,
     ...(state.checkpoint && state.checkpoint !== "auto" ? { checkpoint: state.checkpoint } : {}),
+    ...(state.start_mode && state.start_mode !== "t2v" ? { start_mode: state.start_mode } : {}),
+    ...(state.gain !== undefined && state.gain !== 1.0 ? { gain: round2(state.gain) } : {}),
+    ...(state.ducking === false ? { ducking: false } : {}),
+    ...(state.cached_video ? { cached_video: state.cached_video } : {}),
+    ...(state.locked ? { locked: true } : {}),
   };
 }
 
@@ -339,15 +339,13 @@ export function serializeState(state) {
     short_edge: state.short_edge,
     ...(state.upscale !== UPSCALE_MODES[0] ? { upscale: state.upscale } : {}),
     ...(state.sample_edge !== NATIVE_SHORT_EDGE ? { sample_edge: state.sample_edge } : {}),
-    ...(state.refine_denoise !== DEFAULT_REFINE_DENOISE
-      ? { refine_denoise: state.refine_denoise } : {}),
+    ...(state.refine_denoise !== DEFAULT_REFINE_DENOISE ? { refine_denoise: state.refine_denoise } : {}),
     ...serializeModels(state.models),
     ...serializeTurbo(state.turbo),
   }, null, 2);
 }
 
 export const MAX_SEGMENTS = 24;
-
 export const RENDER_MODES = ["chained", "single"];
 export const isSingle = (timeline) => timeline?.render === "single";
 
@@ -360,13 +358,26 @@ const clampTail = (value) => {
   return Math.min(seconds, MAX_AUDIO_TAIL_S);
 };
 
+export function emptyTracks() {
+  return {
+    video: { muted: false, locked: false },
+    soundscape: { muted: false, volume: 1.0 },
+    music: { muted: false, volume: 1.0 },
+    master: { muted: false, volume: 1.0 },
+  };
+}
+
 export function emptySegment() {
   const state = emptyState();
   delete state.version;
   state.continue = false;
   state.continue_audio = false;
+  state.continuity_mode = "latent_mask";
+  state.feather = 39;
   state.locked = false;
   state.cached_video = null;
+  state.gain = 1.0;
+  state.ducking = true;
   return state;
 }
 
@@ -377,6 +388,7 @@ export function emptyTimeline() {
     prompt: "",
     soundscape: "",
     music: "",
+    master_audio: null,
     refined: null,
     aspect: "16:9",
     short_edge: NATIVE_SHORT_EDGE,
@@ -385,14 +397,16 @@ export function emptyTimeline() {
     refine_denoise: DEFAULT_REFINE_DENOISE,
     loras: [],
     assets: [],
+    start_mode: "t2v",
     audio_tail_s: DEFAULT_AUDIO_TAIL_S,
     models: { ...emptyModels(), route: "ref2va" },
     turbo: emptyTurbo(),
+    tracks: emptyTracks(),
     segments: [emptySegment()],
   };
 }
 
-function syncCanvas(timeline) {
+export function syncTimeline(timeline) {
   for (const segment of (timeline.segments || [])) {
     segment.aspect = timeline.aspect;
     segment.short_edge = timeline.short_edge;
@@ -400,6 +414,7 @@ function syncCanvas(timeline) {
     segment.sample_edge = timeline.sample_edge;
     segment.refine_denoise = timeline.refine_denoise;
     segment.pool = timeline.assets ?? [];
+    segment.master_audio = timeline.master_audio ?? null;
     segment.globalTexts = {
       prompt: timeline.prompt ?? "",
       soundscape: timeline.soundscape ?? "",
@@ -413,14 +428,9 @@ function syncCanvas(timeline) {
   (timeline.segments || []).forEach((segment, index) => {
     const from = segment.continue_from;
     if (!Number.isInteger(from) || from < 1 || from >= index) delete segment.continue_from;
-    if (segment.feather && 2 * segment.feather > framesForSeconds(segment.duration_s || 6)) {
-      delete segment.feather;
-    }
   });
   return timeline;
 }
-
-export { syncCanvas as syncTimeline };
 
 export function parseTimeline(raw) {
   try {
@@ -449,28 +459,33 @@ export function parseTimeline(raw) {
       timeline.refine_denoise = clampRefineDenoise(timeline.refine_denoise);
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
+
+      timeline.tracks = { ...emptyTracks(), ...(timeline.tracks || {}) };
+
       const segments = Array.isArray(parsed.segments) ? parsed.segments : [];
-      timeline.segments = (segments.length ? segments : [{}]).map((rawSeg) => {
+      timeline.segments = (segments.length ? segments : [{}]).map((rawSeg, idx) => {
         const segment = parseState(JSON.stringify(rawSeg ?? {}));
         delete segment.version;
         delete segment.models;
         delete segment.turbo;
-        segment.continue = rawSeg?.continue === true;
-        segment.continue_audio = rawSeg?.continue_audio === true;
+        segment.continue = idx > 0 && rawSeg?.continue !== false;
+        segment.continue_audio = idx > 0 && rawSeg?.continue_audio !== false;
+        segment.continuity_mode = rawSeg?.continuity_mode || "latent_mask";
         segment.locked = rawSeg?.locked === true;
         segment.cached_video = typeof rawSeg?.cached_video === "string" ? rawSeg.cached_video : null;
+        segment.gain = typeof rawSeg?.gain === "number" ? rawSeg.gain : 1.0;
+        segment.ducking = rawSeg?.ducking !== false;
+
         delete segment.continue_from;
         const from = Number(rawSeg?.continue_from);
         if (Number.isInteger(from)) segment.continue_from = from;
-        delete segment.feather;
         const width = Number(rawSeg?.feather);
-        if (FEATHER_GRID.includes(width) && width > 1) segment.feather = width;
+        segment.feather = FEATHER_GRID.includes(width) ? width : 39;
         return segment;
       });
-      return syncCanvas(timeline);
+      return syncTimeline(timeline);
     }
-  } catch {
-  }
+  } catch {}
   return emptyTimeline();
 }
 
@@ -481,32 +496,36 @@ export function serializeTimeline(timeline) {
     prompt: timeline.prompt ?? "",
     ...(timeline.soundscape?.trim() ? { soundscape: timeline.soundscape } : {}),
     ...(timeline.music?.trim() ? { music: timeline.music } : {}),
+    ...(timeline.master_audio ? { master_audio: timeline.master_audio } : {}),
     ...serializeRefined(timeline.refined),
     aspect: timeline.aspect,
     short_edge: timeline.short_edge,
     ...(timeline.upscale !== UPSCALE_MODES[0] ? { upscale: timeline.upscale } : {}),
     ...(timeline.sample_edge !== NATIVE_SHORT_EDGE ? { sample_edge: timeline.sample_edge } : {}),
-    ...(timeline.refine_denoise !== DEFAULT_REFINE_DENOISE
-      ? { refine_denoise: timeline.refine_denoise } : {}),
+    ...(timeline.refine_denoise !== DEFAULT_REFINE_DENOISE ? { refine_denoise: timeline.refine_denoise } : {}),
     loras: serializeLoras(timeline.loras ?? []),
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),
     ...serializeModels(timeline.models),
     ...serializeTurbo(timeline.turbo),
+    ...(timeline.tracks ? { tracks: timeline.tracks } : {}),
     segments: (timeline.segments || []).map((segment, index) => {
       const out = serializeCommon(segment);
       if (index > 0 && segment.continue) out.continue = true;
       if (index > 0 && segment.continue_audio) out.continue_audio = true;
-      if (segment.locked && segment.cached_video) {
-        out.locked = true;
+      out.continuity_mode = segment.continuity_mode || "latent_mask";
+      out.feather = feather(segment);
+      if (segment.cached_video) {
         out.cached_video = segment.cached_video;
+      }
+      if (segment.locked) {
+        out.locked = true;
       }
       if ((out.continue || out.continue_audio)
           && Number.isInteger(segment.continue_from)
           && segment.continue_from >= 1 && segment.continue_from < index) {
         out.continue_from = segment.continue_from;
       }
-      if (out.continue && feather(segment) > 1) out.feather = feather(segment);
       return out;
     }),
   }, null, 2);
@@ -516,20 +535,28 @@ export function cloneSegment(segment) {
   return JSON.parse(JSON.stringify(segment));
 }
 
-export function cutTimes(timeline) {
-  const at = [];
-  let total = 0;
-  for (const segment of (timeline.segments || [])) {
-    at.push(total);
-    total += Number(segment.duration_s) || 0;
-  }
-  return { at, total };
+export const FEATHER_GRID = [1, 5, 22, 39, 56, 90];
+export function feather(segment) {
+  return FEATHER_GRID.includes(segment?.feather) ? segment.feather : (segment?.continuity_mode === "latent_mask" ? 39 : 1);
 }
 
-export function shotTime(seconds) {
-  const ms = Math.round(Number(seconds) * 1000);
-  const pad = (n, width) => String(n).padStart(width, "0");
-  return `${pad(Math.floor(ms / 60000), 2)}:${pad(Math.floor(ms / 1000) % 60, 2)}.${pad(ms % 1000, 3)}`;
+export function getEffectiveDuration(seg, index, isSingleMode = false) {
+  const rawFrames = framesForSeconds(seg?.duration_s || 6);
+  const overlap = (!isSingleMode && index > 0 && continues(seg) && feather(seg) > 1) ? feather(seg) : 0;
+  const effectiveFrames = Math.max(1, rawFrames - overlap);
+  return secondsForFrames(effectiveFrames);
+}
+
+export function cutTimes(timeline) {
+  const single = isSingle(timeline);
+  const at = [];
+  let total = 0;
+  for (let i = 0; i < (timeline.segments || []).length; i++) {
+    const seg = timeline.segments[i];
+    at.push(total);
+    total += getEffectiveDuration(seg, i, single);
+  }
+  return { at, total };
 }
 
 export function timelineFrames(timeline) {
@@ -544,296 +571,9 @@ export function timelineSeconds(timeline) {
   return secondsForFrames(timelineFrames(timeline));
 }
 
-export const PRESTAGE_ARCHES = ["krea2", "ideogram4", "minimax"];
-export const PRESTAGE_ARCH_LABEL = {
-  krea2: "Krea 2", ideogram4: "Ideogram 4", minimax: "MiniMax H3",
-};
-
-export const PRESTAGE_STILL_ARCH = "minimax";
-export const isStill = (state) => state?.arch === PRESTAGE_STILL_ARCH;
-
-export const PRESTAGE_STILL_LENGTHS = [5, 22, 39, 56, 90, 124];
-export const PRESTAGE_STILL_FRAMES = 5;
-export const PRESTAGE_STILL_INDEX = 0;
-export const PRESTAGE_PROMPT_MODES = ["context-ir", "plain"];
-
-export const stillLatentFrames = (frames) =>
-  (frames <= 5 ? 2 : Math.floor((frames - 5) / 17) * 5 + 2);
-
-export const PRESTAGE_STILL_ROW = {
-  steps: 20, cfg: 1.0, sampler_name: "res_multistep", scheduler: "simple",
-};
-
-export function emptyStill() {
-  return {
-    frames: PRESTAGE_STILL_FRAMES,
-    latent_index: PRESTAGE_STILL_INDEX,
-    prompt_mode: "context-ir",
-    request: emptyState(),
-  };
-}
-
-export function parseStill(raw) {
-  const out = emptyStill();
-  if (!raw || typeof raw !== "object") return out;
-  const frames = Number(raw.frames);
-  if (Number.isFinite(frames)) out.frames = framesForSeconds(Math.max(1, frames) / FPS);
-  const index = Number(raw.latent_index);
-  if (Number.isFinite(index)) out.latent_index = Math.round(index);
-  if (PRESTAGE_PROMPT_MODES.includes(raw.prompt_mode)) out.prompt_mode = raw.prompt_mode;
-  out.request = parseState(JSON.stringify(raw.request ?? {}));
-  return out;
-}
-
-function serializeStill(still) {
-  const out = {
-    frames: still.frames,
-    latent_index: still.latent_index,
-    request: JSON.parse(serializeState(still.request)),
-  };
-  if (still.prompt_mode !== "context-ir") out.prompt_mode = still.prompt_mode;
-  return out;
-}
-
-export const PRESTAGE_CANVAS_MULTIPLE = 16;
-export const PRESTAGE_MIN_EDGE = 512;
-export const PRESTAGE_MAX_EDGE = 2048;
-export const PRESTAGE_DEFAULT_EDGE = 1024;
-export const PRESTAGE_MAX_PIXELS = 2048 * 2048;
-export const PRESTAGE_MIN_RATIO = 1 / 3;
-export const PRESTAGE_MAX_RATIO = 3;
-
-export const PRESTAGE_ASPECTS = [
-  ["16:9", 16 / 9],
-  ["3:2", 3 / 2],
-  ["4:3", 4 / 3],
-  ["1:1", 1],
-  ["3:4", 3 / 4],
-  ["2:3", 2 / 3],
-  ["9:16", 9 / 16],
-  ["21:9", 21 / 9],
-];
-
-export const PRESTAGE_MAX_REFS = 3;
-
-export const PRESTAGE_KREA_RAW = { steps: 52, cfg: 3.5, sampler_name: "euler", scheduler: "simple" };
-export const PRESTAGE_KREA_TURBO = { cfg: 1.0, sampler_name: "euler", scheduler: "simple" };
-export const PRESTAGE_TURBO_QUALITIES = ["draft", "medium", "good"];
-export const PRESTAGE_TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
-
-export const PRESTAGE_IDEOGRAM_QUALITIES = ["quality", "default", "turbo"];
-export const PRESTAGE_IDEOGRAM_STEPS = { quality: 48, default: 20, turbo: 12 };
-export const PRESTAGE_IDEOGRAM_ROW = { cfg: 7.0, sampler_name: "euler" };
-
-export const PRESTAGE_DEFAULT_DENOISE = 0.65;
-export const PRESTAGE_MIN_DENOISE = 0.05;
-
-export const PRESTAGE_FIELDS = {
-  krea2: ["model", "turbo_model", "clip", "vae"],
-  ideogram4: ["model", "uncond_model", "clip", "vae"],
-};
-export const PRESTAGE_FIELD_LABEL = {
-  model: "Checkpoint",
-  turbo_model: "Turbo checkpoint",
-  uncond_model: "Unconditional checkpoint",
-  clip: "Text encoder",
-  vae: "VAE",
-};
-export const PRESTAGE_FIELD_HINT = {
-  krea2: {
-    model: "Krea 2 RAW — the undistilled base. ~52 steps at cfg 3.5, and the one to train LoRAs against.",
-    turbo_model: "Krea 2 Turbo — the 8-step distillation the turbo pill swaps in. LoRAs trained on RAW apply here too.",
-    clip: "Qwen3-VL 4B, loaded as CLIPLoader type 'krea2'.",
-    vae: "The Qwen image VAE.",
-  },
-  ideogram4: {
-    model: "Ideogram 4.0's conditional branch.",
-    uncond_model: "The unconditional branch — Ideogram ships CFG as a second model. Optional: without it the render runs ordinary CFG on the one checkpoint.",
-    clip: "Qwen3-VL 8B, loaded as CLIPLoader type 'ideogram4'.",
-    vae: "The Flux 2 VAE.",
-  },
-};
-
-const PRESTAGE_HINTS = {
-  krea2: { model: ["krea2_raw"], turbo_model: ["krea2_turbo"], clip: ["qwen3vl_4b"], vae: ["qwen_image_vae"] },
-  ideogram4: {
-    model: ["ideogram4"], uncond_model: ["ideogram4_unconditional"],
-    clip: ["qwen3vl_8b"], vae: ["flux2"],
-  },
-};
-
-export function emptyPreStage() {
-  return {
-    version: 1,
-    arch: "krea2",
-    prompt: "",
-    aspect: "16:9",
-    short_edge: PRESTAGE_DEFAULT_EDGE,
-    init: null,
-    refs: [],
-    loras: [],
-    turbo: { on: false, quality: "good", saved: null },
-    quality: "default",
-    minimax: emptyStill(),
-    models: emptyPreStageModels(),
-    peer: null,
-  };
-}
-
-export function emptyPreStageModels() {
-  return { krea2: {}, ideogram4: {}, dtype: "default" };
-}
-
-export const PRESTAGE_IMAGE_ARCHES = PRESTAGE_ARCHES.filter((arch) => arch !== PRESTAGE_STILL_ARCH);
-
-export function parsePreStage(raw) {
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (parsed && typeof parsed === "object") {
-      const state = { ...emptyPreStage(), ...parsed };
-      if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
-      if (typeof state.prompt !== "string") state.prompt = "";
-      if (!Array.isArray(state.refs)) state.refs = [];
-      state.refs = state.refs
-        .filter((ref) => ref && typeof ref.filename === "string")
-        .slice(0, PRESTAGE_MAX_REFS);
-      if (!Array.isArray(state.loras)) state.loras = [];
-      state.assets = [];
-      state.checkpoint = "auto";
-      if (!state.init || typeof state.init !== "object" || !state.init.filename) state.init = null;
-      if (state.init) {
-        const denoise = Number(state.init.denoise);
-        state.init.denoise = Number.isFinite(denoise)
-          ? Math.min(1, Math.max(PRESTAGE_MIN_DENOISE, denoise)) : PRESTAGE_DEFAULT_DENOISE;
-      }
-      if (!PRESTAGE_IDEOGRAM_QUALITIES.includes(state.quality)) state.quality = "default";
-      state.minimax = parseStill(state.minimax);
-      const turbo = state.turbo && typeof state.turbo === "object" ? state.turbo : {};
-      state.turbo = {
-        on: turbo.on === true,
-        quality: PRESTAGE_TURBO_QUALITIES.includes(turbo.quality) ? turbo.quality : "good",
-        saved: turbo.saved && typeof turbo.saved === "object" ? { ...turbo.saved } : null,
-      };
-      const models = state.models && typeof state.models === "object" ? state.models : {};
-      state.models = emptyPreStageModels();
-      for (const arch of PRESTAGE_IMAGE_ARCHES) {
-        const side = models[arch];
-        if (!side || typeof side !== "object") continue;
-        for (const field of PRESTAGE_FIELDS[arch]) {
-          if (typeof side[field] === "string" && side[field].trim()) {
-            state.models[arch][field] = side[field].trim();
-          }
-        }
-      }
-      if (MODEL_DTYPES.includes(models.dtype)) state.models.dtype = models.dtype;
-      return state;
-    }
-  } catch {
-  }
-  return emptyPreStage();
-}
-
-export function serializePreStage(state) {
-  const models = {};
-  for (const arch of PRESTAGE_IMAGE_ARCHES) {
-    const side = {};
-    for (const field of PRESTAGE_FIELDS[arch]) {
-      if (state.models?.[arch]?.[field]) side[field] = state.models[arch][field];
-    }
-    if (Object.keys(side).length) models[arch] = side;
-  }
-  if (state.models?.dtype && state.models.dtype !== "default") models.dtype = state.models.dtype;
-  return JSON.stringify({
-    version: 1,
-    arch: state.arch,
-    prompt: state.prompt ?? "",
-    aspect: state.aspect,
-    short_edge: state.short_edge,
-    ...(state.init ? { init: { filename: state.init.filename, denoise: round2(state.init.denoise) } } : {}),
-    ...(state.refs.length ? { refs: state.refs.map((r) => ({ handle: r.handle, filename: r.filename })) } : {}),
-    loras: serializeLoras(state.loras || []),
-    ...(state.turbo.on || state.turbo.saved
-      ? { turbo: { on: state.turbo.on, quality: state.turbo.quality,
-                   ...(state.turbo.saved ? { saved: { ...state.turbo.saved } } : {}) } }
-      : {}),
-    ...(state.quality !== "default" ? { quality: state.quality } : {}),
-    minimax: serializeStill(state.minimax),
-    ...(Object.keys(models).length ? { models } : {}),
-    ...(state.peer != null ? { peer: state.peer } : {}),
-  }, null, 2);
-}
-
-export function guessPreStageModels(models, byFolder) {
-  const lists = {
-    model: byFolder?.diffusion_models ?? [], turbo_model: byFolder?.diffusion_models ?? [],
-    uncond_model: byFolder?.diffusion_models ?? [],
-    clip: byFolder?.text_encoders ?? [], vae: byFolder?.vae ?? [],
-  };
-  let changed = false;
-  for (const arch of PRESTAGE_IMAGE_ARCHES) {
-    for (const field of PRESTAGE_FIELDS[arch]) {
-      if (models[arch][field]) continue;
-      const needles = PRESTAGE_HINTS[arch][field];
-      let matched = lists[field].filter((name) =>
-        needles.some((needle) => name.toLowerCase().includes(needle)));
-      if (field === "model" && arch === "ideogram4") {
-        matched = matched.filter((name) => !name.toLowerCase().includes("unconditional"));
-      }
-      if (matched.length !== 1) continue;
-      models[arch][field] = matched[0];
-      changed = true;
-    }
-  }
-  return changed;
-}
-
-export function resolvedPreStage(state, initSize = null) {
-  let ratio = PRESTAGE_ASPECTS.find(([label]) => label === state.aspect)?.[1] ?? 16 / 9;
-  let fromImage = false;
-  if (state.init && initSize?.width && initSize?.height) {
-    ratio = initSize.width / initSize.height;
-    fromImage = true;
-  }
-  ratio = Math.min(PRESTAGE_MAX_RATIO, Math.max(PRESTAGE_MIN_RATIO, ratio));
-  const edge = Math.max(PRESTAGE_MIN_EDGE, Math.min(PRESTAGE_MAX_EDGE, Math.round(state.short_edge || PRESTAGE_DEFAULT_EDGE)));
-
-  let width, height;
-  if (ratio >= 1) { width = edge * ratio; height = edge; }
-  else { width = edge; height = edge / ratio; }
-  if (width * height > PRESTAGE_MAX_PIXELS) {
-    const scale = Math.sqrt(PRESTAGE_MAX_PIXELS / (width * height));
-    width *= scale;
-    height *= scale;
-  }
-  if (Math.max(width, height) > PRESTAGE_MAX_EDGE) {
-    const scale = PRESTAGE_MAX_EDGE / Math.max(width, height);
-    width *= scale;
-    height *= scale;
-  }
-  const snap16 = (v) => Math.max(PRESTAGE_CANVAS_MULTIPLE,
-    Math.floor(v / PRESTAGE_CANVAS_MULTIPLE + 0.5) * PRESTAGE_CANVAS_MULTIPLE);
-  width = snap16(width);
-  height = snap16(height);
-  while (width * height > PRESTAGE_MAX_PIXELS && Math.max(width, height) > PRESTAGE_CANVAS_MULTIPLE) {
-    if (width >= height) width -= PRESTAGE_CANVAS_MULTIPLE;
-    else height -= PRESTAGE_CANVAS_MULTIPLE;
-  }
-  return { width, height, ratio, fromImage };
-}
-
-export function nextPreStageHandle(state) {
-  const taken = new Set((state.refs || []).map((r) => r.handle));
-  for (let n = 1; ; n += 1) {
-    const handle = `img-${n}`;
-    if (!taken.has(handle)) return handle;
-  }
-}
-
-export function missingPreStageModels(state) {
-  const side = state.models[state.arch] ?? {};
-  const dit = state.arch === "krea2" && state.turbo.on ? "turbo_model" : "model";
-  return [dit, "clip", "vae"].filter((field) => !side[field]);
-}
+export const continues = (state) => state?.continue === true;
+export const continuesAudio = (state) => state?.continue_audio === true;
+export const isLocked = (segment) => segment?.locked === true && Boolean(segment?.cached_video);
 
 const TAG_OFFSET = { img: 0, vid: 1, aud: 2 };
 export function tagIndex(handle) {
@@ -851,15 +591,20 @@ export function nextHandle(state, kind) {
   }
 }
 
-const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+export function nextPoolHandle(timeline) {
+  const taken = new Set((timeline.assets ?? []).map((a) => a.handle));
+  for (let n = 1; ; n += 1) {
+    const handle = `ref-${n}`;
+    if (!taken.has(handle)) return handle;
+  }
+}
 
+const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 export function loraModes(entry) {
   const claimed = (entry.modes || []).filter((m) => CHECKPOINTS.includes(m));
   return claimed.length ? claimed : [...CHECKPOINTS];
 }
-
 export const claimsBoth = (entry) => loraModes(entry).length === CHECKPOINTS.length;
-
 export const derivedCheckpoint = (state) => (hasReferences(state) ? "ref2va" : "fl2va");
 
 export function checkpoint(state) {
@@ -868,7 +613,6 @@ export function checkpoint(state) {
 }
 
 export const checkpointPinned = (state) => canPinCheckpoint(state) && state.checkpoint !== "auto";
-
 export const canPinCheckpoint = (state) => derivedCheckpoint(state) === "fl2va";
 
 export function normalizeCheckpoint(state) {
@@ -882,7 +626,6 @@ export function refinedBody(state) {
 }
 
 export const findLora = (state, name) => (state.loras || []).find((l) => l.name === name) || null;
-
 export function activeLoras(state) {
   const target = checkpoint(state);
   return (state.loras || []).filter((entry) =>
@@ -894,14 +637,18 @@ export function addLora(state, name, triggers = [], strength = null) {
   const preferred = Number(strength);
   const entry = {
     name,
-    strength: Number.isFinite(preferred) && preferred >= -1 && preferred <= 2
-      ? preferred : DEFAULT_STRENGTH,
+    strength: Number.isFinite(preferred) && preferred >= -1 && preferred <= 2 ? preferred : DEFAULT_STRENGTH,
     enabled: true,
-    modes: [...CHECKPOINTS], triggers: [...triggers],
+    modes: [...CHECKPOINTS],
+    triggers: [...triggers],
   };
   state.loras = state.loras || [];
   state.loras.push(entry);
   return entry;
+}
+
+export function removeLora(state, name) {
+  state.loras = (state.loras || []).filter((entry) => entry.name !== name);
 }
 
 export function promptTriggers(state) {
@@ -918,6 +665,13 @@ export function promptTriggers(state) {
   return out;
 }
 
+export function activeGlobalLoras(timeline) {
+  const targets = timelineCheckpoints(timeline);
+  return (timeline.loras ?? []).filter((entry) =>
+    entry.enabled !== false && round2(entry.strength) !== 0
+    && loraModes(entry).some((mode) => targets.includes(mode)));
+}
+
 export function timelineCheckpoints(timeline) {
   if (isSingle(timeline)) {
     if ((timeline.segments || []).some(hasReferences)) return ["ref2va"];
@@ -928,69 +682,14 @@ export function timelineCheckpoints(timeline) {
   return CHECKPOINTS.filter((name) => routed.has(name));
 }
 
-export function singleMode(timeline) {
-  const shots = timeline.segments || [];
-  if (shots.some(hasReferences)) return "REF2VA";
-  const first = frameAsset(shots[0] ?? { assets: [] }, "first_frame");
-  const last = frameAsset(shots[shots.length - 1] ?? { assets: [] }, "last_frame");
-  if (first && last) return "FL2VA";
-  if (first) return "I2VA";
-  if (last) return "L2VA";
-  return "T2VA";
-}
-
-export function singleProblem(timeline) {
-  const shots = timeline.segments || [];
-  const globalPrompt = (timeline.prompt || "").trim();
-
-  for (const [index, shot] of shots.entries()) {
-    const text = (refinedBody(shot) || shot.prompt || "").trim();
-    if (!text && !(index === 0 && globalPrompt)) {
-      return t("Shot {shot} has no prompt. In one pass the shots are one description "
-             + "with cuts in it, so an empty one leaves a cut with nothing on the far side.",
-             { shot: index + 1 });
-    }
-    if (frameAsset(shot, "first_frame") && index !== 0) {
-      return t("Shot {shot} has a start frame, but one pass opens on shot 1.", { shot: index + 1 });
-    }
-    if (frameAsset(shot, "last_frame") && index !== shots.length - 1) {
-      return t("Shot {shot} has an end frame, but one pass ends on shot {last}.",
-               { shot: index + 1, last: shots.length });
-    }
-  }
-
-  const withRefs = shots.findIndex(hasReferences);
-  const withFrames = shots.findIndex((s) => frameAsset(s, "first_frame") || frameAsset(s, "last_frame"));
-  if (withRefs >= 0 && withFrames >= 0) {
-    return t("Shot {frames} has a start/end frame and shot {refs} has references. "
-           + "Those are different checkpoints and one pass runs on one of them.",
-           { frames: withFrames + 1, refs: withRefs + 1 });
-  }
-
-  for (const [key, what] of [["checkpoint", "the checkpoint"], ["soundscape", "the soundscape"],
-                             ["music", "the music"]]) {
-    const seen = new Set(shots
-      .map((shot) => (key === "checkpoint" ? shot.checkpoint : (shot[key] || "").trim()))
-      .filter((value) => value && value !== "auto"));
-    if (key !== "checkpoint" && (timeline[key] || "").trim()) seen.add((timeline[key] || "").trim());
-    if (seen.size > 1) return t("The shots disagree about {what}. One pass has only one.", { what: t(what) });
-  }
-  return null;
-}
-
-export function activeGlobalLoras(timeline) {
-  const targets = timelineCheckpoints(timeline);
-  return (timeline.loras ?? []).filter((entry) =>
-    entry.enabled !== false && round2(entry.strength) !== 0
-    && loraModes(entry).some((mode) => targets.includes(mode)));
-}
-
-export function removeLora(state, name) {
-  state.loras = (state.loras || []).filter((entry) => entry.name !== name);
-}
+export const references = (state) => (state.assets || []).filter((a) => a.role === "reference");
+export const refImages = (state) => references(state).filter((a) => a.kind === "image");
+export const soundOnly = (asset) => asset.kind === "video" && asset.track === "sound";
+export const refVideos = (state) => references(state).filter((a) => a.kind === "video" && !soundOnly(a));
+export const refAudios = (state) => references(state).filter((a) => a.kind === "audio" || soundOnly(a));
+export const frameAsset = (state, role) => (state.assets || []).find((a) => a.role === role) || null;
 
 export const HANDLE_RE = /@([A-Za-z]+-\d+)/g;
-
 function citedHandles(texts) {
   const found = new Set();
   for (const text of texts) {
@@ -1001,9 +700,12 @@ function citedHandles(texts) {
 
 function poolTexts(state, { own = false } = {}) {
   const global_ = (own ? null : state.globalTexts) ?? {};
-  const texts = [state.prompt ?? "", global_.prompt ?? "",
-                 state.soundscape || global_.soundscape || "",
-                 state.music || global_.music || ""];
+  const texts = [
+    state.prompt ?? "",
+    global_.prompt ?? "",
+    state.soundscape || global_.soundscape || "",
+    state.music || global_.music || "",
+  ];
   if (state.refined && state.refined.enabled !== false) {
     texts.push(state.refined.body ?? "");
     for (const text of Object.values(state.refined.sections ?? {})) texts.push(text ?? "");
@@ -1019,76 +721,12 @@ export function citedPool(state) {
   return pool.filter((asset) => found.has(asset.handle) && !own.has(asset.handle));
 }
 
-export function citedPoolOwn(state) {
-  const found = citedHandles(poolTexts(state, { own: true }));
-  return citedPool(state).filter((asset) => found.has(asset.handle));
-}
-
-export function poolCitedGlobally(timeline, asset) {
-  return citedHandles([timeline.prompt, timeline.soundscape, timeline.music])
-    .has(asset.handle);
-}
-
-export function poolCitations(timeline, asset) {
-  return (timeline.segments || [])
-    .map((segment, index) => (citedPool(segment).includes(asset) ? index + 1 : null))
-    .filter((n) => n !== null);
-}
-
-export function nextPoolHandle(timeline) {
-  const taken = new Set((timeline.assets ?? []).map((a) => a.handle));
-  for (let n = 1; ; n += 1) {
-    const handle = `ref-${n}`;
-    if (!taken.has(handle)) return handle;
-  }
-}
-
-export const references = (state) => (state.assets || []).filter((a) => a.role === "reference");
-export const refImages = (state) => references(state).filter((a) => a.kind === "image");
-export const soundOnly = (asset) => asset.kind === "video" && asset.track === "sound";
-export const refVideos = (state) => references(state).filter((a) => a.kind === "video" && !soundOnly(a));
-export const refAudios = (state) => references(state).filter((a) => a.kind === "audio" || soundOnly(a));
-export const frameAsset = (state, role) => (state.assets || []).find((a) => a.role === role) || null;
-
 export function hasReferences(state) {
   return references(state).length > 0 || citedPool(state).length > 0;
 }
 
-export const continues = (state) => state?.continue === true;
-
-export const FEATHER_GRID = [1, 5, 22, 39];
-
-export function feather(segment) {
-  return FEATHER_GRID.includes(segment?.feather) && segment.feather > 1 ? segment.feather : 1;
-}
-
-export function maxFeather(segment) {
-  const frames = framesForSeconds(segment?.duration_s || 6);
-  return FEATHER_GRID.filter((f) => 2 * f <= frames).pop() ?? 1;
-}
-
-export function continueSource(segment, index) {
-  const from = segment?.continue_from;
-  return Number.isInteger(from) && from >= 1 && from < index ? from : index;
-}
-
-export function remapContinueFrom(timeline, map) {
-  for (const segment of (timeline.segments || [])) {
-    if (!Number.isInteger(segment.continue_from)) continue;
-    const next = map(segment.continue_from);
-    if (Number.isInteger(next) && next >= 1) segment.continue_from = next;
-    else delete segment.continue_from;
-  }
-}
-
-export const continuesAudio = (state) => state?.continue_audio === true;
-
 export function frameFile(state) {
   return !!(frameAsset(state, "first_frame") || frameAsset(state, "last_frame"));
-}
-
-export function isLocked(segment) {
-  return segment?.locked === true && Boolean(segment?.cached_video);
 }
 
 export function mode(state) {
@@ -1105,8 +743,7 @@ export function mode(state) {
 function counts(state) {
   const images = refImages(state).length;
   const videos = refVideos(state).length;
-  const audios = refAudios(state).length
-    + refVideos(state).filter((v) => v.track === "picture+sound").length;
+  const audios = refAudios(state).length + refVideos(state).filter((v) => v.track === "picture+sound").length;
   return { image: images, video: videos, audio: audios, files: images + videos + audios };
 }
 
@@ -1120,9 +757,7 @@ export function overflow(state) {
   const used = counts(state);
   if (used.image > MAX_REF_IMAGES) return t("At most {max} reference images.", { max: MAX_REF_IMAGES });
   if (used.video > MAX_REF_VIDEOS) return t("At most {max} reference videos.", { max: MAX_REF_VIDEOS });
-  if (used.audio > MAX_REF_AUDIOS) {
-    return t("At most {max} reference audio clips, counting video soundtracks.", { max: MAX_REF_AUDIOS });
-  }
+  if (used.audio > MAX_REF_AUDIOS) return t("At most {max} reference audio clips.", { max: MAX_REF_AUDIOS });
   if (used.files > MAX_REF_FILES) return t("At most {max} reference files in total.", { max: MAX_REF_FILES });
   return null;
 }
@@ -1141,28 +776,188 @@ export function resolved(state, keyframeSize = null) {
 
 export function blockedReason(state, action) {
   if (action === "reference" && frameFile(state)) {
-    return t("Remove the start/end frame first — references use the Ref2VA checkpoint, frames use FL2VA.");
+    return t("Remove start/end frame first — references use Ref2VA, frames use FL2VA.");
   }
   if (action === "first_frame" && continues(state)) {
-    return t("This segment's start frame is an earlier segment's last frame. Turn continuation off to choose one.");
+    return t("This segment starts from previous segment's last frame. Turn continuation off to choose one.");
   }
   if ((action === "first_frame" || action === "last_frame") && hasReferences(state)) {
-    if (references(state).length) {
-      return t("Remove the references first — start/end frames use the FL2VA checkpoint, references use Ref2VA.");
-    }
-    const own = citedPoolOwn(state);
-    if (own.length) {
-      return t("This segment cites a piece reference ({handles}) — edit the mention out first: "
-        + "start/end frames use the FL2VA checkpoint, references use Ref2VA.",
-          { handles: own.map((a) => `@${a.handle}`).join(", ") });
-    }
-    return t("The global prompt cites {handles}, which rides into every segment — edit the "
-      + "mention out of the global prompt to use start/end frames here.",
-        { handles: citedPool(state).map((a) => `@${a.handle}`).join(", ") });
+    return t("Remove references first — start/end frames use FL2VA, references use Ref2VA.");
   }
   if (action === "continue" && frameAsset(state, "first_frame")) {
-    return t("Remove this segment's start frame first — continuing would replace it with the source "
-           + "segment's last frame.");
+    return t("Remove start frame first — continuing replaces it with previous segment's tail.");
   }
   return null;
+}
+
+// ---- PreStage image model constants & helpers --------------------------------
+
+export const PRESTAGE_ARCHES = ["krea2", "ideogram4", "minimax"];
+export const PRESTAGE_ARCH_LABEL = {
+  krea2: "Krea 2",
+  ideogram4: "Ideogram 4.0",
+  minimax: "MiniMax H3",
+};
+
+export const PRESTAGE_ASPECTS = [
+  ["21:9", 21 / 9], ["16:9", 16 / 9], ["3:2", 3 / 2], ["4:3", 4 / 3],
+  ["1:1", 1], ["3:4", 3 / 4], ["2:3", 2 / 3], ["9:16", 9 / 16],
+];
+
+export const PRESTAGE_MIN_EDGE = 512;
+export const PRESTAGE_MAX_EDGE = 2048;
+export const PRESTAGE_DEFAULT_EDGE = 1024;
+export const PRESTAGE_CANVAS_MULTIPLE = 16;
+export const PRESTAGE_MAX_PIXELS = 2048 * 2048;
+
+export const PRESTAGE_MAX_REFS = 3;
+export const PRESTAGE_DEFAULT_DENOISE = 0.65;
+export const PRESTAGE_MIN_DENOISE = 0.05;
+
+export const PRESTAGE_TURBO_QUALITIES = ["draft", "medium", "good"];
+export const PRESTAGE_TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
+export const PRESTAGE_KREA_RAW = { steps: 52, cfg: 3.5, sampler_name: "euler", scheduler: "simple" };
+export const PRESTAGE_KREA_TURBO = { cfg: 1.0, sampler_name: "euler", scheduler: "simple" };
+
+export const PRESTAGE_IDEOGRAM_QUALITIES = ["quality", "default", "turbo"];
+export const PRESTAGE_IDEOGRAM_STEPS = { quality: 48, default: 20, turbo: 12 };
+export const PRESTAGE_IDEOGRAM_ROW = { cfg: 7.0, sampler_name: "euler" };
+
+export const PRESTAGE_STILL_LENGTHS = [5, 22, 39, 56, 90, 124];
+export const PRESTAGE_STILL_ROW = { steps: 20, cfg: 1.0, sampler_name: "res_multistep", scheduler: "simple" };
+
+export const stillLatentFrames = (frames) => (frames <= 5 ? 2 : Math.floor((frames - 5) / 17) * 5 + 2);
+export const isStill = (state) => state?.arch === "minimax";
+
+export const PRESTAGE_FIELDS = {
+  krea2: ["model", "turbo_model", "clip", "vae"],
+  ideogram4: ["model", "uncond_model", "clip", "vae"],
+};
+
+export const PRESTAGE_FIELD_LABEL = {
+  model: "Model checkpoint",
+  turbo_model: "Turbo checkpoint",
+  uncond_model: "Unconditional model",
+  clip: "Text encoder",
+  vae: "VAE",
+};
+
+export const PRESTAGE_FIELD_HINT = {
+  krea2: {
+    model: "Krea 2 RAW — the full 12.9B base DiT. Used when Turbo is off.",
+    turbo_model: "Krea 2 Turbo — the 8-step distilled checkpoint. Used when Turbo is on.",
+    clip: "Qwen3-VL-4B or 8B. Loaded as CLIPLoader type 'krea2'.",
+    vae: "Qwen Image VAE — decodes the 16-channel latent into pixels.",
+  },
+  ideogram4: {
+    model: "Ideogram 4.0 DiT — the conditional branch.",
+    uncond_model: "Ideogram 4.0 unconditional branch checkpoint.",
+    clip: "Qwen3-VL-8B. Loaded as CLIPLoader type 'ideogram4'.",
+    vae: "Flux/SD3 16-channel VAE.",
+  },
+};
+
+export function emptyPreStageModels() {
+  return {
+    krea2: { model: "", turbo_model: "", clip: "", vae: "" },
+    ideogram4: { model: "", uncond_model: "", clip: "", vae: "" },
+    dtype: "default",
+  };
+}
+
+export function emptyPreStage() {
+  return {
+    version: 1,
+    arch: "krea2",
+    prompt: "",
+    aspect: "16:9",
+    short_edge: PRESTAGE_DEFAULT_EDGE,
+    init: null,
+    refs: [],
+    loras: [],
+    turbo: { on: false, quality: "good", saved: null },
+    quality: "default",
+    minimax: {
+      frames: 5,
+      latent_index: 0,
+      request: emptyState(),
+    },
+    models: emptyPreStageModels(),
+    peer: null,
+  };
+}
+
+export function parsePreStage(raw) {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === "object") {
+      const state = { ...emptyPreStage(), ...parsed };
+      if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
+      if (!Array.isArray(state.refs)) state.refs = [];
+      if (!Array.isArray(state.loras)) state.loras = [];
+      if (!state.turbo || typeof state.turbo !== "object") state.turbo = emptyPreStage().turbo;
+      if (!state.minimax || typeof state.minimax !== "object") state.minimax = emptyPreStage().minimax;
+      state.minimax.request = parseState(JSON.stringify(state.minimax.request ?? {}));
+      state.models = { ...emptyPreStageModels(), ...(state.models || {}) };
+      return state;
+    }
+  } catch {}
+  return emptyPreStage();
+}
+
+export function serializePreStage(state) {
+  return JSON.stringify(state, null, 2);
+}
+
+export function nextPreStageHandle(state) {
+  const taken = new Set((state.refs || []).map((r) => r.handle));
+  for (let n = 1; ; n += 1) {
+    const handle = `style-${n}`;
+    if (!taken.has(handle)) return handle;
+  }
+}
+
+export function missingPreStageModels(state) {
+  const fields = PRESTAGE_FIELDS[state.arch] || [];
+  const side = state.models?.[state.arch] || {};
+  return fields.filter((f) => !side[f]);
+}
+
+export function guessPreStageModels(models, byFolder) {
+  let changed = false;
+  for (const arch of ["krea2", "ideogram4"]) {
+    const side = models[arch] || {};
+    const unets = byFolder.diffusion_models || [];
+    const clips = byFolder.text_encoders || [];
+    const vaes = byFolder.vae || [];
+
+    if (!side.model) {
+      const hit = unets.find((n) => n.toLowerCase().includes(arch));
+      if (hit) { side.model = hit; changed = true; }
+    }
+    if (arch === "krea2" && !side.turbo_model) {
+      const hit = unets.find((n) => n.toLowerCase().includes("krea") && n.toLowerCase().includes("turbo"));
+      if (hit) { side.turbo_model = hit; changed = true; }
+    }
+    if (!side.clip) {
+      const hit = clips.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes(arch));
+      if (hit) { side.clip = hit; changed = true; }
+    }
+    if (!side.vae) {
+      const hit = vaes.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes("flux") || n.toLowerCase().includes("sd3"));
+      if (hit) { side.vae = hit; changed = true; }
+    }
+  }
+  return changed;
+}
+
+export function resolvedPreStage(state, initSize = null) {
+  let ratio = PRESTAGE_ASPECTS.find(([label]) => label === state.aspect)?.[1] ?? 16 / 9;
+  let fromImage = false;
+  if (initSize && initSize.width && initSize.height) {
+    ratio = initSize.width / initSize.height;
+    fromImage = true;
+  }
+  const [width, height] = resolveCanvas(ratio, state.short_edge || PRESTAGE_DEFAULT_EDGE);
+  return { width, height, ratio, fromImage };
 }

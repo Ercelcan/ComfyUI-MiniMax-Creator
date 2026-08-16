@@ -1,9 +1,155 @@
-// Self-contained dictionary mapping.
+// Self-contained dictionary mapping for MiniMax Creator & NLE Studio.
 // Falls back cleanly to English verbatim strings if a translation is absent.
 
-const ja = {};
-const ko = {};
-const zh = {};
+const ja = {
+  "STUDIO": "スタジオ",
+  "GLOBAL SCENE & STYLE PROMPT": "全体シーン＆スタイルプロンプト",
+  "GLOBAL PIECE BIBLE (CAST & REFS)": "全体リファレンス・キャスト設定",
+  "Project Bible & Scene": "全体設定＆シーン",
+  "Shot {n} Inspector": "ショット {n} インスペクタ",
+  "SHOT {n} INSPECTOR ({dur}s)": "ショット {n} インスペクタ ({dur}秒)",
+  "Describe action, characters and dialogue for Shot {n}...": "ショット {n} のアクション、登場人物、セリフを記述...",
+  "Audio Gain:": "音量ゲイン:",
+  "Transition:": "トランジション:",
+  "Ducking: On": "ダッキング: 有効",
+  "Ducking: Off": "ダッキング: 無効",
+  "+ Song": "+ 楽曲",
+  "+ Ref": "+ 参照",
+  "Clean Cache": "キャッシュ消去",
+  "Settings": "設定",
+  "Gallery": "ギャラリー",
+  "Preview": "プレビュー",
+  "Export NLE": "NLE書き出し",
+  "Revert All": "すべて元に戻す",
+  "Refine All": "すべてAI最適化",
+  "GENERATE": "生成実行",
+  "Download": "ダウンロード",
+  "Grab": "フレーム取得",
+  "Loop": "ループ",
+  "Split": "分割 (S)",
+  "Cached": "キャッシュ済",
+  "Sampling": "サンプリング中",
+  "Seam Transition Preset": "シームトランジションプリセット",
+  "Lossless Latent Mask (39f / 1.62s — Recommended)": "可逆潜在マスク (39f / 1.62秒 — 推奨)",
+  "Fast Latent Mask (22f / 0.91s)": "高速潜在マスク (22f / 0.91秒)",
+  "Keyframe Motion Blend (Decoded Still)": "キーフレームモーションブレンド (静止画)",
+  "Hard Cut + Sound Carryover": "ハードカット + 音声継続",
+  "Hard Scene Cut (Full Scene Reset)": "完全シーン切り替え (完全リセット)",
+  "Shot {n}/{total}": "ショット {n}/{total}",
+  "Timeline export failed ({status})": "タイムラインの書き出しに失敗しました ({status})",
+  "CMX 3600 EDL (.edl)": "CMX 3600 EDL (.edl)",
+  "Final Cut Pro 7 XML (.xml)": "Final Cut Pro 7 XML (.xml)",
+  "Play / Pause (Space)": "再生 / 一時停止 (Space)",
+  "Jump to Start (|<)": "先頭へ移動 (|<)",
+  "Rewind / Step Back (J / <)": "早戻し / コマ戻し (J / <)",
+  "Fast Forward / Step Forward (L / >)": "早送り / コマ送り (L / >)",
+  "Jump to End (>|)": "末尾へ移動 (>|)",
+  "Set Mark In ([)": "イン点設定 ([)",
+  "Set Mark Out (])": "アウト点設定 (])",
+  "Razor Split at Playhead (S)": "再生ヘッドで分割 (S)",
+  "Undo (Ctrl+Z)": "元に戻す (Ctrl+Z)",
+  "Redo (Ctrl+Y)": "やり直す (Ctrl+Y)",
+};
+
+const ko = {
+  "STUDIO": "스튜디오",
+  "GLOBAL SCENE & STYLE PROMPT": "글로벌 장면 & 스타일 프롬프트",
+  "GLOBAL PIECE BIBLE (CAST & REFS)": "글로벌 참조 및 인물 설정",
+  "Project Bible & Scene": "프로젝트 설정 & 장면",
+  "Shot {n} Inspector": "샷 {n} 인스펙터",
+  "SHOT {n} INSPECTOR ({dur}s)": "샷 {n} 인스펙터 ({dur}초)",
+  "Describe action, characters and dialogue for Shot {n}...": "샷 {n} 의 동작, 인물 및 대사를 입력하세요...",
+  "Audio Gain:": "오디오 게인:",
+  "Transition:": "전환 효과:",
+  "Ducking: On": "더킹: 켜짐",
+  "Ducking: Off": "더킹: 꺼짐",
+  "+ Song": "+ 곡 추가",
+  "+ Ref": "+ 참조",
+  "Clean Cache": "캐시 정리",
+  "Settings": "설정",
+  "Gallery": "갤러리",
+  "Preview": "미리보기",
+  "Export NLE": "NLE 내보내기",
+  "Revert All": "모두 되돌리기",
+  "Refine All": "모두 AI 최적화",
+  "GENERATE": "생성",
+  "Download": "다운로드",
+  "Grab": "프레임 캡처",
+  "Loop": "반복",
+  "Split": "자르기 (S)",
+  "Cached": "캐시됨",
+  "Sampling": "생성 중",
+  "Seam Transition Preset": "전환 효과 프리셋",
+  "Lossless Latent Mask (39f / 1.62s — Recommended)": "무손실 잠재 마스크 (39f / 1.62초 — 권장)",
+  "Fast Latent Mask (22f / 0.91s)": "고속 잠재 마스크 (22f / 0.91초)",
+  "Keyframe Motion Blend (Decoded Still)": "키프레임 모션 블렌드",
+  "Hard Cut + Sound Carryover": "하드 컷 + 오디오 유지",
+  "Hard Scene Cut (Full Scene Reset)": "하드 씬 컷 (전체 전환)",
+  "Shot {n}/{total}": "샷 {n}/{total}",
+  "Timeline export failed ({status})": "타임라인 내보내기 실패 ({status})",
+  "CMX 3600 EDL (.edl)": "CMX 3600 EDL (.edl)",
+  "Final Cut Pro 7 XML (.xml)": "Final Cut Pro 7 XML (.xml)",
+  "Play / Pause (Space)": "재생 / 일시정지 (Space)",
+  "Jump to Start (|<)": "처음으로 (|<)",
+  "Rewind / Step Back (J / <)": "되감기 / 1프레임 뒤로 (J / <)",
+  "Fast Forward / Step Forward (L / >)": "빨리감기 / 1프레임 앞으로 (L / >)",
+  "Jump to End (>|)": "끝으로 (>|)",
+  "Set Mark In ([)": "인점 설정 ([)",
+  "Set Mark Out (])": "아웃점 설정 (])",
+  "Razor Split at Playhead (S)": "현재 위치 자르기 (S)",
+  "Undo (Ctrl+Z)": "실행 취소 (Ctrl+Z)",
+  "Redo (Ctrl+Y)": "다시 실행 (Ctrl+Y)",
+};
+
+const zh = {
+  "STUDIO": "工作台",
+  "GLOBAL SCENE & STYLE PROMPT": "全局场景与风格提示词",
+  "GLOBAL PIECE BIBLE (CAST & REFS)": "全局角色与参考库 (Bible)",
+  "Project Bible & Scene": "项目设定与场景",
+  "Shot {n} Inspector": "镜头 {n} 检视器",
+  "SHOT {n} INSPECTOR ({dur}s)": "镜头 {n} 检视器 ({dur}秒)",
+  "Describe action, characters and dialogue for Shot {n}...": "输入镜头 {n} 的动作、人物与对白...",
+  "Audio Gain:": "音频增益:",
+  "Transition:": "转场方式:",
+  "Ducking: On": "闪避: 开启",
+  "Ducking: Off": "闪避: 关闭",
+  "+ Song": "+ 主音轨",
+  "+ Ref": "+ 参考",
+  "Clean Cache": "清理缓存",
+  "Settings": "设置",
+  "Gallery": "图库",
+  "Preview": "预览",
+  "Export NLE": "导出剪辑工程",
+  "Revert All": "全部还原",
+  "Refine All": "全部AI润色",
+  "GENERATE": "立即生成",
+  "Download": "下载",
+  "Grab": "捕获帧",
+  "Loop": "循环",
+  "Split": "分割 (S)",
+  "Cached": "已缓存",
+  "Sampling": "采样中",
+  "Seam Transition Preset": "镜头转场衔接预设",
+  "Lossless Latent Mask (39f / 1.62s — Recommended)": "无损潜空间掩码 (39帧 / 1.62秒 — 推荐)",
+  "Fast Latent Mask (22f / 0.91s)": "快速潜空间掩码 (22帧 / 0.91秒)",
+  "Keyframe Motion Blend (Decoded Still)": "关键帧运动混合 (静态帧)",
+  "Hard Cut + Sound Carryover": "硬切 + 声音延续",
+  "Hard Scene Cut (Full Scene Reset)": "完全转场 (场景重置)",
+  "Shot {n}/{total}": "镜头 {n}/{total}",
+  "Timeline export failed ({status})": "时间线导出失败 ({status})",
+  "CMX 3600 EDL (.edl)": "CMX 3600 EDL (.edl)",
+  "Final Cut Pro 7 XML (.xml)": "Final Cut Pro 7 XML (.xml)",
+  "Play / Pause (Space)": "播放 / 暂停 (空格)",
+  "Jump to Start (|<)": "跳至开头 (|<)",
+  "Rewind / Step Back (J / <)": "倒带 / 后退一帧 (J / <)",
+  "Fast Forward / Step Forward (L / >)": "快进 / 前进一步 (L / >)",
+  "Jump to End (>|)": "跳至结尾 (>|)",
+  "Set Mark In ([)": "入点标记 ([)",
+  "Set Mark Out (])": "出点标记 (])",
+  "Razor Split at Playhead (S)": "指针处裁切 (S)",
+  "Undo (Ctrl+Z)": "撤销 (Ctrl+Z)",
+  "Redo (Ctrl+Y)": "重做 (Ctrl+Y)",
+};
 
 const DICTIONARIES = {
   ja,
@@ -15,9 +161,6 @@ const DICTIONARIES = {
   "ko-KR": ko,
 };
 
-/**
- * Gets the current locale dictionary from ComfyUI settings or browser language.
- */
 function dictionary() {
   let locale;
   try {
@@ -29,13 +172,6 @@ function dictionary() {
   return DICTIONARIES[locale] ?? DICTIONARIES[locale.split("-")[0]] ?? null;
 }
 
-/**
- * Translation helper that interpolates {param} tags.
- * Falls back to the English key text if no translation entry exists.
- *
- * @param {string} text The source text / dictionary key.
- * @param {object} [params] Parameters to replace inside {slot} placeholders.
- */
 export function t(text, params) {
   if (!text) return "";
   const translated = dictionary()?.[text] ?? text;

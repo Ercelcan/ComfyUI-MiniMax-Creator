@@ -1,4 +1,4 @@
-import { el, icon, floatAbove, mountOverlay, dismissable, placeNear } from "./dom.js";
+import { el, icon, floatAbove, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { listAssets, viewUrl } from "./api.js";
 import { tagIndex } from "./state.js";
@@ -69,6 +69,9 @@ export class PromptBox {
       class: "mmc-prompt",
       contenteditable: "true",
       spellcheck: "false",
+      autocorrect: "off",
+      autocapitalize: "off",
+      autocomplete: "off",
       role: "textbox",
       "aria-multiline": "true",
       "data-placeholder": t("Describe your video, use @ to reference images, videos, audio, or elements"),

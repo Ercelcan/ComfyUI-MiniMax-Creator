@@ -4,6 +4,58 @@ export const css = `
   stroke-linecap: round; stroke-linejoin: round;
 }
 
+/* Micro-Toolbar for Shot Inspector */
+.mmc-editor-compact .mmc-panel {
+  padding: 8px 10px 8px;
+  min-height: 120px;
+  border-radius: 12px;
+}
+.mmc-editor-compact .mmc-prompt {
+  min-height: 52px;
+  font-size: 13px;
+  line-height: 1.45;
+  padding: 4px;
+}
+.mmc-editor-compact .mmc-pills {
+  padding-top: 6px;
+  gap: 4px;
+}
+
+.mmc-micro-toolbar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+  padding: 0 0 4px;
+}
+.mmc-micro-tool {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 3px 8px;
+  border-radius: 6px;
+  background: var(--mmc-surface-2, #262626);
+  border: 1px solid var(--mmc-line, rgba(255,255,255,0.09));
+  color: var(--mmc-dim, #8b8b8b);
+  font-size: 11px;
+  font-family: inherit;
+  cursor: pointer;
+  transition: all .12s ease;
+}
+.mmc-micro-tool:hover {
+  background: var(--mmc-surface-3, #2f2f2f);
+  color: #fff;
+  border-color: rgba(255,255,255,0.2);
+}
+.mmc-micro-refine {
+  color: var(--mmc-accent, #f0a63c);
+  border-color: rgba(240,166,60,0.3);
+}
+.mmc-micro-refine:hover {
+  color: #f5b85c;
+  border-color: rgba(240,166,60,0.6);
+}
+
 .mmc-rail {
   display: flex; gap: 8px 16px; flex-wrap: wrap; justify-content: space-between; flex-shrink: 0;
 }
@@ -229,15 +281,15 @@ export const css = `
 }
 .mmc-mention-empty { color: #7d7d7d; font-size: 13px; padding: 14px 10px; }
 
-/* --- Core Pill Row & Individual Pill Aesthetics --- */
+/* Pills */
 .mmc-pills {
   display: flex; gap: 6px; align-items: center; flex-wrap: wrap; flex-shrink: 0;
   padding-top: 8px; border-top: 1px solid var(--mmc-line); margin-top: auto;
 }
 .mmc-pill {
-  display: inline-flex; align-items: center; gap: 6px; height: 34px; padding: 0 12px;
-  border-radius: 17px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
-  color: var(--mmc-text); font-size: 12px; font-family: inherit; cursor: pointer;
+  display: inline-flex; align-items: center; gap: 6px; height: 32px; padding: 0 10px;
+  border-radius: 16px; background: var(--mmc-surface-2); border: 1px solid var(--mmc-line);
+  color: var(--mmc-text); font-size: 11.5px; font-family: inherit; cursor: pointer;
   white-space: nowrap; transition: background .12s ease, border-color .12s ease, color .12s ease;
   max-width: 100%; box-sizing: border-box;
 }
@@ -246,59 +298,53 @@ export const css = `
 .mmc-pill.on { border-color: var(--mmc-accent); color: var(--mmc-accent); }
 .mmc-pill.accel-on { border-color: rgba(110,190,255,.45); color: #6ebeff; }
 .mmc-pill.accel-on:hover:not(:disabled) { border-color: rgba(110,190,255,.7); }
-.mmc-pill svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
+.mmc-pill svg { width: 14px; height: 14px; stroke: currentColor; fill: none;
   stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
-.mmc-pill-sub { color: var(--mmc-dim); font-size: 10.5px; }
+.mmc-pill-sub { color: var(--mmc-dim); font-size: 10px; }
 
-/* Grouped Stepper Pills (- / val / +) */
 .mmc-pill-group { gap: 0; padding: 0 4px; }
 .mmc-step {
   background: none; border: 0; color: var(--mmc-text); cursor: pointer;
-  font-size: 15px; width: 24px; height: 32px; font-family: inherit;
+  font-size: 14px; width: 22px; height: 30px; font-family: inherit;
   display: inline-flex; align-items: center; justify-content: center;
 }
 .mmc-step:hover { color: #fff; }
 .mmc-step:disabled { color: var(--mmc-off); cursor: not-allowed; }
 
-/* Seed Pill Components */
 .mmc-seed-dice {
   display: inline-flex; align-items: center; justify-content: center;
-  width: 26px; height: 32px; padding: 0 4px; color: var(--mmc-dim);
+  width: 24px; height: 30px; padding: 0 4px; color: var(--mmc-dim);
 }
 .mmc-seed-dice:hover { color: var(--mmc-text); }
-.mmc-seed-dice svg { width: 15px; height: 15px; stroke: currentColor; fill: none;
-  stroke-width: 1.6; stroke-linecap: round; stroke-linejoin: round; }
 .mmc-seed-input {
-  width: 96px; background: none; border: 0; outline: none; color: var(--mmc-text);
-  font-family: inherit; font-size: 13px; text-align: center; padding: 0;
+  width: 90px; background: none; border: 0; outline: none; color: var(--mmc-text);
+  font-family: inherit; font-size: 12px; text-align: center; padding: 0;
 }
-.mmc-seed-mode { font-size: 11px; padding: 0 8px 0 4px; color: var(--mmc-dim); }
+.mmc-seed-mode { font-size: 11px; padding: 0 6px 0 2px; color: var(--mmc-dim); }
 .mmc-seed-mode:hover { color: var(--mmc-text); }
 
-/* Turbo Pills & Segmented Quality Options */
 .mmc-turbo-main {
-  display: inline-flex; align-items: center; gap: 7px; height: 100%; padding: 0 6px 0 8px;
-  background: none; border: 0; color: inherit; font-size: 12px;
-  font-family: inherit; cursor: pointer; white-space: nowrap; max-width: 240px;
+  display: inline-flex; align-items: center; gap: 6px; height: 100%; padding: 0 6px 0 8px;
+  background: none; border: 0; color: inherit; font-size: 11.5px;
+  font-family: inherit; cursor: pointer; white-space: nowrap; max-width: 220px;
 }
 .mmc-turbo-main span {
-  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 200px;
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap; max-width: 180px;
 }
 .mmc-turbo-pick {
-  display: inline-flex; align-items: center; justify-content: center; width: 20px; color: inherit;
+  display: inline-flex; align-items: center; justify-content: center; width: 18px; color: inherit;
 }
 .mmc-pill.mmc-turbo-seg { gap: 0; padding: 0; overflow: hidden; }
 .mmc-turbo-opt {
-  display: inline-flex; align-items: center; gap: 5px; height: 100%; padding: 0 10px;
+  display: inline-flex; align-items: center; gap: 4px; height: 100%; padding: 0 8px;
   background: none; border: 0; border-left: 1px solid var(--mmc-line);
-  color: var(--mmc-dim); font-size: 12px; font-family: inherit; cursor: pointer;
+  color: var(--mmc-dim); font-size: 11.5px; font-family: inherit; cursor: pointer;
 }
 .mmc-turbo-opt:first-child { border-left: 0; }
 .mmc-turbo-opt:hover { color: #ededed; }
 .mmc-turbo-opt[aria-pressed="true"] { background: rgba(110,190,255,.14); color: #6ebeff; font-weight: 500; }
 .mmc-turbo-opt[aria-pressed="true"] .mmc-pill-sub { color: rgba(110,190,255,.75); }
 
-/* Weights Pill */
 .mmc-weights.missing {
   border-color: #e0743c !important;
   color: #e0743c !important;
@@ -315,29 +361,16 @@ export const css = `
   margin-left: auto; font-size: 11px; letter-spacing: .04em; color: var(--mmc-dim);
   display: flex; align-items: center; gap: 5px;
   background: none; border: 1px solid transparent; border-radius: 13px;
-  padding: 4px 8px; font-family: inherit;
+  padding: 3px 7px; font-family: inherit;
 }
 button.mmc-mode { cursor: pointer; }
 button.mmc-mode:hover { background: var(--mmc-surface-2); border-color: var(--mmc-line); }
 .mmc-mode.pinned { border-color: var(--mmc-line); background: var(--mmc-surface-2); }
 .mmc-mode b { color: var(--mmc-accent); font-weight: 600; }
 .mmc-pin {
-  font-size: 10px; letter-spacing: .06em; text-transform: uppercase;
+  font-size: 9.5px; letter-spacing: .06em; text-transform: uppercase;
   color: var(--mmc-accent); border: 1px solid currentColor; border-radius: 8px;
   padding: 0 4px; opacity: .8;
 }
-.mmc-warn { color: #e0743c; font-size: 12px; flex-shrink: 0; }
-.mmc-root { position: relative; }
-.mmc-root.mmc-drag-drop-active::after {
-  content: "📥 Drop media here to attach as reference";
-  position: absolute; inset: 0; z-index: 1000;
-  background: rgba(47, 123, 246, 0.88);
-  color: #ffffff;
-  font-size: 15px; font-weight: 600; font-family: inherit;
-  display: flex; align-items: center; justify-content: center;
-  border: 2px dashed #ffffff; border-radius: 20px;
-  pointer-events: none;
-  backdrop-filter: blur(4px);
-  box-sizing: border-box;
-}
+.mmc-warn { color: #e0743c; font-size: 11.5px; flex-shrink: 0; }
 `;

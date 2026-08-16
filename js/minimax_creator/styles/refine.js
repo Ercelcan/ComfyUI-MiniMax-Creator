@@ -1,4 +1,88 @@
 export const css = `
+/* Micro-Toolbar Refine Button Group (Inside Shot Inspector) */
+.mmc-micro-refine-group {
+  display: inline-flex;
+  align-items: stretch;
+  height: 24px;
+  position: relative;
+}
+.mmc-micro-refine-group .mmc-micro-tool {
+  height: 24px;
+  padding: 0 6px 0 8px;
+  border-radius: 6px 0 0 6px;
+  border-right: 0;
+  box-sizing: border-box;
+}
+.mmc-micro-refine-group .mmc-micro-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 24px;
+  border-radius: 0 6px 6px 0;
+  background: var(--mmc-surface-2, #262626);
+  border: 1px solid var(--mmc-line, rgba(255,255,255,0.09));
+  border-left: 1px solid rgba(255,255,255,0.05);
+  color: var(--mmc-dim, #8b8b8b);
+  cursor: pointer;
+  padding: 0;
+  box-sizing: border-box;
+  transition: all .12s ease;
+}
+.mmc-micro-refine-group .mmc-micro-more:hover {
+  background: var(--mmc-surface-3, #2f2f2f);
+  color: #fff;
+}
+
+/* Horizontal Split Button for Deck Tabs (Refine All) */
+.mmc-refine-split.pill {
+  display: inline-flex;
+  align-items: stretch;
+  height: 26px;
+  position: relative;
+}
+.mmc-refine-split.pill .mmc-nle-deck-refine-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  height: 26px;
+  padding: 0 8px 0 10px;
+  border-radius: 6px 0 0 6px;
+  background: rgba(240, 166, 60, 0.14);
+  border: 1px solid rgba(240, 166, 60, 0.4);
+  border-right: 0;
+  color: var(--mmc-accent, #f0a63c);
+  font-size: 11px;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  white-space: nowrap;
+  transition: all .12s ease;
+}
+.mmc-refine-split.pill .mmc-nle-deck-refine-btn:hover {
+  background: var(--mmc-accent, #f0a63c);
+  color: #141414;
+}
+.mmc-refine-split.pill .mmc-refine-pill-more {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 26px;
+  border-radius: 0 6px 6px 0;
+  background: rgba(240, 166, 60, 0.14);
+  border: 1px solid rgba(240, 166, 60, 0.4);
+  border-left: 1px solid rgba(240, 166, 60, 0.2);
+  color: var(--mmc-accent, #f0a63c);
+  cursor: pointer;
+  padding: 0;
+  transition: all .12s ease;
+}
+.mmc-refine-split.pill .mmc-refine-pill-more:hover {
+  background: var(--mmc-accent, #f0a63c);
+  color: #141414;
+}
+
 /* Tool rail Refine button (inside CreatorEditor vertical rail) */
 .mmc-tool.mmc-refine-split {
   display: flex;
@@ -28,78 +112,41 @@ export const css = `
   position: absolute;
   top: 4px;
   right: 4px;
-  width: 14px;
-  height: 14px;
+  width: 15px;
+  height: 15px;
   border-radius: 4px;
-  background: rgba(0,0,0,0.65);
-  border: 1px solid var(--mmc-line, rgba(255,255,255,0.1));
-  color: var(--mmc-dim, #8b8b8b);
+  background: rgba(0, 0, 0, 0.82);
+  border: 1px solid rgba(255, 255, 255, 0.22);
+  color: #ededed;
   display: flex;
   align-items: center;
   justify-content: center;
   cursor: pointer;
   z-index: 2;
+  transition: all .12s ease;
 }
-.mmc-tool.mmc-refine-split .mmc-refine-more:hover { color: #fff; background: var(--mmc-surface-3); }
+.mmc-tool.mmc-refine-split .mmc-refine-more:hover {
+  color: #fff;
+  background: var(--mmc-surface-3, #333);
+  border-color: rgba(255, 255, 255, 0.4);
+}
 
-/* Horizontal Pill Bar Refine button (inside Timeline Deck) */
-.mmc-refine-split.pill {
-  display: inline-flex;
-  align-items: stretch;
-  height: 34px;
-  position: relative;
-}
-.mmc-refine-split.pill .mmc-pill,
-.mmc-refine-split.pill .mmc-nle-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  height: 34px;
-  padding: 0 10px 0 12px;
-  border-radius: 17px 0 0 17px;
-  background: var(--mmc-surface-2, #262626);
-  border: 1px solid var(--mmc-line, rgba(255,255,255,0.09));
-  border-right: 0;
-  color: var(--mmc-text, #ededed);
-  font-size: 12px;
-  font-family: inherit;
-  cursor: pointer;
-  white-space: nowrap;
-}
-.mmc-refine-split.pill .mmc-pill:hover,
-.mmc-refine-split.pill .mmc-nle-btn:hover {
-  background: var(--mmc-surface-3, #2f2f2f);
-  color: #fff;
-}
-.mmc-refine-split.pill .mmc-refine-more {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 24px;
-  height: 34px;
-  border-radius: 0 17px 17px 0;
-  background: var(--mmc-surface-2, #262626);
-  border: 1px solid var(--mmc-line, rgba(255,255,255,0.09));
-  border-left: 1px solid rgba(255,255,255,0.05);
-  color: var(--mmc-dim, #8b8b8b);
-  cursor: pointer;
-  padding: 0;
-}
-.mmc-refine-split.pill .mmc-refine-more:hover {
-  background: var(--mmc-surface-3, #2f2f2f);
-  color: #fff;
-}
-.mmc-refine-split.pill svg {
-  width: 15px;
-  height: 15px;
+/* Crisp dropdown arrow SVG styles across all refine buttons */
+.mmc-refine-more svg,
+.mmc-micro-more svg,
+.mmc-refine-pill-more svg {
+  width: 10px;
+  height: 10px;
   stroke: currentColor;
+  stroke-width: 2.4;
   fill: none;
-  stroke-width: 1.6;
+  display: block;
 }
 
 /* Active Running & Spinner Animations */
 .mmc-tool.busy .mmc-tool-icon,
-.mmc-refine-split.pill button.busy {
+.mmc-refine-split.pill button.busy,
+.mmc-micro-tool.busy {
   border-color: var(--mmc-accent) !important;
   color: var(--mmc-accent) !important;
   cursor: progress !important;
@@ -108,8 +155,8 @@ export const css = `
 
 .mmc-refine-spinner {
   display: inline-block;
-  width: 13px;
-  height: 13px;
+  width: 12px;
+  height: 12px;
   border: 2px solid rgba(240, 166, 60, 0.3);
   border-top-color: var(--mmc-accent);
   border-radius: 50%;
@@ -303,16 +350,16 @@ export const css = `
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
-  min-height: 100px;
-  max-height: 400px;
+  min-height: 90px;
+  max-height: 320px;
   background: var(--mmc-surface);
   border: 1px solid rgba(255,255,255,0.12);
-  border-radius: 14px;
+  border-radius: 12px;
   color: var(--mmc-text);
   font-family: inherit;
-  font-size: 13.5px;
-  line-height: 1.6;
-  padding: 12px 14px 28px 14px;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 10px 12px;
   outline: none;
   overflow-y: auto;
   transition: border-color .15s ease, box-shadow .15s ease;
@@ -330,22 +377,25 @@ export const css = `
   border-radius: 3px;
 }
 
+.mmc-refined-status-row {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  padding: 4px 2px 0;
+}
 .mmc-refined-wordcount {
-  position: absolute;
-  right: 14px;
-  bottom: 8px;
   font-size: 10.5px;
   color: var(--mmc-off);
   font-family: ui-monospace, Menlo, monospace;
-  pointer-events: none;
 }
 
 .mmc-refined-fold {
   background: var(--mmc-surface-2);
   border: 1px solid var(--mmc-line);
-  border-radius: 12px;
-  padding: 10px 14px;
-  font-size: 12px;
+  border-radius: 10px;
+  padding: 8px 12px;
+  font-size: 11.5px;
   transition: background .15s ease;
 }
 .mmc-refined-fold[open] { background: rgba(30, 30, 30, 0.95); }
@@ -363,12 +413,12 @@ export const css = `
 .mmc-refined-sections {
   display: flex;
   flex-direction: column;
-  gap: 12px;
-  padding-top: 10px;
+  gap: 10px;
+  padding-top: 8px;
 }
-.mmc-refined-section { display: flex; flex-direction: column; gap: 5px; }
+.mmc-refined-section { display: flex; flex-direction: column; gap: 4px; }
 .mmc-refined-section .mmc-tl-field-name {
-  font-size: 10.5px;
+  font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.08em;
   color: var(--mmc-accent);
@@ -378,16 +428,16 @@ export const css = `
   width: 100%;
   box-sizing: border-box;
   resize: vertical;
-  min-height: 68px;
-  max-height: 260px;
+  min-height: 60px;
+  max-height: 220px;
   background: var(--mmc-surface);
   border: 1px solid var(--mmc-line);
-  border-radius: 10px;
+  border-radius: 8px;
   color: #ededed;
   font-family: inherit;
-  font-size: 12.5px;
-  line-height: 1.5;
-  padding: 10px 12px;
+  font-size: 12px;
+  line-height: 1.45;
+  padding: 8px 10px;
   outline: none;
   overflow-y: auto;
 }
@@ -397,14 +447,14 @@ export const css = `
 }
 
 .mmc-refined-seen {
-  padding: 10px 14px;
-  margin-top: 8px;
+  padding: 8px 12px;
+  margin-top: 6px;
   background: rgba(0,0,0,0.35);
   border-radius: 8px;
   border-left: 3px solid var(--mmc-accent);
   color: #d0d0d0;
-  font-size: 12.5px;
-  line-height: 1.55;
+  font-size: 12px;
+  line-height: 1.5;
   white-space: pre-wrap;
   user-select: text;
 }

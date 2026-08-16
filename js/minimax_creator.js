@@ -3,13 +3,13 @@ import { installStyles } from "./minimax_creator/styles.js";
 import { CreatorEditor } from "./minimax_creator/editor.js";
 import { TimelineBody } from "./minimax_creator/timeline.js";
 import { PreStageBody } from "./minimax_creator/prestage.js";
+import { DirectorBody } from "./minimax_creator/director.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
 import { handleMediaFiles } from "./minimax_creator/media_drop.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
-// Global input guard to prevent ComfyUI node copy/paste conflicts and support Image/Media Paste
 function installInputGuard() {
   if (globalThis._mmcInputGuardInstalled) return;
   globalThis._mmcInputGuardInstalled = true;
@@ -17,19 +17,49 @@ function installInputGuard() {
   const isMmcInput = (el) => {
     if (!el) return false;
     if (el.tagName === "INPUT" || el.tagName === "TEXTAREA") {
-      return !el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt, .mmc-nle-studio");
+      return Boolean(el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt, .mmc-nle-studio, .mmc-director-root"));
     }
     if (el.isContentEditable) {
-      return !el.closest?.(".mmc-root, .mmc-overlay, .mmc-pop, .mmc-prompt, .mmc-nle-studio");
+      return Boolean(el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop, .mmc-nle-studio, .mmc-director-root"));
     }
-    return !el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop, .mmc-nle-studio");
+    return Boolean(el.closest?.(".mmc-prompt, .mmc-root, .mmc-overlay, .mmc-pop, .mmc-nle-studio, .mmc-director-root"));
+  };
+
+  const isTimelineStudioActive = (el) => {
+    return Boolean(el?.closest?.(".mmc-nle-studio, .mmc-nle-tracks-container, .mmc-nle-monitor-wrap"));
   };
 
   window.addEventListener("keydown", (e) => {
-    if (!isMmcInput(document.activeElement)) return;
+    const active = document.activeElement;
+    const isMmc = isMmcInput(active);
+    const inStudio = isTimelineStudioActive(active) || Boolean(document.querySelector(".mmc-nle-studio:hover"));
     const key = e.key?.toLowerCase();
-    if ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "a", "z", "y"].includes(key)) {
-      e.stopImmediatePropagation();
+
+    if (inStudio && !active?.classList?.contains("mmc-prompt") && active?.tagName !== "INPUT" && active?.tagName !== "TEXTAREA") {
+      if ([" ", "j", "k", "l", "s", "i", "o", "[", "]", "arrowleft", "arrowright", "delete", "backspace"].includes(key)) {
+        e.stopImmediatePropagation();
+        const studioEl = document.querySelector(".mmc-nle-studio:hover") || active?.closest?.(".mmc-nle-studio");
+        const node = (app?.canvas?.graph?._nodes ?? []).find((n) => n.mmcBody?.root === studioEl);
+        if (node?.mmcBody) {
+          if (key === " ") { e.preventDefault(); node.mmcBody.togglePlay?.(); }
+          else if (key === "j") { e.preventDefault(); node.mmcBody.stepFrame?.(-5); }
+          else if (key === "k") { e.preventDefault(); node.mmcBody.pause?.(); }
+          else if (key === "l") { e.preventDefault(); node.mmcBody.stepFrame?.(5); }
+          else if (key === "s") { e.preventDefault(); node.mmcBody.razorSplitAtPlayhead?.(); }
+          else if (key === "i" || key === "[") { e.preventDefault(); node.mmcBody.markIn = node.mmcBody.currentTime; node.mmcBody.render?.(); }
+          else if (key === "o" || key === "]") { e.preventDefault(); node.mmcBody.markOut = node.mmcBody.currentTime; node.mmcBody.render?.(); }
+          else if (key === "arrowleft") { e.preventDefault(); node.mmcBody.stepFrame?.(e.shiftKey ? -24 : -1); }
+          else if (key === "arrowright") { e.preventDefault(); node.mmcBody.stepFrame?.(e.shiftKey ? 24 : 1); }
+          else if (key === "delete" || key === "backspace") { e.preventDefault(); node.mmcBody.deleteSelectedShot?.(); }
+        }
+        return;
+      }
+    }
+
+    if (isMmc) {
+      if ((e.ctrlKey || e.metaKey) && ["c", "v", "x", "a", "z", "y"].includes(key)) {
+        e.stopImmediatePropagation();
+      }
     }
   }, true);
 
@@ -55,8 +85,10 @@ function installInputGuard() {
     if (fileItem) {
       const file = fileItem.getAsFile();
       if (file) {
-        const rootEl = active?.closest?.(".mmc-root");
-        const node = (app?.canvas?.graph?._nodes ?? []).find((n) => n.mmcBody?.root === rootEl || n.mmcBody?.editor?.root === rootEl);
+        const rootEl = active?.closest?.(".mmc-root") || document.querySelector(".mmc-root:hover");
+        const node = (app?.canvas?.graph?._nodes ?? []).find(
+          (n) => n.mmcBody?.root === rootEl || n.mmcBody?.editor?.root === rootEl
+        );
         const editor = node?.mmcBody?.editor ?? node?.mmcBody;
         if (editor) {
           e.stopImmediatePropagation();
@@ -86,14 +118,20 @@ installInputGuard();
 const CREATOR = "MiniMaxH3Creator";
 const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";
+const DIRECTOR = "MiniMaxH3Director";
 
-// Floor dimensions for the nodes
 const MIN_SIZE = {
   [CREATOR]: [620, 520],
-  [TIMELINE]: [680, 480],
+  [TIMELINE]: [720, 560],
   [PRESTAGE]: [460, 420],
+  [DIRECTOR]: [560, 480],
 };
-const WIDGET = { [CREATOR]: "creator_data", [TIMELINE]: "timeline_data", [PRESTAGE]: "prestage_data" };
+const WIDGET = {
+  [CREATOR]: "creator_data",
+  [TIMELINE]: "timeline_data",
+  [PRESTAGE]: "prestage_data",
+  [DIRECTOR]: "director_data",
+};
 const SIDE = { [PRESTAGE]: "left" };
 
 const SPAWN_GAP = 28;
@@ -120,6 +158,10 @@ const OUTPUT_SOCKETS = {
   ],
   [PRESTAGE]: [
     { name: "image", type: "IMAGE" },
+  ],
+  [DIRECTOR]: [
+    { name: "timeline_data", type: "STRING" },
+    { name: "shot_prompt", type: "STRING" },
   ],
 };
 
@@ -225,7 +267,7 @@ function togglePreStage(node) {
 }
 
 const preStageControls = (node) => ({
-  active: () => !!findPreStage(node),
+  active: () => !findPreStage(node),
   toggle: () => togglePreStage(node),
 });
 
@@ -309,7 +351,6 @@ function attach(node, build) {
 
       node.widgets_start_y = 0;
 
-      // Returns the minimum bounding floor so user can freely shrink and grow the node
       node.computeSize = function (out) {
         const withOutputs = node.properties?.show_outputs === true;
         const curMinW = withOutputs ? minWidth + 115 : minWidth;
@@ -433,11 +474,27 @@ function createPrestageBody(node) {
   });
 }
 
+function createDirectorBody(node) {
+  return attach(node, (widget) => {
+    // Hide the native context_timeline text box widget completely
+    const ctxWidget = node.widgets?.find((w) => w.name === "context_timeline");
+    if (ctxWidget) hideWidget(ctxWidget);
+
+    return new DirectorBody({
+      node,
+      widget,
+      onCommit: () => node.graph?.setDirtyCanvas(true, true),
+    });
+  });
+}
+
 app.registerExtension({
   name: "minimax.creator",
 
   async nodeCreated(node) {
-    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+    if (!MIN_SIZE[node.comfyClass]) return;
+
+    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass];
     if (node.size) {
       node.size[0] = Math.max(node.size[0] || 0, minWidth);
       node.size[1] = Math.max(node.size[1] || 0, minHeight);
@@ -448,11 +505,15 @@ app.registerExtension({
       createTimelineBody(node);
     } else if (node.comfyClass === PRESTAGE) {
       createPrestageBody(node);
+    } else if (node.comfyClass === DIRECTOR) {
+      createDirectorBody(node);
     }
   },
 
   loadedGraphNode(node) {
-    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+    if (!MIN_SIZE[node.comfyClass]) return;
+
+    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass];
     if (node.size) {
       node.size[0] = Math.max(node.size[0] || 0, minWidth);
       node.size[1] = Math.max(node.size[1] || 0, minHeight);
@@ -461,6 +522,7 @@ app.registerExtension({
       if (node.comfyClass === CREATOR) createCreatorBody(node);
       else if (node.comfyClass === TIMELINE) createTimelineBody(node);
       else if (node.comfyClass === PRESTAGE) createPrestageBody(node);
+      else if (node.comfyClass === DIRECTOR) createDirectorBody(node);
     }
     const body = node.mmcBody;
     if (!body) return;
@@ -486,6 +548,15 @@ app.registerExtension({
           node.graph?.setDirtyCanvas(true, true);
         };
         body.setState(state);
+      }
+    } else if (node.comfyClass === DIRECTOR) {
+      const ctxWidget = node.widgets?.find((w) => w.name === "context_timeline");
+      if (ctxWidget) hideWidget(ctxWidget);
+
+      const widget = node.widgets?.find((w) => w.name === WIDGET[DIRECTOR]);
+      if (widget) {
+        body.data = body.parseData(widget.value);
+        body.render();
       }
     } else {
       body.reload();

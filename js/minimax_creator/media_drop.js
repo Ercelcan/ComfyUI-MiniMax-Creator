@@ -1,7 +1,7 @@
 import { upload } from "./api.js";
 import * as S from "./state.js";
 
-/** Detect whether a dropped/pasted file is an image, video, or audio. */
+/** Detect whether a dropped or pasted file is an image, video, or audio. */
 export function detectKind(file) {
   if (!file) return null;
   const type = file.type || "";
@@ -15,9 +15,9 @@ export function detectKind(file) {
   return null;
 }
 
-/** Upload media files to ComfyUI input and attach them as references. */
-export async function handleMediaFiles(files, editor) {
-  if (!files?.length || !editor) return;
+/** Upload media files to ComfyUI input and attach them contextually. */
+export async function handleMediaFiles(files, targetContext) {
+  if (!files?.length || !targetContext) return;
   const validFiles = [];
   for (const file of files) {
     const kind = detectKind(file);
@@ -31,27 +31,51 @@ export async function handleMediaFiles(files, editor) {
       const res = await upload(file);
       uploaded.push({ path: res.path, name: res.name, kind });
     } catch (err) {
-      console.error("Failed to upload dropped/pasted file:", err);
+      console.error("[MiniMax Creator] Upload failed:", err);
     }
   }
   if (!uploaded.length) return;
 
-  if (typeof editor.attachAssets === "function") {
-    await editor.attachAssets(uploaded);
-  } else if (typeof editor.attachPoolFromMention === "function") {
-    for (const asset of uploaded) {
-      editor.attachPoolFromMention(asset);
+  // 1. Dropped on Director Node chat
+  if (typeof targetContext.sendMessage === "function") {
+    for (const item of uploaded) {
+      const target = targetContext.getTargetNode?.();
+      if (target?.mmcBody) {
+        const handle = target.mmcBody.attachPoolFromMention?.(item);
+        if (handle) {
+          targetContext.inputBox.value = (targetContext.inputBox.value || "") + ` @${handle} `;
+          targetContext.flashNotice?.(`Attached @${handle} to project.`);
+        }
+      }
     }
-  } else if (editor.state?.refs && Array.isArray(editor.state.refs)) {
+    return;
+  }
+
+  // 2. Dropped on Timeline Studio
+  if (typeof targetContext.handleTimelineTrackDrop === "function") {
+    for (const item of uploaded) {
+      targetContext.handleTimelineTrackDrop(item);
+    }
+    return;
+  }
+
+  // 3. Dropped on CreatorEditor instance
+  if (typeof targetContext.attachAssets === "function") {
+    await targetContext.attachAssets(uploaded);
+  } else if (typeof targetContext.attachPoolFromMention === "function") {
+    for (const asset of uploaded) {
+      targetContext.attachPoolFromMention(asset);
+    }
+  } else if (targetContext.state?.refs && Array.isArray(targetContext.state.refs)) {
     for (const asset of uploaded) {
       if (asset.kind === "image") {
-        editor.state.refs.push({
-          handle: S.nextPreStageHandle(editor.state),
+        targetContext.state.refs.push({
+          handle: S.nextPreStageHandle(targetContext.state),
           filename: asset.path,
         });
       }
     }
-    editor.commit?.();
+    targetContext.commit?.();
   }
 }
 

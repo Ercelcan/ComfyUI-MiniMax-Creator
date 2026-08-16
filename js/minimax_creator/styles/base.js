@@ -86,8 +86,27 @@ export const css = `
   box-sizing: border-box;
 }
 
-::-webkit-scrollbar { width: 6px; height: 6px; }
-::-webkit-scrollbar-track { background: transparent; }
-::-webkit-scrollbar-thumb { background: var(--mmc-surface-3); border-radius: 3px; }
-::-webkit-scrollbar-thumb:hover { background: var(--mmc-dim); }
+/* Escopado apenas para os elementos deste nó */
+.mmc-root ::-webkit-scrollbar,
+.mmc-overlay ::-webkit-scrollbar,
+.mmc-pop ::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+.mmc-root ::-webkit-scrollbar-track,
+.mmc-overlay ::-webkit-scrollbar-track,
+.mmc-pop ::-webkit-scrollbar-track {
+  background: transparent;
+}
+.mmc-root ::-webkit-scrollbar-thumb,
+.mmc-overlay ::-webkit-scrollbar-thumb,
+.mmc-pop ::-webkit-scrollbar-thumb {
+  background: var(--mmc-surface-3);
+  border-radius: 3px;
+}
+.mmc-root ::-webkit-scrollbar-thumb:hover,
+.mmc-overlay ::-webkit-scrollbar-thumb:hover,
+.mmc-pop ::-webkit-scrollbar-thumb:hover {
+  background: var(--mmc-dim);
+}
 `;

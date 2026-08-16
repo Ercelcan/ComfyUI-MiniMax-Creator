@@ -1,16 +1,10 @@
-"""The MiniMax H3 Creator node.
-
-One node, one prompt box, one video — and optional output sockets to extend the
-workflow. Media is chosen in the UI and loaded from ComfyUI/input by filename;
-the weights are chosen the same way and loaded by `models.emit_links` inside the
-subgraph; and the finished clip is muxed, saved and played in the node body.
-"""
+"""The MiniMax H3 Creator node."""
 
 import json
 
 from comfy_api.latest import ComfyExtension, io
 
-from . import (accel, canvas, hires, lora, media, models, outputs, prestage,
+from . import (accel, canvas, director_node, hires, lora, media, models, outputs, prestage,
                render, settings, timeline)
 
 DEFAULT_DATA = json.dumps({
@@ -22,9 +16,7 @@ DEFAULT_DATA = json.dumps({
     "aspect": "16:9",
     "short_edge": canvas.NATIVE_SHORT_EDGE,
     "checkpoint": "auto",
-    # Where the finished clip lands under output/. See `outputs`.
     "output_prefix": outputs.VIDEO_PREFIX,
-    # Which files to load.
     "models": {},
 }, indent=2)
 
@@ -121,7 +113,13 @@ class MiniMaxH3Creator(io.ComfyNode):
 
 class MiniMaxCreatorExtension(ComfyExtension):
     async def get_node_list(self):
-        return [MiniMaxH3Creator, *timeline.NODES, *prestage.NODES, *hires.NODES]
+        return [
+            MiniMaxH3Creator,
+            *timeline.NODES,
+            *prestage.NODES,
+            *hires.NODES,
+            *director_node.NODES,
+        ]
 
 
 async def comfy_entrypoint() -> MiniMaxCreatorExtension:

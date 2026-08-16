@@ -1,6 +1,3 @@
-// Injected once. Everything is scoped under .mmc-root (or .mmc-overlay for the
-// modal, which portals to document.body) so nothing leaks into the graph canvas.
-
 import { css as base } from "./styles/base.js";
 import { css as stage } from "./styles/stage.js";
 import { css as editor } from "./styles/editor.js";
@@ -12,6 +9,7 @@ import { css as settings } from "./styles/settings.js";
 import { css as timeline } from "./styles/timeline.js";
 import { css as refine } from "./styles/refine.js";
 import { css as prestage } from "./styles/prestage.js";
+import { css as director } from "./styles/director.js";
 
 const CSS = [
   base,
@@ -25,6 +23,7 @@ const CSS = [
   timeline,
   refine,
   prestage,
+  director,
 ].join("");
 
 export function installStyles() {

@@ -1,8 +1,9 @@
+"""HTTP routes for prompt refinement, LLM model listings, skills, and cancellation."""
+
 import asyncio
 import os
 
 from aiohttp import web
-
 from server import PromptServer
 
 from . import compile as compiler, media, preview, refine, refine_api, refine_local, refine_skill
@@ -224,7 +225,7 @@ def _shared(shots):
     return handles, refs, labels
 
 
-def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=None):
+def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=None, on_chunk=None, node_id=""):
     if len(shots) != 1:
         raise compiler.CompileError(
             "a skill writes one whole prompt at a time — refine cards one by one, "
@@ -251,6 +252,8 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
             temperature=body.get("temperature", 0.7),
             seed=body.get("seed", -1),
             max_tokens=body.get("max_tokens"),
+            node_id=node_id,
+            on_chunk=on_chunk,
         )
     elif provider == "openai":
         content = refine_api.chat_openai(
@@ -263,6 +266,8 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
             temperature=body.get("temperature", 0.7),
             seed=body.get("seed", -1),
             max_tokens=body.get("max_tokens"),
+            node_id=node_id,
+            on_chunk=on_chunk,
         )
     elif provider == "openrouter":
         content = refine_api.chat_openrouter(
@@ -276,6 +281,8 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
             seed=body.get("seed", -1),
             max_tokens=body.get("max_tokens"),
             api_key=api_key,
+            node_id=node_id,
+            on_chunk=on_chunk,
         )
     else:
         content = refine_local.chat(
@@ -319,16 +326,30 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
 
 def _run(body):
     kind = body.get("kind")
+    node_id = str(body.get("node_id", ""))
     derived, shots, pictures, piece_text, single, pool = _plan(body)
 
     seconds = sum(float(s.get("seconds") or 0) for s in shots)
+
+    def on_stream_chunk(chunk: str, is_thought: bool, token_count: int, speed: float):
+        server = getattr(PromptServer, "instance", None)
+        if server is not None:
+            server.send_sync("mmc_refine_stream", {
+                "node": node_id,
+                "chunk": chunk,
+                "is_thought": is_thought,
+                "token_count": token_count,
+                "speed": speed,
+                "done": False,
+            })
 
     skill = str(body.get("skill") or "").strip()
     if skill:
         dropped, pictures = refine._number([shot["slots"] for shot in shots],
                                            pictures, MAX_IMAGES)
-        return _run_skill(body, skill, derived, shots, pictures, seconds, dropped,
-                          piece_text)
+        res = _run_skill(body, skill, derived, shots, pictures, seconds, dropped, piece_text, on_stream_chunk, node_id)
+        PromptServer.instance.send_sync("mmc_refine_stream", {"node": node_id, "done": True})
+        return res
 
     dropped, pictures = refine._number(
         ([pool["slots"]] if pool else []) + [shot["slots"] for shot in shots],
@@ -363,8 +384,7 @@ def _run(body):
         ref_shots=ref_shots,
         ai_seam_mode=body.get("ai_seam_mode", "auto"),
     )
-    system = refine.system_prompt(mode, body.get("language") or "English",
-                                  shape=shape, cuts=cuts)
+    system = refine.system_prompt(mode, body.get("language") or "English", shape=shape, cuts=cuts)
     message = refine.user_message(
         shots,
         seconds=seconds,
@@ -379,50 +399,59 @@ def _run(body):
     model = body.get("model") or ""
     api_key = body.get("api_key", "")
 
-    if provider == "ollama":
-        content = refine_api.chat_ollama(
-            url=url or "http://localhost:11434",
-            model=model,
-            system=system,
-            message=message,
-            images=pictures,
-            temperature=body.get("temperature", 0.3),
-            seed=body.get("seed", -1),
-            max_tokens=body.get("max_tokens"),
-        )
-    elif provider == "openai":
-        content = refine_api.chat_openai(
-            url=url or "http://localhost:1234/v1",
-            model=model,
-            system=system,
-            message=message,
-            images=pictures,
-            temperature=body.get("temperature", 0.3),
-            seed=body.get("seed", -1),
-            max_tokens=body.get("max_tokens"),
-        )
-    elif provider == "openrouter":
-        content = refine_api.chat_openrouter(
-            url=url or "https://openrouter.ai/api/v1",
-            model=model,
-            system=system,
-            message=message,
-            images=pictures,
-            temperature=body.get("temperature", 0.3),
-            seed=body.get("seed", -1),
-            max_tokens=body.get("max_tokens"),
-            api_key=api_key,
-        )
-    else:
-        content = refine_local.chat(
-            model,
-            system,
-            message,
-            [refine_local.to_tensor(p) for p in pictures],
-            temperature=body.get("temperature", 0.3),
-            seed=body.get("seed", -1),
-            max_tokens=body.get("max_tokens"),
-        )
+    try:
+        if provider == "ollama":
+            content = refine_api.chat_ollama(
+                url=url or "http://localhost:11434",
+                model=model,
+                system=system,
+                message=message,
+                images=pictures,
+                temperature=body.get("temperature", 0.3),
+                seed=body.get("seed", -1),
+                max_tokens=body.get("max_tokens"),
+                node_id=node_id,
+                on_chunk=on_stream_chunk,
+            )
+        elif provider == "openai":
+            content = refine_api.chat_openai(
+                url=url or "http://localhost:1234/v1",
+                model=model,
+                system=system,
+                message=message,
+                images=pictures,
+                temperature=body.get("temperature", 0.3),
+                seed=body.get("seed", -1),
+                max_tokens=body.get("max_tokens"),
+                node_id=node_id,
+                on_chunk=on_stream_chunk,
+            )
+        elif provider == "openrouter":
+            content = refine_api.chat_openrouter(
+                url=url or "https://openrouter.ai/api/v1",
+                model=model,
+                system=system,
+                message=message,
+                images=pictures,
+                temperature=body.get("temperature", 0.3),
+                seed=body.get("seed", -1),
+                max_tokens=body.get("max_tokens"),
+                api_key=api_key,
+                node_id=node_id,
+                on_chunk=on_stream_chunk,
+            )
+        else:
+            content = refine_local.chat(
+                model,
+                system,
+                message,
+                [refine_local.to_tensor(p) for p in pictures],
+                temperature=body.get("temperature", 0.3),
+                seed=body.get("seed", -1),
+                max_tokens=body.get("max_tokens"),
+            )
+    finally:
+        PromptServer.instance.send_sync("mmc_refine_stream", {"node": node_id, "done": True})
 
     parsed = refine.parse_reply(
         content,
@@ -515,10 +544,8 @@ def _run(body):
             )
         else:
             shared_pool = pool["handles"] if pool else set()
-            pointed = ["@" + h for h in sorted(set(refine.HANDLE_RE.findall(piece_out))
-                                               - shared_pool)]
-            pointed += sorted({f"<{kind_} {int(n)}>" for kind_, n in
-                               (m.groups() for m in refine.LABEL_RE.finditer(piece_out))})
+            pointed = ["@" + h for h in sorted(set(refine.HANDLE_RE.findall(piece_out)) - shared_pool)]
+            pointed += sorted({f"<{kind_} {int(n)}>" for kind_, n in (m.groups() for m in refine.LABEL_RE.finditer(piece_out))})
             if pointed:
                 problems.append(
                     "the rewritten global prompt mentions " + ", ".join(pointed)
@@ -541,8 +568,7 @@ def _run(body):
                 f"it in yourself."
             )
 
-    for span in refine.dropped_quotes(
-            [s.get("text") or "" for s in shots] + [piece_text or ""], everything):
+    for span in refine.dropped_quotes([s.get("text") or "" for s in shots] + [piece_text or ""], everything):
         problems.append(
             f'the request quotes "{span}" and the rewrite never writes it — '
             f'those exact words will not reach the video model. Refine again, '
@@ -597,6 +623,17 @@ async def refine_models(request):
 @PromptServer.instance.routes.get("/minimax_creator/refine/skills")
 async def refine_skills(request):
     return web.json_response({"skills": refine_skill.list_skills()})
+
+
+@PromptServer.instance.routes.post("/minimax_creator/refine/cancel")
+async def cancel_refinement(request):
+    try:
+        body = await request.json()
+        node_id = str(body.get("node_id", ""))
+        refine_api.cancel_stream(node_id)
+        return web.json_response({"ok": True, "cancelled": True})
+    except Exception as exc:
+        return web.json_response({"error": str(exc)}, status=500)
 
 
 @PromptServer.instance.routes.post("/minimax_creator/refine")
