@@ -9,7 +9,8 @@ AUDIO_HZ = 40.0
 NATIVE_SHORT_EDGE = 768
 NATIVE_MAX_PIXELS = 768 * 1344
 
-MIN_SHORT_EDGE = 384
+# Updated to 352 to support down to 0.2 MP base generation (e.g. 608x352 / 864x480)
+MIN_SHORT_EDGE = 352
 MAX_SHORT_EDGE = 2048
 
 MIN_RATIO = 9 / 16

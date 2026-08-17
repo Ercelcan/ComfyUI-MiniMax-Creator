@@ -187,24 +187,6 @@ export class CreatorEditor {
       this.onRefined?.(result);
       this.commit();
     } catch (error) {
-      // Fallback: If HTTP returned 502 timeout, but the stream finished over WebSocket:
-      if (this.refinePanel?.streamContent && this.refinePanel.streamContent.includes("shots")) {
-        try {
-          const raw = this.refinePanel.streamContent;
-          const startIdx = raw.indexOf("{");
-          const endIdx = raw.lastIndexOf("}");
-          if (startIdx >= 0 && endIdx > startIdx) {
-            const parsed = JSON.parse(raw.slice(startIdx, endIdx + 1));
-            const shot = parsed.shots?.[0];
-            if (shot?.body) {
-              this.refinePanel.apply(parsed, shot);
-              this.onRefined?.(parsed);
-              this.commit();
-              return;
-            }
-          }
-        } catch {}
-      }
       this.refinePanel.fail(String(error.message || error));
     }
   }
@@ -673,16 +655,18 @@ export class CreatorEditor {
       : [aspectGlyph(geometry.ratio, PILL_GLYPH), el("span", { text: state.aspect })]);
 
     const refined = S.twoPass(state);
+    const refineInfo = refined
+      ? `${S.sampleEdge(state)} → ${geometry.width}×${geometry.height} · ${state.refine_steps ?? 1}st@${(state.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}`
+      : `${geometry.width} × ${geometry.height}`;
+
     const resPill = el("button", {
       class: "mmc-pill mmc-pill-res",
-      title: t("Short edge resolution"),
+      title: t("Short edge resolution & two-pass neural latent upscale settings"),
       onclick: (event) => this.openResolution(event.currentTarget),
     }, [
       icon("res", 15),
       el("span", { text: `${state.short_edge}p` }),
-      el("span", { class: "mmc-pill-sub", text: refined
-        ? `${S.sampleEdge(state)} → ${geometry.width} × ${geometry.height}`
-        : `${geometry.width} × ${geometry.height}` }),
+      el("span", { class: "mmc-pill-sub", text: refineInfo }),
     ]);
     this.resPill = resPill;
 

@@ -1,21 +1,19 @@
-// Mirror of canvas.py. The pills show the resolved frame count and WxH live, so
-// the same rules have to exist on both sides. canvas.py is the source of truth —
-// it is what the sampler actually runs — and any change there belongs here too.
+// Mirror of canvas.py. The pills show the resolved frame count and WxH live.
+// canvas.py is the source of truth for execution.
 
 export const CANVAS_MULTIPLE = 32;
 export const FPS = 24;
 
 export const NATIVE_SHORT_EDGE = 768;
 export const NATIVE_MAX_PIXELS = 768 * 1344;
-export const MIN_SHORT_EDGE = 384;
-// The slider's ceiling rather than a claim about the weights — see canvas.py.
-// Everything above NATIVE_SHORT_EDGE is off-distribution and the pill says so.
+
+// Updated to 352 to support down to 0.2 MP base generation (e.g. 608x352 / 864x480)
+export const MIN_SHORT_EDGE = 352;
 export const MAX_SHORT_EDGE = 2048;
 
 export const MIN_RATIO = 9 / 16;
 export const MAX_RATIO = 21 / 9;
 
-// Order matters: this is the order the ratio popover lists them in.
 export const ASPECT_PRESETS = [
   ["16:9", 16 / 9],
   ["4:3", 4 / 3],
@@ -25,9 +23,6 @@ export const ASPECT_PRESETS = [
   ["21:9", 21 / 9],
 ];
 
-// What the weights were *trained* on, not a limit — see canvas.py. 17n+5 is the
-// only hard rule; this pair exists so the pill can say when you have left the
-// distribution, which is a different statement from "you cannot".
 export const TRAINED_MIN_FRAMES = 124;
 export const TRAINED_MAX_FRAMES = 362;
 export const MIN_SECONDS = 1;
@@ -42,8 +37,6 @@ export function legalFrameCounts() {
 export const isTrainedLength = (frames) =>
   frames >= TRAINED_MIN_FRAMES && frames <= TRAINED_MAX_FRAMES;
 
-// Whole UI seconds -> nearest legal frame count. There is no 6.00 s H3 video;
-// the pill lies pleasantly and this is where the truth is recovered.
 export function framesForSeconds(seconds) {
   const target = Math.round(seconds * FPS);
   let best = null;
@@ -85,8 +78,6 @@ export function resolveCanvas(ratio, shortEdge) {
   width = snap(width);
   height = snap(height);
 
-  // Independent rounding can push the area back over the cap; step the long
-  // axis down rather than hand the model a latent it was not trained to hold.
   while (width * height > maxPixels && Math.max(width, height) > CANVAS_MULTIPLE) {
     if (width >= height) width -= CANVAS_MULTIPLE;
     else height -= CANVAS_MULTIPLE;

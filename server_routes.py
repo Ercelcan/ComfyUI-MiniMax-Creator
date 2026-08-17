@@ -1,4 +1,4 @@
-"""HTTP & WebSocket server routes for asset browsing, previews, and timeline export."""
+"""HTTP & WebSocket server routes for asset browsing, previews, models, and timeline export."""
 
 import asyncio
 import json
@@ -6,7 +6,6 @@ import os
 import xml.etree.ElementTree as ET
 
 from aiohttp import web
-
 import folder_paths
 from server import PromptServer
 
@@ -287,7 +286,6 @@ async def move_asset(request):
     os.makedirs(target_dir, exist_ok=True)
     os.rename(source, target)
 
-    # If there is an associated .safetensors latent companion, move it too
     base_src, _ = os.path.splitext(source)
     comp_src = f"{base_src}.safetensors"
     if os.path.isfile(comp_src):
@@ -314,7 +312,6 @@ async def delete_asset(request):
         return web.json_response({"error": "no such file"}, status=404)
     try:
         os.remove(path)
-        # Automatically delete companion .safetensors latent checkpoint if present
         base_no_ext, _ = os.path.splitext(path)
         companion_st = f"{base_no_ext}.safetensors"
         if os.path.isfile(companion_st):
@@ -369,8 +366,6 @@ async def write_settings(request):
 
 
 # ---- EDL & Final Cut Pro XML Export -----------------------------------------
-
-
 def _frames_to_tc(frames, fps=24):
     total_seconds = int(frames // fps)
     rem_frames = int(frames % fps)

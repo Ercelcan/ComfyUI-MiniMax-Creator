@@ -1,4 +1,4 @@
-"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining & Pristine Audio Slicing."""
+"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining & 2-Pass Refine Upscaling with Pristine Pass-1 Audio Routing."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from typing import Any, Optional
 from comfy_api.latest import io
 from comfy_execution.graph_utils import GraphBuilder
 
-from . import accel, canvas, compile as compiler, media, models, outputs, settings
+from . import accel, canvas, compile as compiler, lora, media, models, outputs, settings
 
 SEGMENT_NODE = "MiniMaxH3TimelineSegment"
 REFINE_NODE = "MiniMaxH3RefinePass"
@@ -143,6 +143,9 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             model = accel.graph_apply(graph, segment.out(0), acceleration)
             model = models.graph_preview(graph, model, weights)
 
+            # ==========================================
+            # PASS 1: Base Generation (Full Audio + Video)
+            # ==========================================
             sampled = graph.node(
                 "KSampler",
                 model=model, positive=segment.out(1), negative=against,
@@ -151,10 +154,13 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                 sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
                 denoise=1.0,
             )
-            current_latent = sampled.out(0)
-            last_latent = current_latent
+            base_latent = sampled.out(0)
+            current_video_latent = base_latent
+            last_latent = base_latent
 
-            # Two-Pass Refinement
+            # ==========================================
+            # PASS 2: Latent Upscaling & Refine Pass
+            # ==========================================
             if one.refine:
                 spec = {
                     "width": one.refine.width, "height": one.refine.height,
@@ -166,36 +172,61 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                 second = graph.node(SEGMENT_NODE, **refine_inputs)
                 refine_against = graph.node("ConditioningZeroOut", conditioning=second.out(1)).out(0)
                 refine_model = accel.graph_apply(graph, second.out(0), acceleration)
+
+                refine_sampler = sampling.sampler_name
+                refine_scheduler = sampling.scheduler
+                refine_steps = one.refine.steps
+
+                turbo_cfg = payloads[index].get("request", {}).get("turbo", {})
+                if one.refine.turbo_only and not turbo_cfg.get("on"):
+                    turbo_lora_name = turbo_cfg.get("lora") or turbo_cfg.get("ref_lora")
+                    if turbo_lora_name:
+                        refine_model = graph.node(
+                            "LoraLoaderModelOnly",
+                            model=refine_model,
+                            lora_name=turbo_lora_name,
+                            strength_model=0.85,
+                        ).out(0)
+                        refine_sampler = "euler"
+                        refine_scheduler = "simple"
+                        refine_steps = max(1, refine_steps)
+
                 refine_model = models.graph_preview(graph, refine_model, weights)
-                sampled = graph.node(
+
+                sampled_refine = graph.node(
                     REFINE_NODE,
                     model=refine_model, positive=second.out(1), negative=refine_against,
-                    latent=current_latent,
+                    latent=base_latent,
                     width=one.refine.width, height=one.refine.height,
-                    seed=sampling.seed + index, steps=sampling.steps, cfg=sampling.cfg,
-                    sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
+                    seed=sampling.seed + index,
+                    steps=refine_steps,
+                    cfg=sampling.cfg,
+                    sampler_name=refine_sampler,
+                    scheduler=refine_scheduler,
                     denoise=one.refine.denoise,
+                    upscaler_model=one.refine.upscaler_model,
+                    scale=one.refine.scale,
                 )
-                current_latent = sampled.out(0)
-                last_latent = current_latent
+                current_video_latent = sampled_refine.out(0)
+                last_latent = current_video_latent
 
-            sampled_latents.append(current_latent)
+            sampled_latents.append(current_video_latent)
 
-            images = graph.node("VAEDecode", samples=current_latent, vae=links.vae).out(0)
-            
-            # FIX: If master song is attached, mux the clean studio audio slice from segment.out(3).
-            # If no master song is attached, decode AI generated audio from neural VAE.
+            # Video decodes from Pass 2 (upscaled & refined)
+            images = graph.node("VAEDecode", samples=current_video_latent, vae=links.vae).out(0)
+
+            # Audio decodes directly from Pass 1 (full base generation) or studio track
             if one.master_audio_track:
                 audio = segment.out(3)
             else:
-                audio = graph.node("VAEDecodeAudio", samples=current_latent, vae=links.audio_vae).out(0)
+                audio = graph.node("VAEDecodeAudio", samples=base_latent, vae=links.audio_vae).out(0)
 
             if len(compiled) > 1:
                 saved_seg = graph.node(
                     SAVE_SEGMENT_NODE,
                     images=images,
                     audio=audio,
-                    latent=current_latent,
+                    latent=current_video_latent,
                     fps=float(canvas.FPS),
                     filename_prefix=filename_prefix,
                     segment_index=index + 1,
@@ -206,7 +237,6 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
 
             decoded_segments.append((images, audio))
 
-        # Join with linear overlap blending across the feather context
         if joined is None:
             joined = (images, audio)
         else:

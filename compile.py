@@ -1,4 +1,4 @@
-"""Request compiler: JSON payload validation, Context-IR structure, reference pool injection, and seam definitions."""
+"""Request compiler: JSON payload validation, Context-IR structure, reference pool injection, and upscale/refine definitions."""
 
 from __future__ import annotations
 
@@ -24,9 +24,11 @@ MAX_AUDIO_TAIL_S = 4.0
 
 HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
 UPSCALE_MODES = ("two_pass", "direct")
-DEFAULT_REFINE_DENOISE = 0.5
-MIN_REFINE_DENOISE = 0.1
-MAX_REFINE_DENOISE = 0.9
+DEFAULT_REFINE_DENOISE = 0.25
+MIN_REFINE_DENOISE = 0.01
+MAX_REFINE_DENOISE = 0.99
+DEFAULT_REFINE_STEPS = 1
+DEFAULT_UPSCALE_SCALE = 2.0
 
 CHECKPOINTS = ("fl2va", "ref2va")
 TRACKS = ("picture", "picture+sound", "sound")
@@ -64,7 +66,11 @@ class CanvasSpec:
 class Refine:
     width: int
     height: int
-    denoise: float
+    denoise: float = DEFAULT_REFINE_DENOISE
+    steps: int = DEFAULT_REFINE_STEPS
+    upscaler_model: str = ""
+    scale: float = DEFAULT_UPSCALE_SCALE
+    turbo_only: bool = False
 
 
 @dataclass
@@ -497,9 +503,7 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 
     soundscape = _substitute(str(data.get("soundscape") or ""), labels, assets, where="overall_soundscape") if data.get("soundscape") else ""
     music = _substitute(str(data.get("music") or ""), labels, assets, where="non_diegetic_music") if data.get("music") else ""
-    
-    # AUTO-FIX FOR MASTER AUDIO LIP-SYNC:
-    # When a master song track is attached, suppress internal model music generation by setting "N/A"
+
     if master_audio_track or master_audio_file:
         if not music.strip():
             music = "N/A"
@@ -514,8 +518,6 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         shots=max(int(shots or 1), contextir.count_shots(body)),
         sections=sections,
     )
-
-    _LOG.info(f"[MiniMax-Creator] Compiled Shot Prompt:\n{prompt}\n")
 
     anchor = first_frame or last_frame
     if canvas_spec is not None:
@@ -536,7 +538,15 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
     if two_pass:
         target = canvas.resolve_canvas(ratio, short_edge)
         if target != (width, height):
-            refine = Refine(*target, denoise=float(data.get("refine_denoise", DEFAULT_REFINE_DENOISE)))
+            refine = Refine(
+                width=target[0],
+                height=target[1],
+                denoise=float(data.get("refine_denoise", DEFAULT_REFINE_DENOISE)),
+                steps=int(data.get("refine_steps", DEFAULT_REFINE_STEPS)),
+                upscaler_model=str(data.get("upscaler_model") or data.get("upscale_model") or ""),
+                scale=float(data.get("refine_scale", DEFAULT_UPSCALE_SCALE)),
+                turbo_only=bool(data.get("refine_turbo_only", False)),
+            )
 
     return Compiled(
         mode=mode,
@@ -620,7 +630,7 @@ def timeline_payloads(data, image_size_lookup=None):
 
         request["aspect"] = data.get("aspect", "16:9")
         request["short_edge"] = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
-        for key in ("upscale", "sample_edge", "refine_denoise"):
+        for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only"):
             request.pop(key, None)
             if key in data:
                 request[key] = data[key]
@@ -726,6 +736,10 @@ def single_payload(data):
         "aspect": data.get("aspect", "16:9"),
         "short_edge": data.get("short_edge", canvas.NATIVE_SHORT_EDGE),
     }
+    for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only"):
+        if key in data:
+            request[key] = data[key]
+
     master_audio_obj = data.get("master_audio")
     master_audio_file = master_audio_obj.get("filename") if isinstance(master_audio_obj, dict) else None
     if master_audio_obj:

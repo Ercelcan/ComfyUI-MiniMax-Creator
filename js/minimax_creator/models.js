@@ -34,6 +34,9 @@ export const catalogByFolder = () => catalog?.by_folder ?? {};
 
 export const catalogDevices = () => catalog?.devices ?? [];
 
+export const catalogLatentUpscalers = () =>
+  catalog?.files?.latent_upscaler ?? catalog?.by_folder?.latent_upscale_models ?? [];
+
 export const hasPreviewOverride = () => catalog?.preview_override !== false;
 
 export function weightsPill({ models, checkpoints, onChange, turbo }) {
@@ -124,7 +127,7 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
     };
 
     const needed = required();
-    const rows = S.MODEL_FIELDS.map((field) => {
+    const rows = S.MODEL_FIELDS.filter((f) => f !== "latent_upscaler").map((field) => {
       const chosen = models[field];
       const options = files[field] ?? [];
       const unavailable = field === "preview" && !hasPreviewOverride();

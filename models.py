@@ -1,5 +1,8 @@
+import os
 from dataclasses import dataclass, field
 from typing import Optional
+
+import folder_paths
 
 from . import accel
 
@@ -28,8 +31,14 @@ GGUF_FOLDERS = {
     "text_encoders": "clip_gguf",
 }
 
-DEVICE_FIELDS = ["fl2va", "ref2va", "clip", "vae", "audio_vae"]
+LATENT_UPSCALE_FOLDER = "latent_upscale_models"
+if LATENT_UPSCALE_FOLDER not in folder_paths.folder_names_and_paths:
+    folder_paths.add_model_folder_path(
+        LATENT_UPSCALE_FOLDER,
+        os.path.join(folder_paths.models_dir, LATENT_UPSCALE_FOLDER)
+    )
 
+DEVICE_FIELDS = ["fl2va", "ref2va", "clip", "vae", "audio_vae"]
 DEFAULT_DEVICE = ""
 
 ROUTES = ["auto", "fl2va", "ref2va"]
@@ -42,12 +51,11 @@ FOLDERS = {
     "vae": "vae",
     "audio_vae": "vae",
     "preview": "vae_approx",
+    "latent_upscaler": LATENT_UPSCALE_FOLDER,
 }
 
 DEFAULT_DTYPE = "default"
-
 CLIP_TYPE = "minimax"
-
 PREVIEW_FRAMES = 1024
 PREVIEW_FPS = 24
 
@@ -58,6 +66,7 @@ LABEL = {
     "vae": "the video VAE",
     "audio_vae": "the audio VAE",
     "preview": "the preview decoder",
+    "latent_upscaler": "the latent upscaler model",
 }
 
 
@@ -69,6 +78,7 @@ class Weights:
     vae: Optional[str] = None
     audio_vae: Optional[str] = None
     preview: Optional[str] = None
+    latent_upscaler: Optional[str] = None
     dtype: str = DEFAULT_DTYPE
     route: str = DEFAULT_ROUTE
     devices: dict = field(default_factory=dict)
@@ -101,7 +111,7 @@ class Weights:
         return {**payload, "request": request}
 
     def get(self, name):
-        return getattr(self, name)
+        return getattr(self, name, None)
 
     def device(self, name):
         return self.devices.get(name) or None
@@ -163,9 +173,6 @@ def loader_for(node_id, device, filename=None):
 
 
 def available():
-    import folder_paths
-    import nodes
-
     def listing(folder):
         try:
             return folder_paths.get_filename_list(folder)
@@ -178,11 +185,11 @@ def available():
         listings[folder] = sorted(names)
 
     return {
-        "files": {name: listings[folder] for name, folder in FOLDERS.items()},
+        "files": {name: listings.get(folder, []) for name, folder in FOLDERS.items()},
         "folders": dict(FOLDERS),
         "by_folder": listings,
         "dtypes": ["default", "fp8_e4m3fn", "fp8_e4m3fn_fast", "fp8_e5m2"],
-        "preview_override": PREVIEW_NODE in nodes.NODE_CLASS_MAPPINGS,
+        "preview_override": preview_available(),
         "preview_source": PREVIEW_SOURCE,
         "devices": device_options(),
         "device_fields": list(DEVICE_FIELDS),
@@ -208,16 +215,16 @@ def check(weights, checkpoints, where, audio=True):
 def emit_links(graph, weights, checkpoints, audio=True):
     from .render import Links
 
-    def loader(field, node_id, filename, **inputs):
-        wrapper, extra = loader_for(node_id, weights.device(field), filename)
+    def loader(field_name, node_id, filename, **inputs):
+        wrapper, extra = loader_for(node_id, weights.device(field_name), filename)
         if not is_gguf(filename) and node_id == "UNETLoader":
             inputs["weight_dtype"] = weights.dtype
         return graph.node(wrapper, **inputs, **extra).out(0)
 
-    models = {}
+    loaded_models = {}
     for name in sorted(checkpoints):
-        models[name] = loader(name, "UNETLoader", weights.get(name),
-                              unet_name=weights.get(name))
+        loaded_models[name] = loader(name, "UNETLoader", weights.get(name),
+                                     unet_name=weights.get(name))
 
     return Links(
         clip=loader("clip", "CLIPLoader", weights.clip,
@@ -225,14 +232,13 @@ def emit_links(graph, weights, checkpoints, audio=True):
         vae=loader("vae", "VAELoader", weights.vae, vae_name=weights.vae),
         audio_vae=loader("audio_vae", "VAELoader", weights.audio_vae,
                          vae_name=weights.audio_vae) if audio else None,
-        model_fl2va=models.get("fl2va"),
-        model_ref2va=models.get("ref2va"),
+        model_fl2va=loaded_models.get("fl2va"),
+        model_ref2va=loaded_models.get("ref2va"),
     )
 
 
 def preview_available(weights=None):
     import nodes
-
     return PREVIEW_NODE in nodes.NODE_CLASS_MAPPINGS
 
 
@@ -241,7 +247,6 @@ def graph_preview(graph, model, weights):
         return model
 
     import nodes
-
     node = nodes.NODE_CLASS_MAPPINGS[PREVIEW_NODE]
     kwargs = accel.node_defaults(node)
     kwargs.update({

@@ -957,6 +957,11 @@ export class TimelineBody {
       },
     }, [svg(ICONS.scissors, 12), el("span", { text: this.aiSeamMode === "auto" ? t("AI Seams: Auto") : t("AI Seams: User") })]);
 
+    const refined = S.twoPass(this.timeline);
+    const refineInfo = refined
+      ? `${S.sampleEdge(this.timeline)} → ${width}×${height} · ${this.timeline.refine_steps ?? 1}st@${(this.timeline.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}`
+      : `${width}×${height}`;
+
     return el("div", { class: "mmc-nle-top-bar" }, [
       el("div", { class: "mmc-nle-top-left" }, [
         el("span", { class: "mmc-nle-tag", text: "STUDIO" }),
@@ -966,13 +971,13 @@ export class TimelineBody {
           onclick: (e) => openAspectPopover(e.currentTarget, this.timeline, () => this.commit()),
         }, [aspectGlyph(ratioVal, PILL_GLYPH), el("span", { text: this.timeline.aspect })]),
         el("button", {
-          class: "mmc-pill",
-          title: t("Short edge resolution & two-pass refine options"),
+          class: "mmc-pill mmc-pill-res",
+          title: t("Short edge resolution & two-pass neural latent upscale settings"),
           onclick: (e) => openResolutionPopover(e.currentTarget, this.timeline, () => {
             const [w, h] = resolveCanvas(ratioVal, this.timeline.short_edge || 768);
             return { width: w, height: h };
           }, () => this.commit()),
-        }, [icon("res", 14), el("span", { text: `${this.timeline.short_edge || 768}p` }), el("span", { class: "mmc-pill-sub", text: `${width}×${height}` })]),
+        }, [icon("res", 14), el("span", { text: `${this.timeline.short_edge || 768}p` }), el("span", { class: "mmc-pill-sub", text: refineInfo })]),
         el("button", {
           class: `mmc-pill${activeLorasCount ? " on" : ""}`,
           onclick: () => openLoras({ state: this.timeline, targets: S.timelineCheckpoints(this.timeline), onChange: () => this.commit() }),

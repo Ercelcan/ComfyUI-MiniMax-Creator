@@ -189,9 +189,11 @@ export const CHECKPOINT_CHOICES = ["auto", ...CHECKPOINTS];
 export const DEFAULT_STRENGTH = 1.0;
 
 export const UPSCALE_MODES = ["two_pass", "direct"];
-export const DEFAULT_REFINE_DENOISE = 0.5;
-export const MIN_REFINE_DENOISE = 0.1;
-export const MAX_REFINE_DENOISE = 0.9;
+export const DEFAULT_REFINE_DENOISE = 0.25;
+export const MIN_REFINE_DENOISE = 0.01;
+export const MAX_REFINE_DENOISE = 0.99;
+export const DEFAULT_REFINE_STEPS = 1;
+export const DEFAULT_UPSCALE_SCALE = 2.0;
 
 const clampSampleEdge = (value) => {
   const n = Number(value);
@@ -230,6 +232,10 @@ export function emptyState() {
     upscale: UPSCALE_MODES[0],
     sample_edge: NATIVE_SHORT_EDGE,
     refine_denoise: DEFAULT_REFINE_DENOISE,
+    refine_steps: DEFAULT_REFINE_STEPS,
+    upscale_model: "",
+    refine_scale: DEFAULT_UPSCALE_SCALE,
+    refine_turbo_only: false,
     checkpoint: "auto",
     start_mode: "t2v",
     models: emptyModels(),
@@ -253,6 +259,10 @@ export function parseState(raw) {
       if (!START_MODES.includes(state.start_mode)) state.start_mode = "t2v";
       state.sample_edge = clampSampleEdge(state.sample_edge);
       state.refine_denoise = clampRefineDenoise(state.refine_denoise);
+      state.refine_steps = Math.max(1, Math.min(50, Number(state.refine_steps || DEFAULT_REFINE_STEPS)));
+      state.upscale_model = String(state.upscale_model || state.upscaler_model || "");
+      state.refine_scale = Number(state.refine_scale || DEFAULT_UPSCALE_SCALE);
+      state.refine_turbo_only = state.refine_turbo_only === true;
       state.models = parseModels(state.models);
       state.turbo = parseTurbo(state.turbo);
       normalizeCheckpoint(state);
@@ -340,6 +350,10 @@ export function serializeState(state) {
     ...(state.upscale !== UPSCALE_MODES[0] ? { upscale: state.upscale } : {}),
     ...(state.sample_edge !== NATIVE_SHORT_EDGE ? { sample_edge: state.sample_edge } : {}),
     ...(state.refine_denoise !== DEFAULT_REFINE_DENOISE ? { refine_denoise: state.refine_denoise } : {}),
+    ...(state.refine_steps !== DEFAULT_REFINE_STEPS ? { refine_steps: state.refine_steps } : {}),
+    ...(state.upscale_model ? { upscale_model: state.upscale_model } : {}),
+    ...(state.refine_scale !== DEFAULT_UPSCALE_SCALE ? { refine_scale: state.refine_scale } : {}),
+    ...(state.refine_turbo_only ? { refine_turbo_only: true } : {}),
     ...serializeModels(state.models),
     ...serializeTurbo(state.turbo),
   }, null, 2);
@@ -395,6 +409,10 @@ export function emptyTimeline() {
     upscale: UPSCALE_MODES[0],
     sample_edge: NATIVE_SHORT_EDGE,
     refine_denoise: DEFAULT_REFINE_DENOISE,
+    refine_steps: DEFAULT_REFINE_STEPS,
+    upscale_model: "",
+    refine_scale: DEFAULT_UPSCALE_SCALE,
+    refine_turbo_only: false,
     loras: [],
     assets: [],
     start_mode: "t2v",
@@ -413,6 +431,10 @@ export function syncTimeline(timeline) {
     segment.upscale = timeline.upscale;
     segment.sample_edge = timeline.sample_edge;
     segment.refine_denoise = timeline.refine_denoise;
+    segment.refine_steps = timeline.refine_steps;
+    segment.upscale_model = timeline.upscale_model;
+    segment.refine_scale = timeline.refine_scale;
+    segment.refine_turbo_only = timeline.refine_turbo_only;
     segment.pool = timeline.assets ?? [];
     segment.master_audio = timeline.master_audio ?? null;
     segment.globalTexts = {
@@ -457,6 +479,10 @@ export function parseTimeline(raw) {
       if (!UPSCALE_MODES.includes(timeline.upscale)) timeline.upscale = UPSCALE_MODES[0];
       timeline.sample_edge = clampSampleEdge(timeline.sample_edge);
       timeline.refine_denoise = clampRefineDenoise(timeline.refine_denoise);
+      timeline.refine_steps = Math.max(1, Math.min(50, Number(timeline.refine_steps || DEFAULT_REFINE_STEPS)));
+      timeline.upscale_model = String(timeline.upscale_model || timeline.upscaler_model || "");
+      timeline.refine_scale = Number(timeline.refine_scale || DEFAULT_UPSCALE_SCALE);
+      timeline.refine_turbo_only = timeline.refine_turbo_only === true;
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
 
@@ -468,8 +494,7 @@ export function parseTimeline(raw) {
         delete segment.version;
         delete segment.models;
         delete segment.turbo;
-        
-        // Exact boolean restoration — prevents defaulting to true
+
         segment.continue = idx > 0 ? (rawSeg?.continue === true) : false;
         segment.continue_audio = idx > 0 ? (rawSeg?.continue_audio === true) : false;
         segment.continuity_mode = rawSeg?.continuity_mode || "latent_mask";
@@ -505,6 +530,10 @@ export function serializeTimeline(timeline) {
     ...(timeline.upscale !== UPSCALE_MODES[0] ? { upscale: timeline.upscale } : {}),
     ...(timeline.sample_edge !== NATIVE_SHORT_EDGE ? { sample_edge: timeline.sample_edge } : {}),
     ...(timeline.refine_denoise !== DEFAULT_REFINE_DENOISE ? { refine_denoise: timeline.refine_denoise } : {}),
+    ...(timeline.refine_steps !== DEFAULT_REFINE_STEPS ? { refine_steps: timeline.refine_steps } : {}),
+    ...(timeline.upscale_model ? { upscale_model: timeline.upscale_model } : {}),
+    ...(timeline.refine_scale !== DEFAULT_UPSCALE_SCALE ? { refine_scale: timeline.refine_scale } : {}),
+    ...(timeline.refine_turbo_only ? { refine_turbo_only: true } : {}),
     loras: serializeLoras(timeline.loras ?? []),
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),
@@ -792,176 +821,4 @@ export function blockedReason(state, action) {
     return t("Remove start frame first — continuing replaces it with previous segment's tail.");
   }
   return null;
-}
-
-// ---- PreStage image model constants & helpers --------------------------------
-
-export const PRESTAGE_ARCHES = ["krea2", "ideogram4", "minimax"];
-export const PRESTAGE_ARCH_LABEL = {
-  krea2: "Krea 2",
-  ideogram4: "Ideogram 4.0",
-  minimax: "MiniMax H3",
-};
-
-export const PRESTAGE_ASPECTS = [
-  ["21:9", 21 / 9], ["16:9", 16 / 9], ["3:2", 3 / 2], ["4:3", 4 / 3],
-  ["1:1", 1], ["3:4", 3 / 4], ["2:3", 2 / 3], ["9:16", 9 / 16],
-];
-
-export const PRESTAGE_MIN_EDGE = 512;
-export const PRESTAGE_MAX_EDGE = 2048;
-export const PRESTAGE_DEFAULT_EDGE = 1024;
-export const PRESTAGE_CANVAS_MULTIPLE = 16;
-export const PRESTAGE_MAX_PIXELS = 2048 * 2048;
-
-export const PRESTAGE_MAX_REFS = 3;
-export const PRESTAGE_DEFAULT_DENOISE = 0.65;
-export const PRESTAGE_MIN_DENOISE = 0.05;
-
-export const PRESTAGE_TURBO_QUALITIES = ["draft", "medium", "good"];
-export const PRESTAGE_TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
-export const PRESTAGE_KREA_RAW = { steps: 52, cfg: 3.5, sampler_name: "euler", scheduler: "simple" };
-export const PRESTAGE_KREA_TURBO = { cfg: 1.0, sampler_name: "euler", scheduler: "simple" };
-
-export const PRESTAGE_IDEOGRAM_QUALITIES = ["quality", "default", "turbo"];
-export const PRESTAGE_IDEOGRAM_STEPS = { quality: 48, default: 20, turbo: 12 };
-export const PRESTAGE_IDEOGRAM_ROW = { cfg: 7.0, sampler_name: "euler" };
-
-export const PRESTAGE_STILL_LENGTHS = [5, 22, 39, 56, 90, 124];
-export const PRESTAGE_STILL_ROW = { steps: 20, cfg: 1.0, sampler_name: "res_multistep", scheduler: "simple" };
-
-export const stillLatentFrames = (frames) => (frames <= 5 ? 2 : Math.floor((frames - 5) / 17) * 5 + 2);
-export const isStill = (state) => state?.arch === "minimax";
-
-export const PRESTAGE_FIELDS = {
-  krea2: ["model", "turbo_model", "clip", "vae"],
-  ideogram4: ["model", "uncond_model", "clip", "vae"],
-};
-
-export const PRESTAGE_FIELD_LABEL = {
-  model: "Model checkpoint",
-  turbo_model: "Turbo checkpoint",
-  uncond_model: "Unconditional model",
-  clip: "Text encoder",
-  vae: "VAE",
-};
-
-export const PRESTAGE_FIELD_HINT = {
-  krea2: {
-    model: "Krea 2 RAW — the full 12.9B base DiT. Used when Turbo is off.",
-    turbo_model: "Krea 2 Turbo — the 8-step distilled checkpoint. Used when Turbo is on.",
-    clip: "Qwen3-VL-4B or 8B. Loaded as CLIPLoader type 'krea2'.",
-    vae: "Qwen Image VAE — decodes the 16-channel latent into pixels.",
-  },
-  ideogram4: {
-    model: "Ideogram 4.0 DiT — the conditional branch.",
-    uncond_model: "Ideogram 4.0 unconditional branch checkpoint.",
-    clip: "Qwen3-VL-8B. Loaded as CLIPLoader type 'ideogram4'.",
-    vae: "Flux/SD3 16-channel VAE.",
-  },
-};
-
-export function emptyPreStageModels() {
-  return {
-    krea2: { model: "", turbo_model: "", clip: "", vae: "" },
-    ideogram4: { model: "", uncond_model: "", clip: "", vae: "" },
-    dtype: "default",
-  };
-}
-
-export function emptyPreStage() {
-  return {
-    version: 1,
-    arch: "krea2",
-    prompt: "",
-    aspect: "16:9",
-    short_edge: PRESTAGE_DEFAULT_EDGE,
-    init: null,
-    refs: [],
-    loras: [],
-    turbo: { on: false, quality: "good", saved: null },
-    quality: "default",
-    minimax: {
-      frames: 5,
-      latent_index: 0,
-      request: emptyState(),
-    },
-    models: emptyPreStageModels(),
-    peer: null,
-  };
-}
-
-export function parsePreStage(raw) {
-  try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
-    if (parsed && typeof parsed === "object") {
-      const state = { ...emptyPreStage(), ...parsed };
-      if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
-      if (!Array.isArray(state.refs)) state.refs = [];
-      if (!Array.isArray(state.loras)) state.loras = [];
-      if (!state.turbo || typeof state.turbo !== "object") state.turbo = emptyPreStage().turbo;
-      if (!state.minimax || typeof state.minimax !== "object") state.minimax = emptyPreStage().minimax;
-      state.minimax.request = parseState(JSON.stringify(state.minimax.request ?? {}));
-      state.models = { ...emptyPreStageModels(), ...(state.models || {}) };
-      return state;
-    }
-  } catch {}
-  return emptyPreStage();
-}
-
-export function serializePreStage(state) {
-  return JSON.stringify(state, null, 2);
-}
-
-export function nextPreStageHandle(state) {
-  const taken = new Set((state.refs || []).map((r) => r.handle));
-  for (let n = 1; ; n += 1) {
-    const handle = `style-${n}`;
-    if (!taken.has(handle)) return handle;
-  }
-}
-
-export function missingPreStageModels(state) {
-  const fields = PRESTAGE_FIELDS[state.arch] || [];
-  const side = state.models?.[state.arch] || {};
-  return fields.filter((f) => !side[f]);
-}
-
-export function guessPreStageModels(models, byFolder) {
-  let changed = false;
-  for (const arch of ["krea2", "ideogram4"]) {
-    const side = models[arch] || {};
-    const unets = byFolder.diffusion_models || [];
-    const clips = byFolder.text_encoders || [];
-    const vaes = byFolder.vae || [];
-
-    if (!side.model) {
-      const hit = unets.find((n) => n.toLowerCase().includes(arch));
-      if (hit) { side.model = hit; changed = true; }
-    }
-    if (arch === "krea2" && !side.turbo_model) {
-      const hit = unets.find((n) => n.toLowerCase().includes("krea") && n.toLowerCase().includes("turbo"));
-      if (hit) { side.turbo_model = hit; changed = true; }
-    }
-    if (!side.clip) {
-      const hit = clips.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes(arch));
-      if (hit) { side.clip = hit; changed = true; }
-    }
-    if (!side.vae) {
-      const hit = vaes.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes("flux") || n.toLowerCase().includes("sd3"));
-      if (hit) { side.vae = hit; changed = true; }
-    }
-  }
-  return changed;
-}
-
-export function resolvedPreStage(state, initSize = null) {
-  let ratio = PRESTAGE_ASPECTS.find(([label]) => label === state.aspect)?.[1] ?? 16 / 9;
-  let fromImage = false;
-  if (initSize && initSize.width && initSize.height) {
-    ratio = initSize.width / initSize.height;
-    fromImage = true;
-  }
-  const [width, height] = resolveCanvas(ratio, state.short_edge || PRESTAGE_DEFAULT_EDGE);
-  return { width, height, ratio, fromImage };
 }

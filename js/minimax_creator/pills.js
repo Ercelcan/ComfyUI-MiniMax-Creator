@@ -1,26 +1,10 @@
-// The pill popovers — aspect ratio, short edge, and the output folder.
-//
-// They live here rather than on CreatorEditor because each is a property of a
-// *generation* in the Creator node and of the *timeline* in the Timeline node,
-// and both need the same controls over the same fields. The PreStage uses the
-// output one too, over its own default.
-
 import { el, icon, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { ASPECT_PRESETS, MIN_SHORT_EDGE, MAX_SHORT_EDGE, NATIVE_SHORT_EDGE, CANVAS_MULTIPLE } from "./canvas.js";
 import { UPSCALE_MODES, DEFAULT_REFINE_DENOISE, MIN_REFINE_DENOISE, MAX_REFINE_DENOISE,
-         twoPass, sampleEdge } from "./state.js";
+         DEFAULT_REFINE_STEPS, DEFAULT_UPSCALE_SCALE, twoPass, sampleEdge } from "./state.js";
+import { catalogLatentUpscalers, loadCatalog } from "./models.js";
 
-/**
- * A −/value/+ pill. The same shape as the duration control, because a number
- * you nudge should look the same everywhere in the node.
- *
- * @param {object} spec
- * @param {number} spec.value
- * @param {(value:number) => void} spec.onChange
- * @param {string} [spec.iconName]   drawn between the two steppers
- * @param {(value:number) => string} [spec.format]
- */
 export function stepperPill({ value, onChange, min = -Infinity, max = Infinity, step = 1,
                               iconName, format = String, title, width = "34px" }) {
   const clamp = (next) => Math.min(max, Math.max(min, Math.round(next * 1e6) / 1e6));
@@ -37,11 +21,6 @@ export function stepperPill({ value, onChange, min = -Infinity, max = Infinity, 
   ]);
 }
 
-/**
- * A pill that opens a list of choices. Used for anything whose options come
- * from the backend — samplers, schedulers — where there is nothing to draw but
- * the name.
- */
 export function openChoicePopover(anchor, { title, options, value, onPick }) {
   const pop = el("div", { class: "mmc-pop mmc-pop-scroll" },
     title ? [el("div", { class: "mmc-pop-title", text: title })] : []);
@@ -61,13 +40,6 @@ export function openChoicePopover(anchor, { title, options, value, onPick }) {
   pop.querySelector('[aria-checked="true"]')?.scrollIntoView({ block: "center" });
 }
 
-/** A frame drawn at the ratio itself, so portrait and landscape are legible
- *  without reading the numbers. Sized to fit `long` on its long edge; the box
- *  is square, which keeps every glyph on the same baseline and left edge.
- *
- *  The pill wears the same glyph one size down, matching the 16px icon on the
- *  resolution pill beside it — the chip is what you look at while the list is
- *  closed, so telling 9:16 from 16:9 there is worth more than in the list. */
 export function aspectGlyph(ratio, long = 18) {
   const width = ratio >= 1 ? long : long * ratio;
   const height = ratio >= 1 ? long / ratio : long;
@@ -76,14 +48,8 @@ export function aspectGlyph(ratio, long = 18) {
   ]);
 }
 
-/** The glyph as a pill wears it. */
 export const PILL_GLYPH = 16;
 
-/**
- * @param {HTMLElement} anchor  the pill to hang the popover off
- * @param {object} target       anything with an `aspect` field — a state or a timeline
- * @param {() => void} commit   called once, after a choice
- */
 export function openAspectPopover(anchor, target, commit) {
   const pop = el("div", { class: "mmc-pop" }, [el("div", { class: "mmc-pop-title", text: t("Aspect Ratio") })]);
   for (const [label, ratio] of ASPECT_PRESETS) {
@@ -101,29 +67,6 @@ export function openAspectPopover(anchor, target, commit) {
   const close = dismissable(pop);
 }
 
-/**
- * The short-edge control, shared by every node that has one.
- *
- * The one rule that matters here: *nothing inside this may change size while
- * the thumb is down*. A range input maps the pointer's x onto the width of its
- * own track, so a readout that grows by a digit, or a note that wraps onto a
- * second line and widens the popover, moves the track out from under the
- * pointer mid-drag and the value jumps. That is why the readout is tabular, the
- * note holds two lines whatever it says, and the popover is a fixed width
- * rather than one fitted to its text.
- *
- * The steppers are the other half of the answer: on the pre-stage's 512–2048
- * range a step is two pixels of track, which no hand can hit. Arrow keys do the
- * same thing once the slider has focus; the buttons say so out loud.
- *
- * @param {object} spec
- * @param {number} spec.value
- * @param {number} [spec.mark]        a value worth marking on the track
- * @param {string} [spec.markLabel]   what it is — "native", "default"
- * @param {(edge:number) => void} spec.apply    write the value onto the target
- * @param {() => {size:string, note:string, warn?:boolean}} spec.describe
- * @param {() => void} spec.commit    called on release, not on every pixel
- */
 export function edgeSlider({ min, max, step, value, mark, markLabel, apply, describe, commit }) {
   const edge = el("span", { class: "mmc-edge" });
   const size = el("span");
@@ -135,8 +78,6 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
   const slider = el("input", {
     type: "range", min, max, step, value,
     "aria-label": t("Short edge in pixels"),
-    // The graph canvas reads a pointerdown anywhere on the node as the start of
-    // a node drag, and would carry the whole node off under the thumb.
     onpointerdown: (event) => event.stopPropagation(),
   });
 
@@ -154,7 +95,6 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
     marker?.classList.toggle("on", current === mark);
   };
 
-  /** Set from a button — the slider itself feeds `input` instead. */
   const set = (next) => {
     slider.value = String(snap(next));
     apply(Number(slider.value));
@@ -178,15 +118,11 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
         onclick: () => set(mark),
       }, [el("span", { text: t(markLabel) })])
     : null;
-  // A custom property has to go through setProperty; Object.assign drops it.
   marker?.style.setProperty("--p", String((mark - min) / (max - min)));
 
   slider.addEventListener("input", () => { apply(Number(slider.value)); paint(); });
   slider.addEventListener("change", () => commit());
 
-  // A hand-edited creator_data can hold an edge off the step grid; the input
-  // silently snaps it, and the readout would otherwise disagree with the size
-  // beside it. Written back without committing — the next change carries it.
   if (Number(slider.value) !== value) apply(Number(slider.value));
 
   const body = el("div", { class: "mmc-slider-body" }, [
@@ -198,38 +134,37 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
     ]),
     note,
   ]);
-  // For content living under the slider in the same popover: repainting the
-  // readout is the only way it can react to its own edits, because `describe`
-  // is where the caller redraws it.
   body.repaint = paint;
   paint();
   return body;
 }
 
-/**
- * @param {HTMLElement} anchor
- * @param {object} target             anything with a `short_edge` field
- * @param {() => {width:number, height:number}} geometry  recomputed as the slider moves
- * @param {() => void} commit         called on release, not on every pixel
- */
 export function openResolutionPopover(anchor, target, geometry, commit) {
-  // The two-pass section. Past the native edge it is the choice the warning
-  // asks for — two passes or one, off-distribution. At or under native there
-  // is no warning to answer, but the first pass can still be lowered under
-  // the slider, which is the same trade at a smaller size: faster sampling,
-  // refined up. Lowering the edge there *is* choosing two passes.
+  loadCatalog(() => { if (pop.isConnected) renderSection(); });
   const section = el("div");
+
+  const BASE_PRESETS = [
+    { edge: 352, label: "352p" },
+    { edge: 384, label: "384p" },
+    { edge: 480, label: "480p" },
+    { edge: 544, label: "544p" },
+    { edge: 640, label: "640p" },
+    { edge: 768, label: "768p" },
+  ];
 
   const renderSection = () => {
     const { width, height } = geometry();
     const over = target.short_edge > NATIVE_SHORT_EDGE;
     const cap = Math.min(NATIVE_SHORT_EDGE, target.short_edge);
+    const curSampleEdge = sampleEdge(target);
+    const upscalerModels = catalogLatentUpscalers();
+
     const option = (mode, label, sub) => el("button", {
       class: "mmc-opt",
       "aria-checked": target.upscale === mode,
       onclick: () => {
         target.upscale = mode;
-        body.repaint();          // redraws this section and the note above it
+        body.repaint();
         commit();
       },
     }, [
@@ -239,48 +174,140 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
       ]),
       el("span", { class: "mmc-radio" }),
     ]);
+
     const rows = [];
     if (over) {
       rows.push(
         option(UPSCALE_MODES[0], t("two passes"),
                t("{edge} px first, refined up to {width} × {height}",
-                 { edge: sampleEdge(target), width, height })),
+                 { edge: curSampleEdge, width, height })),
         option("direct", t("direct"),
                t("one pass at {width} × {height} — off-distribution", { width, height })));
     }
-    // The first-pass edge, whenever there is room under the slider for one and
-    // the mode is not pinned to a single pass.
-    if (cap > MIN_SHORT_EDGE && (!over || target.upscale !== "direct")) {
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("sampled at") }),
-        stepperPill({
-          value: sampleEdge(target),
-          min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "56px",
-          title: t("The short edge the first pass samples at. At the slider's size it is "
-               + "the only pass; under it, a second pass refines up to the slider."),
-          format: (n) => `${n} px`,
-          onChange: (next) => {
-            target.sample_edge = next;
-            // Under native the stepper is the opt-in, so it also picks the mode.
-            if (!over) target.upscale = UPSCALE_MODES[0];
-            body.repaint(); commit();
-          },
-        }),
+
+    // Base sampling resolution selector & quick presets
+    if (!over || target.upscale !== "direct") {
+      const presetChips = BASE_PRESETS.filter((p) => p.edge <= target.short_edge).map((p) => el("button", {
+        class: `mmc-chip${curSampleEdge === p.edge ? " on" : ""}`,
+        style: { fontSize: "11px", padding: "2px 8px" },
+        text: p.label,
+        title: t("Sample Pass 1 at {edge}px base resolution", { edge: p.edge }),
+        onclick: () => {
+          target.sample_edge = p.edge;
+          if (p.edge < target.short_edge) target.upscale = UPSCALE_MODES[0];
+          body.repaint();
+          commit();
+        },
+      }));
+
+      rows.push(el("div", { class: "mmc-refine-row", style: { flexDirection: "column", alignItems: "flex-start", gap: "6px" } }, [
+        el("div", { style: { display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" } }, [
+          el("span", { class: "mmc-refine-label", text: t("sampled at (pass 1)") }),
+          stepperPill({
+            value: curSampleEdge,
+            min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "56px",
+            title: t("The short edge Pass 1 samples at. Lower is much faster; the upscaler and refine pass upscale it to target size."),
+            format: (n) => `${n} px`,
+            onChange: (next) => {
+              target.sample_edge = next;
+              if (next < target.short_edge) target.upscale = UPSCALE_MODES[0];
+              body.repaint();
+              commit();
+            },
+          }),
+        ]),
+        el("div", { class: "mmc-chips", style: { gap: "4px" } }, presetChips),
       ]));
     }
+
     if (twoPass(target)) {
+      // 1. Latent Upscaler Model Selection with Clean Truncation & Ellipsis
+      const curUpscaler = target.upscale_model || "bicubic (interpolated)";
+      const formatModelLabel = (name) => {
+        if (!name || name.startsWith("bicubic")) return "bicubic";
+        const clean = name.split("/").pop().replace(/\.(safetensors|pth)$/i, "");
+        return clean.length > 20 ? `${clean.slice(0, 18)}…` : clean;
+      };
+
       rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("refine") }),
+        el("span", { class: "mmc-refine-label", text: t("upscaler") }),
+        el("button", {
+          class: "mmc-pill",
+          style: {
+            maxWidth: "160px",
+            minWidth: "0",
+            padding: "0 8px",
+            display: "inline-flex",
+            alignItems: "center",
+            overflow: "hidden"
+          },
+          title: t("Model: {name}\nPick a neural latent upscaler (2D or 3D) from models/latent_upscale_models/", { name: curUpscaler }),
+          onclick: (e) => openChoicePopover(e.currentTarget, {
+            title: t("Latent Upscaler Model"),
+            options: ["bicubic (interpolated)", ...upscalerModels],
+            value: curUpscaler,
+            onPick: (picked) => {
+              target.upscale_model = picked.startsWith("bicubic") ? "" : picked;
+              body.repaint();
+              commit();
+            },
+          }),
+        }, [
+          el("span", {
+            style: {
+              overflow: "hidden",
+              textOverflow: "ellipsis",
+              whiteSpace: "nowrap",
+              display: "block",
+              maxWidth: "100%",
+            },
+            text: formatModelLabel(curUpscaler),
+          })
+        ]),
+      ]));
+
+      // 2. Refine Steps (Default: 1)
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("refine steps") }),
+        stepperPill({
+          value: Number(target.refine_steps ?? DEFAULT_REFINE_STEPS),
+          min: 1, max: 20, step: 1, width: "40px",
+          title: t("How many diffusion steps to run on Pass 2 at target resolution."),
+          format: (n) => t("{n} step{s}", { n, s: n > 1 ? "s" : "" }),
+          onChange: (next) => { target.refine_steps = next; body.repaint(); commit(); },
+        }),
+      ]));
+
+      // 3. Refine Denoise (Default: 0.25)
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("refine denoise") }),
         stepperPill({
           value: Number(target.refine_denoise ?? DEFAULT_REFINE_DENOISE),
           min: MIN_REFINE_DENOISE, max: MAX_REFINE_DENOISE, step: 0.05, width: "40px",
-          title: t("How much of the schedule the second pass re-runs. Lower keeps more "
-               + "of the first pass; higher resolves more detail and drifts further from it."),
+          title: t("Denoise strength for Pass 2. 0.25 is the optimal sweet spot."),
           format: (n) => n.toFixed(2),
           onChange: (next) => { target.refine_denoise = next; body.repaint(); commit(); },
         }),
       ]));
+
+      // 4. Turbo on Refine Only Toggle
+      const isGlobalTurbo = target.turbo?.on === true;
+      if (!isGlobalTurbo) {
+        rows.push(el("div", { class: "mmc-refine-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("turbo on refine") }),
+          el("button", {
+            class: `mmc-pill${target.refine_turbo_only ? " on" : ""}`,
+            title: t("Apply Turbo LoRA specifically to Pass 2 so 1-step refinement runs ultra fast."),
+            onclick: () => {
+              target.refine_turbo_only = !target.refine_turbo_only;
+              body.repaint();
+              commit();
+            },
+          }, [icon("bolt", 13), el("span", { text: target.refine_turbo_only ? t("on (1-step)") : t("off") })]),
+        ]));
+      }
     }
+
     section.className = rows.length ? "mmc-twopass" : "";
     section.replaceChildren(...rows);
   };
@@ -297,16 +324,15 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
         return {
           size: `${width} × ${height}`,
           warn: false,
-          note: t("Sampled at {edge} px, then a second pass refines up to this size.",
-                  { edge: sampleEdge(target) }),
+          note: t("Pass 1 at {edge} px, then refined up to {width} × {height} ({steps} step @ {denoise}).",
+                  { edge: sampleEdge(target), width, height, steps: target.refine_steps ?? 1, denoise: (target.refine_denoise ?? DEFAULT_REFINE_DENOISE).toFixed(2) }),
         };
       }
       return {
         size: `${width} × ${height}`,
         warn: over,
         note: over
-          ? t("Above the trained {edge} px short edge — off-distribution, not just slower.",
-              { edge: NATIVE_SHORT_EDGE })
+          ? t("Above the trained {edge} px short edge — off-distribution, not just slower.", { edge: NATIVE_SHORT_EDGE })
           : target.short_edge === NATIVE_SHORT_EDGE
             ? t("Native. What the open weights were trained at.")
             : t("{ratio}× smaller short edge than native — faster, softer.",
@@ -315,9 +341,9 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     },
     commit,
   });
+
   const pop = el("div", { class: "mmc-pop mmc-slider" }, [body, section]);
   document.body.appendChild(pop);
   placeNear(pop, anchor);
   dismissable(pop);
 }
-
