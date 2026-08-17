@@ -1,7 +1,7 @@
-import { el, icon, dismissable, placeNear } from "./dom.js";
+import { api } from "../../../scripts/api.js";
+import { el, icon, dismissable, placeNear, mountOverlay } from "./dom.js";
 import { stepperPill } from "./pills.js";
 import { t } from "./i18n.js";
-import { api } from "../../../scripts/api.js";
 
 const STORE = "minimax_creator.refiner";
 
@@ -17,10 +17,10 @@ const DEFAULTS = {
   language: "English",
   skill: "",
   template: "auto",
-  maxTokens: 6144,
+  maxTokens: 4096,
 };
 
-const TOKENS = { min: 1024, max: 32768, step: 1024 };
+const TOKENS = { min: 512, max: 16384, step: 512 };
 
 export const LANGUAGES = [
   "English", "Chinese", "Spanish", "French", "German", "Portuguese",
@@ -111,6 +111,7 @@ export async function refine(payload) {
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       ...payload,
+      node_id: payload.node_id ? String(payload.node_id) : "",
       provider,
       url,
       api_key: apiKey,
@@ -118,7 +119,7 @@ export async function refine(payload) {
       temperature: current.temperature,
       seed: current.seed,
       language: current.language,
-      max_tokens: current.maxTokens,
+      max_tokens: current.maxTokens || 4096,
       skill: current.skill,
       template: current.template,
     }),
@@ -136,6 +137,40 @@ export async function cancelRefine(nodeId) {
       body: JSON.stringify({ node_id: String(nodeId || "") }),
     });
   } catch {}
+}
+
+export function confirmIfOpenRouter({ actionLabel = "Refine prompt", onConfirm }) {
+  const current = settings();
+  if (current.provider !== "openrouter") {
+    onConfirm();
+    return;
+  }
+
+  const modelName = current.model || "selected model";
+  let unmount;
+  const modal = el("div", { class: "mmc-modal mmc-confirm-modal" }, [
+    el("div", { class: "mmc-modal-head" }, [
+      el("span", { class: "mmc-tab", "aria-selected": "true", text: t("OpenRouter API Confirmation") }),
+    ]),
+    el("div", { class: "mmc-confirm-body" }, [
+      el("div", { class: "mmc-confirm-msg", text: t("Send request to OpenRouter using {model}?", { model: modelName }) }),
+      el("div", { class: "mmc-confirm-sub", style: { color: "var(--mmc-accent)" }, text: t("This action will consume your OpenRouter API credits for: {action}", { action: actionLabel }) }),
+    ]),
+    el("div", { class: "mmc-modal-foot" }, [
+      el("button", { class: "mmc-ghost", text: t("Cancel"), onclick: () => unmount?.() }),
+      el("button", { class: "mmc-add", text: t("Confirm & Run"), onclick: () => {
+        unmount?.();
+        onConfirm();
+      }}),
+    ]),
+  ]);
+
+  const overlay = el("div", {
+    class: "mmc-overlay",
+    onpointerdown: (e) => { if (e.target === overlay) unmount?.(); },
+  }, [modal]);
+
+  unmount = mountOverlay(overlay, () => unmount?.());
 }
 
 export function openSettings(anchor, onChange) {
@@ -397,14 +432,14 @@ export function openSettings(anchor, onChange) {
         el("span", { class: "mmc-note-key", text: t("reply length") }),
         el("div", { class: "mmc-refine-row" }, [
           stepperPill({
-            value: Number(current.maxTokens), ...TOKENS, width: "62px",
-            title: t("How many tokens the rewrite may run to. Raise it if a whole-timeline refine comes back cut off; there is no cost to a model that stops early."),
-            format: (n) => t("{n}k tokens", { n: Math.round(n / 1024) }),
+            value: Number(current.maxTokens || 4096), ...TOKENS, width: "62px",
+            title: t("Maximum token generation budget."),
+            format: (n) => `${n} tok`,
             onChange: (next) => { saveSettings({ maxTokens: next }); changed(); },
           }),
         ]),
         el("div", { class: "mmc-refine-hint",
-                    text: t("The answer's budget, not a context size — the prompt is never truncated to fit, however long it gets.") }),
+                    text: t("The answer's budget, not a context size — keeps prompt completion responsive and prevents proxy timeouts.") }),
       ]),
       el("div", { class: "mmc-refine-group" }, [
         el("span", { class: "mmc-note-key", text: t("sampling") }),
@@ -855,26 +890,33 @@ export function refineButton({ run, label = "Refine", title, mode = "auto", clas
     btnClass = `mmc-nle-deck-refine-btn ${className}`.trim();
   }
 
+  const executeRun = async () => {
+    if (busy) return;
+    busy = true;
+    button.classList.add("busy");
+    spinner.style.display = "inline-block";
+    brainIcon.style.display = "none";
+    text.textContent = t("Refining…");
+    try {
+      await run();
+    } finally {
+      busy = false;
+      button.classList.remove("busy");
+      spinner.style.display = "none";
+      brainIcon.style.display = "";
+      text.textContent = t(label);
+    }
+  };
+
   const button = el("button", {
     class: btnClass,
     title: title || t("Rewrite prompt with Context-IR AI refiner"),
-    onclick: async (e) => {
+    onclick: (e) => {
       e.stopPropagation();
-      if (busy) return;
-      busy = true;
-      button.classList.add("busy");
-      spinner.style.display = "inline-block";
-      brainIcon.style.display = "none";
-      text.textContent = t("Refining…");
-      try {
-        await run();
-      } finally {
-        busy = false;
-        button.classList.remove("busy");
-        spinner.style.display = "none";
-        brainIcon.style.display = "";
-        text.textContent = t(label);
-      }
+      confirmIfOpenRouter({
+        actionLabel: label || "Prompt Refinement",
+        onConfirm: executeRun,
+      });
     },
   }, btnContent);
 

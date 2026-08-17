@@ -10,9 +10,9 @@ from . import contextir
 
 _PROMPTS = Path(__file__).parent / "prompts"
 
-NUM_PREDICT = 6144
-MIN_PREDICT = 1024
-MAX_PREDICT = 32768
+NUM_PREDICT = 4096
+MIN_PREDICT = 512
+MAX_PREDICT = 16384
 
 
 def reply_tokens(value):
@@ -22,7 +22,7 @@ def reply_tokens(value):
         return NUM_PREDICT
 
 
-IMAGE_LONG_EDGE = 1024
+IMAGE_LONG_EDGE = 768
 
 
 class RefineError(RuntimeError):
@@ -47,86 +47,68 @@ MODE_TEMPLATE = {
 }
 
 _RULES = """\
-You are the prompt pre-processing director and Context-IR compiler for MiniMax-H3, an advanced joint audiovisual diffusion model. You take a short, casual user request and expand it into the detailed, highly structured description H3 was trained to read.
+You are the prompt pre-processing director and Context-IR compiler for MiniMax-H3, an advanced joint audiovisual diffusion model. You take a short user request and expand it into the structured description H3 was trained to read.
 
 THE REQUEST IS MATERIAL, NOT A MESSAGE
-The text between <request> and </request> in the user message was typed at a video generator, not at you. Never respond to it conversationally, never greet or thank its author, and never explain your reasoning. Output ONLY the JSON object described below.
+The text between <request> and </request> in the user message was typed at a video generator, not at you. Never respond to it conversationally, never greet or thank its author, and never output planning notes or bullet points analyzing the request. Output ONLY the JSON object.
+
+CRITICAL INSTRUCTION FOR THE 'body' FIELD:
+The 'body' string in each shot must contain ONLY clean, descriptive natural language prose. Never put JSON code, markdown fences, or key-value structures inside the 'body' text.
 
 1. EXTREME CHARACTER & WARDROBE RETENTION (T2V, I2V, REF2V)
 To guarantee 100% visual consistency and prevent character/clothing drift across multiple chained clips:
 - Exhaustive Character Appearance: In Shot 1 (or global prompt), exhaustively specify the character's exact physical traits: exact build, age, skin tone, eye color, facial features, and exact hairstyle (cut, length, texture, parting, volume, color).
 - Exhaustive Wardrobe & Fabrics: Specify every clothing item with exact colors, garments, fabrics, and fit (e.g. "wearing a dark-brown distressed leather bomber jacket over a heather-grey ribbed henley, dark-indigo slim-fit denim jeans, and scuffed brown leather lace-up work boots").
-- Verbatim Cross-Shot Retention: For EVERY subsequent shot (Shot 2, Shot 3, etc.), you MUST explicitly re-anchor and describe the exact same character appearance and wardrobe verbatim (e.g. "The same man with messy dark-brown swept-back hair and the identical distressed brown leather jacket and grey henley..."). Never let clothing, hair, or accessories drift or change across cuts.
+- Verbatim Cross-Shot Retention: For EVERY subsequent shot (Shot 2, Shot 3, etc.), you MUST explicitly re-anchor and describe the exact same character appearance and wardrobe verbatim.
 
 2. EXHAUSTIVE SCENARIO & LIGHTING CONSISTENCY
-- Ground and Environmental Anchors: Detail specific environment elements (e.g. "dense Pacific Northwest temperate rainforest with massive moss-covered basalt boulders, vibrant green sword ferns, damp dark soil, and towering Douglas fir trees").
-- Lighting & Atmosphere: Establish clear, persistent lighting (e.g. "soft diffused morning sunlight filtering through misty canopy, creating gentle volumetric light shafts with cool blue-green ambient fill").
-- Maintain this exact environment and lighting signature verbatim across every shot in the sequence.
+- Ground and Environmental Anchors: Detail specific environment elements and setting anchors.
+- Lighting & Atmosphere: Establish clear, persistent lighting. Maintain this exact lighting signature across all shots.
 
 3. MANDATORY DIALOGUE & LYRICS GENERATION ENGINE (CRITICAL)
-Whenever the user asks for speech, talking, dialogue, conversation, singing, songs, music lyrics, chorus, rap, poetry, chanting, or voiceover:
+Whenever speech, talking, dialogue, conversation, singing, songs, music lyrics, chorus, rap, or voiceover is requested:
 - IF THE USER GAVE EXACT WORDS: Keep their exact words verbatim inside `<d>[Language] ...</d>`.
-- IF THE USER ASKED FOR SINGING/LYRICS/SPEECH BUT GAVE NO LINES: You MUST creatively compose original, realistic spoken lines or rhyming sung lyrics yourself and place them inside `<d>[Language] ...</d>`.
-- STRICTLY FORBIDDEN: NEVER write abstract descriptive summaries like "she sings an emotional chorus", "she belts out a melody", "they discuss their mission", or "he speaks with grief".
-- REQUIRED SINGING FORMAT: You MUST write the actual sung lyric verses:
-  * WRONG: "She sings an emotional pop chorus into the ocean."
-  * CORRECT: "The young woman with an airy, melancholic vocal timbre (S1) belts out the emotional chorus: <d>[English] In the shadow of the tide, where the ocean meets the shore, I am searching for a sign of what we were before.</d>"
-- REQUIRED DIALOGUE FORMAT:
-  * WRONG: "The detective questions the suspect."
-  * CORRECT: "The detective with a low, raspy voice (S1) asks firmly: <d>[English] Where were you on the night the alarm went off?</d>"
-- Dialogue/Lyric Pacing: 2.0 to 3.5 words per second of that shot duration so vocals finish before the cut.
-- Speaker IDs: Assign stable IDs `(S1)`, `(S2)`, `(S1,S2)` to characters when they first vocalize, and maintain the identical speaker IDs across all shots.
+- IF THE USER ASKED FOR SINGING/LYRICS/SPEECH BUT GAVE NO LINES: You MUST creatively compose original spoken lines or rhyming sung lyrics yourself inside `<d>[Language] ...</d>`.
+- DO NOT write abstract summaries like "she sings a chorus". Write the actual sung lyric lines:
+  * CORRECT: "The young woman with an airy vocal timbre (S1) belts out the chorus: <d>[English] In the shadow of the tide, where the ocean meets the shore, I am searching for a sign of what we were before.</d>"
+- Pacing: 2.0 to 3.5 words per second of shot duration.
+- Speaker IDs: Assign stable IDs `(S1)`, `(S2)`, `(S1,S2)` to characters when they first vocalize, and maintain identical speaker IDs across all shots.
 
 4. SEAM CONTINUITY & TRANSITIONS (FOR MULTI-SHOT TIMELINES)
-For each shot after Shot 1, evaluate motion momentum and continuity:
-- Continuous running, action, camera movement, or momentum: `"transition": "cross_blend_39f"` (39 frames lossless latent mask) or `"transition": "motion_blend_22f"` (22 frames fast latent mask).
-- Smooth character/camera match: `"transition": "match_cut_1f"`.
-- Dialogue or background score carrying over a cut: `"transition": "cut_with_sound"`.
-- Total scene, viewpoint, or time jump: `"transition": "hard_cut"`.
+For each shot after Shot 1:
+- `"transition": "cross_blend_39f"` (39 frames lossless latent mask)
+- `"transition": "motion_blend_22f"` (22 frames fast latent mask)
+- `"transition": "match_cut_1f"` (still match cut)
+- `"transition": "cut_with_sound"` (dialogue or audio carryover)
+- `"transition": "hard_cut"` (scene/location jump)
 
 5. SOUNDSCAPE & MUSIC SPECIFICATION
-- For each shot, write `soundscape` describing physical action sounds, ambient room tone, footsteps, water, wind, impacts, and clothing rustle.
-- Write `music` describing instrumentation, tempo, key, rhythm, and dynamic swells when appropriate. Dialogue and singing live strictly inside `<d>` tags in the shot bodies.
-
-FIDELITY TO THE REQUEST
-The request is the specification. Your job is to say the same thing in far more detail, in the vocabulary this model reads.
-Carry every concrete thing the request names into your output and expand it there: the subject, the action, the place, the time of day, the weather, the mood, and above all the look — a named show, film, artist, studio, franchise or game; an art medium such as watercolour, claymation, pixel art, stop-motion, cel animation; an era or format such as 80s VHS, Super 8, vintage film; a camera, lens, film stock or frame size; a colour palette; an adjective like gritty, noir, pastel, sun-bleached.
-
-Expanding a style means naming it explicitly in the first shot and then describing the visual signature it actually has, from your own knowledge of it: the medium, the line or grain quality, character design and proportions, the palette, how light and shadow behave, how backgrounds are drawn, how motion feels, how shots are framed. The video model may not recognise the name, so the description has to carry the look on its own. Once established, keep every later shot in that same visual language.
-
-The same applies to a camera direction. "Shot on a small-frame camera" stays in the prose as written and gains what that format looks like: the grain structure, the depth of field, how the lens renders highlights and edges, the contrast and colour it produces. A request that names equipment is asking for the image that equipment makes.
-
-Where the request is silent, choose what suits what it did say and keep it consistent. A request that names no style gets the plainest one that fits, usually live-action and cinematic, described plainly.
-Where the request and these instructions pull apart, the request decides what the video contains and the instructions decide how it is written down. Keep the request's subject matter intact and unedited, and write it in this form.
-
-REFERENCES
-Attached media is named by handles such as @img-1, @vid-2, @aud-1, @ref-1. Write handles in your prose wherever you mean that asset — the labels are substituted in afterwards. Use only handles from that list.
+- For each shot, write `soundscape` describing physical action sounds, ambient room tone, footsteps, water, wind, and clothing rustle.
+- Write `music` describing instrumentation, tempo, key, and rhythm when appropriate.
 """
 
 _CUTS_RULE = """\
 SHOTS AND CUTS
 How this video is divided into shots is yours to decide. The request states how many seconds it runs ({seconds:.1f}s); write between 1 and {limit} shots that fill exactly that time, and give each one the second its cut lands on as `at_seconds`, counted from the start of the video. The first shot's `at_seconds` is 0 and each later one is strictly larger than the one before it.
-
-Let the request decide, and count what it actually asks for. One sustained action, one held moment, one unbroken movement is one continuous shot. A request that names more than one place, viewpoint, subject or moment in time is that many shots, and writing it as a single body drops the moves it asked for. Give each shot enough seconds to be read as a shot, {floor:.0f}s at the very least. Write each body for the length you gave it: an action, and any speech/singing in it, has to finish inside its own shot.
 """
 
 _LANGUAGE_RULE = """\
 LANGUAGE
-Write all descriptive prose, dialogue lines, and lyrics in {language}, translating the request where needed. Keep structural syntax and markers in English exactly as these instructions specify: reference labels, speaker IDs (S1), `<d>[{language}] ...</d>`, `<scenetrans>`, `<cutoff>`, the `retention_analysis` markers, and the camera-motion vocabulary. Inside a `<d>` tag the language tag is `[{language}]`.
+Write all descriptive prose, dialogue lines, and lyrics in {language}, translating the request where needed. Keep structural syntax and markers in English: reference labels, speaker IDs (S1), `<d>[{language}] ...</d>`, `<scenetrans>`, `<cutoff>`, and camera vocabulary.
 """
 
 MODE_NOTES = {
     "T2VA": "No reference frames are attached. Describe the video, characters, clothing, and environment from nothing in exhaustive detail.",
     "I2VA": "The attached start frame is the video's first frame. Open Shot 1 on exactly that image — its subjects, clothing, colours, objects and layout — and develop forward from it.",
     "L2VA": "The attached end frame is the video's final frame. Open on a state that could plausibly lead there and arrive at exactly that image at the end.",
-    "FL2VA": "The attached start and end frames are the video's first and last frames. Describe the continuous path from one to the other, keeping both exactly as they are; the last shot is the one that arrives at the end frame.",
+    "FL2VA": "The attached start and end frames are the video's first and last frames. Describe the continuous path from one to the other, keeping both exactly as they are.",
     "REF2VA": "Reference assets are attached. Produce the full six-section full-reference rewrite: subject_definitions, summary, retention_analysis, the per-shot bodies, soundscape and music, with every reference handle used consistently across all of them.",
 }
 
 CONTINUES_NOTE = (
     "This shot continues straight out of the previous shot in the finished clip: "
     "its first frame is the previous one's last frame. Open in that same place, "
-    "with the identical subjects, wardrobe, hair, light and framing, and move on from there."
+    "with identical subjects, wardrobe, hair, light and framing, and move on from there."
 )
 
 
@@ -205,7 +187,6 @@ CONTINUOUS_KEYWORDS = re.compile(
 
 
 def infer_seam_continuity(prev_body, current_body, raw_item=None):
-    """Determine transition parameters from LLM choice or text continuity."""
     if isinstance(raw_item, dict):
         trans = str(raw_item.get("transition") or raw_item.get("seam") or "").lower()
         if "39" in trans or "long" in trans or "cross" in trans:
@@ -260,33 +241,32 @@ def reply_shape(mode, shots, cuts=0, images=0, piece=False, ref_shots=(), ai_sea
     lines.append('  "overall_soundscape": "...",')
     lines.append('  "non_diegetic_music": "..."')
     lines.append("}")
+
     if piece:
         lines.append(
-            "Write `%s` right after any `%s`: the piece's standing description, rewritten — see THE PIECE in the user message."
-            % (PIECE_FIELD, SEEN_FIELD)
+            f"Write `{PIECE_FIELD}` right after any `{SEEN_FIELD}`: the piece's standing description, rewritten."
             if int(images) > 0
-            else "Write `%s` first: the piece's standing description, rewritten — see THE PIECE in the user message." % PIECE_FIELD
+            else f"Write `{PIECE_FIELD}` first: the piece's standing description, rewritten."
         )
     if ref_shots:
         which = ", ".join(str(index + 1) for index in sorted(ref_shots))
         lines.append(
-            ("Shot entry %s carries its own" if len(ref_shots) == 1 else "Shot entries %s each carry their own") % which
-            + " subject_definitions, summary and retention_analysis, describing only the references attached to that shot. Entries without references have only a body."
+            f"Shot entries {which} each carry their own subject_definitions, summary and retention_analysis, "
+            "describing only the references attached to that shot."
         )
     if timed:
         lines.append(
-            "Every `...` is one string of prose. `shots` holds 1 to %d entries in play order — one per shot, as many as this video wants — each with the second its cut lands on. If singing or speech is requested, write the lines inside <d>[English] ...</d>. Escape any quote inside the prose, and write no comments, no markdown fence and no explanation."
-            % int(cuts)
+            f"Every `...` is one string of natural language prose. `shots` holds 1 to {int(cuts)} entries in play order. "
+            "Never put JSON or markdown structures inside the `body` string. Escape internal quotes with \\\"."
         )
     else:
         lines.append(
-            "Every `...` is one string of prose. `shots` holds exactly %d entr%s, in play order. For each shot, write its individual `soundscape`, `music`, and choose `transition` for shots after Shot 1. If singing or dialogue is asked for, you MUST compose and write the actual lines/lyrics inside `<d>[English] ...</d>`. Escape any quote inside the prose, and write no comments, no markdown fence and no explanation."
-            % (shots, "y" if shots == 1 else "ies")
+            f"Every `...` is one string of natural language prose. `shots` holds exactly {shots} entr{'y' if shots == 1 else 'ies'}. "
+            "Never put JSON or markdown structures inside the `body` string. Escape internal quotes with \\\"."
         )
     if int(images) > 0:
         lines.append(
-            "Write `%s` first, before anything else: one sentence per attached picture, in the order they are attached, naming its handle and saying what is actually in that picture — the subjects and what they look like, their clothing, the objects, the setting, the colours, the light, the framing. Describe what you can see there, not what the request leads you to expect. Then write the rest of the object from it."
-            % SEEN_FIELD
+            f"Write `{SEEN_FIELD}` first: one sentence per attached picture saying what is actually visible."
         )
     return "\n".join(lines)
 
@@ -321,7 +301,6 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
     many = len(shots) > 1
     lines = []
 
-    # Detect if singing, lyrics, speech or dialogue are asked for anywhere in the requests
     all_req_text = " ".join(
         [str(s.get("text") or "") for s in shots] + [str((piece or {}).get("text") or "")]
     )
@@ -333,32 +312,22 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
         )
     )
 
-    if images == 1:
+    if images:
         lines.append(
-            "One image is attached to this message. The asset marked "
-            "[image 1] below is what it is a picture of. Look at it and "
-            "describe what is actually there."
-        )
-    elif images:
-        lines.append(
-            f"{images} images are attached to this message, in order. The "
-            f"asset marked [image N] below is what the Nth of them is a "
-            f"picture of. Look at them and describe what is actually there."
+            f"{images} image{' is' if images == 1 else 's are'} attached. The asset marked [image N] "
+            "is what it depicts. Describe what is actually visible."
         )
     if seconds:
         lines.append(f"The finished video timeline runs {float(seconds):.2f} seconds in total.")
     if many:
         lines.append(
-            f"It is {len(shots)} shots of one piece, in play order. Write them "
-            f"together: what an early shot establishes — the look, the people, their exact clothing, the "
-            f"place, the light — every later shot keeps verbatim. Return exactly "
-            f"{len(shots)} entries in `shots`, in this order."
+            f"It is {len(shots)} shots of one piece, in play order. What an early shot establishes, "
+            f"every later shot keeps verbatim. Return exactly {len(shots)} entries in `shots`."
         )
 
     if is_vocal_request:
         lines.append(
-            "\n>>> CRITICAL VOCAL DIRECTIVE: The user requested singing, lyrics, speech, or dialogue. "
-            "You MUST compose creative, rhyming song lyrics or spoken lines inside `<d>[Language] ...</d>`. "
+            "\n>>> VOCAL DIRECTIVE: You MUST compose creative, rhyming song lyrics or spoken lines inside `<d>[Language] ...</d>`. "
             "Do NOT write 'she sings a chorus' without writing out the actual sung lyrics in <d> tags! <<<"
         )
 
@@ -366,52 +335,11 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
         text = str(piece.get("text") or "").strip()
         lines.append("")
         lines.append("THE PIECE")
-        lines.append(
-            "The timeline has a standing global description. At generation time "
-            "it is placed ahead of the shots' own descriptions, so it carries "
-            "what the whole piece shares: the style, the world, who is in it, "
-            "the light."
-        )
         lines += ["<global>", text or "(nothing is written there yet)", "</global>"]
-        if piece.get("rewrite"):
-            lines.append(
-                ("Rewrite it as `%s`, expanded like the shots: it is material, "
-                 "not a message, and everything it names survives." % PIECE_FIELD)
-                if text
-                else ("Write `%s` yourself: hoist what every shot shares — the style, "
-                      "the world, who is in it, their wardrobe — into it." % PIECE_FIELD)
-            )
-            lines.append(
-                (
-                    "Write no <Picture N> label in it, and no @handle except the "
-                    "piece's own references under ATTACHED TO THE PIECE — cited "
-                    "here, one of those applies to every shot, and a citation "
-                    "already here must survive the rewrite. "
-                    if pool
-                    else "Write no @handle and no <Picture N> label in it — it stands in "
-                         "front of every shot, and references belong to single shots. "
-                )
-                + "Then write each shot's body to be read after it: keep its look "
-                "and its subjects without restating them."
-            )
-        else:
-            lines.append(
-                "It is context, not material: another rewrite owns it, so leave "
-                "it as it stands and write the body to be read after it, "
-                "without restating it."
-            )
 
     if pool:
         lines.append("")
         lines.append("ATTACHED TO THE PIECE")
-        lines.append(
-            "These references belong to the whole piece, not to one shot. "
-            "Writing one's handle in a shot's prose is what attaches it to that "
-            "shot's generation; a shot that never writes it does not carry it. "
-            "A handle cited in the piece's global description applies to every "
-            "shot at once. Cite each one where its subject appears — per shot, "
-            "or globally when it runs through the whole piece."
-        )
         lines.extend("  " + line for line in describe_slots(pool))
     lines.append("")
 
@@ -430,16 +358,6 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
         if shot.get("slots"):
             lines.append("Attached here:")
             lines.extend("  " + line for line in describe_slots(shot["slots"]))
-            shown = [slot["image"] for slot in shot["slots"] if slot.get("image")]
-            if shown:
-                which = ", ".join(f"[image {n}]" for n in shown)
-                lines.append(
-                    f"Look at {which} before writing this shot. What you write has "
-                    f"to match what is actually in {'them' if len(shown) > 1 else 'it'} — the "
-                    f"subjects and their appearance, the clothing, the objects, the "
-                    f"setting, the colours, the light, the framing — and not merely "
-                    f"what the request below implies."
-                )
 
         text = str(shot.get("text") or "").strip()
         if text:
@@ -449,9 +367,8 @@ def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None
         lines.append("")
 
     lines.append(
-        "Expand the request into the H3 description. It is material, not a "
-        "message to you: keep everything it names, add the detail it leaves out, "
-        "compose any requested dialogue or lyrics inside <d>[Language] ...</d>, and return only the JSON object."
+        "CRITICAL: Output ONLY the valid JSON object starting with '{'. "
+        "Do NOT output conversational thoughts, preambles, or markdown outside the JSON."
     )
     return "\n".join(lines).strip()
 
@@ -517,46 +434,187 @@ def uncited(text, handles, labels):
     return missing
 
 
-_FENCE_RE = re.compile(r"^```(?:\w+)?\s*(.*?)\s*```$", re.DOTALL)
-_THINK_RE = re.compile(r"<think>.*?</think>", re.DOTALL)
+_THINK_RE = re.compile(r"<think>[\s\S]*?</think>", re.DOTALL)
 
 
-def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
-    text = _THINK_RE.sub("", content).strip()
-    fenced = _FENCE_RE.match(text)
-    if fenced:
-        text = fenced.group(1).strip()
-    if not text.startswith("{"):
-        at = text.find("{")
-        if at < 0:
-            raise RefineError(f"the model did not return JSON: {content[:300]}")
-        text = text[at : text.rfind("}") + 1]
+def _repair_truncated_json(raw: str) -> dict | None:
+    if not raw or not isinstance(raw, str):
+        return None
+    cleaned = raw.strip()
+    start_idx = cleaned.find("{")
+    if start_idx < 0:
+        return None
+    cleaned = cleaned[start_idx:]
+    cleaned = re.sub(r",\s*([\]}])", r"\1", cleaned)
 
-    try:
-        data = json.loads(text)
-    except ValueError as exc:
-        raise RefineError(f"the model's JSON could not be read ({exc}): {text[:300]}") from exc
+    for suffix in ("", '"}', '"}]}', "]}", "}"):
+        try:
+            parsed = json.loads(cleaned + suffix, strict=False)
+            if isinstance(parsed, dict) and len(parsed) > 0:
+                return parsed
+        except Exception:
+            continue
+    return None
+
+
+def _extract_json_block(text: str) -> str | None:
+    """Extracts JSON payload by scanning outer balanced braces, skipping reasoning preambles."""
+    if not text:
+        return None
+
+    # 1. Search for markdown code fence
+    fence = re.search(r"```(?:json)?\s*([\s\S]*?)(?:```|$)", text)
+    if fence:
+        fenced_text = fence.group(1).strip()
+        s = fenced_text.find("{")
+        e = fenced_text.rfind("}")
+        if s >= 0 and e > s:
+            return fenced_text[s : e + 1].strip()
+
+    # 2. Balanced brace scan from first '{'
+    first_brace = text.find("{")
+    if first_brace < 0:
+        return None
+
+    depth = 0
+    in_string = False
+    escape = False
+    for idx in range(first_brace, len(text)):
+        char = text[idx]
+        if escape:
+            escape = False
+            continue
+        if char == '\\':
+            escape = True
+            continue
+        if char == '"':
+            in_string = not in_string
+            continue
+        if not in_string:
+            if char == '{':
+                depth += 1
+            elif char == '}':
+                depth -= 1
+                if depth == 0:
+                    return text[first_brace : idx + 1]
+
+    # Fallback: slice from first '{' to last '}'
+    last_brace = text.rfind("}")
+    if last_brace > first_brace:
+        return text[first_brace : last_brace + 1]
+    return text[first_brace:]
+
+
+def _flatten_to_prose(value: any) -> str:
+    """Ensures value is converted to clean prose and never returns a raw JSON structure."""
+    if value is None:
+        return ""
+    if isinstance(value, str):
+        val = value.strip()
+        # If the string itself is a serialized JSON object, parse and extract its inner text
+        if val.startswith("{") and val.endswith("}"):
+            try:
+                sub = json.loads(val, strict=False)
+                if isinstance(sub, dict):
+                    return _flatten_to_prose(sub)
+            except Exception:
+                pass
+        return val
+    if isinstance(value, dict):
+        # Flatten dictionary values into natural sentences
+        parts = []
+        for k, v in value.items():
+            if isinstance(v, (str, int, float)) and str(v).strip():
+                parts.append(str(v).strip())
+            elif isinstance(v, (list, dict)):
+                nested = _flatten_to_prose(v)
+                if nested:
+                    parts.append(nested)
+        return " ".join(parts).strip()
+    if isinstance(value, list):
+        return " ".join(_flatten_to_prose(v) for v in value if _flatten_to_prose(v)).strip()
+    return str(value).strip()
+
+
+def _split_into_shots(text: str) -> list[str]:
+    """Splits single-string description with [Shot N] markers into separate shot bodies."""
+    if not text:
+        return []
+    parts = re.split(r"\[Shot\s+\d+\]", text)
+    shots = [p.strip() for p in parts if p.strip()]
+    return shots if shots else [text.strip()]
+
+
+def parse_reply(content: str, mode: str, shots: int, cuts: int = 0, piece: bool = False, ref_shots: tuple = ()) -> dict:
+    """Extracts and parses JSON from raw LLM output, ensuring clean natural language output."""
+    text = _THINK_RE.sub("", content or "").strip()
+    candidate = _extract_json_block(text)
+
+    data = None
+    if candidate:
+        try:
+            cleaned = re.sub(r",\s*([\]}])", r"\1", candidate)
+            data = json.loads(cleaned, strict=False)
+        except Exception:
+            data = _repair_truncated_json(candidate)
+
     if not isinstance(data, dict):
-        raise RefineError("the model returned JSON, but not an object")
+        data = _repair_truncated_json(text)
+
+    # If no JSON was returned at all, extract prose from text directly (never return raw code)
+    if not isinstance(data, dict):
+        cleaned_text = re.sub(r"^(?:Here is|Output|Based on).*?:\s*", "", text, flags=re.IGNORECASE).strip()
+        # Strip any code fences
+        cleaned_text = re.sub(r"```(?:json)?|```", "", cleaned_text).strip()
+        if len(cleaned_text) > 10:
+            data = {"shots": [{"body": cleaned_text}]}
+        else:
+            preview = (content or "").strip()[:200].replace("\n", " ")
+            raise RefineError(f"the model did not return valid prompt text: {preview}...")
+
+    raw_shots = data.get("shots")
+    if isinstance(raw_shots, dict):
+        raw_shots = list(raw_shots.values())
+
+    # Flexible key resolution: check alternative Context-IR keys
+    if not raw_shots:
+        for alt_key in ("integrated_multimodal_description", "detailed_description", "body", "description", "prompt", "video_prompt", "video_description", "content"):
+            val = data.get(alt_key)
+            if val:
+                if isinstance(val, str):
+                    raw_shots = [{"body": s} for s in _split_into_shots(val)]
+                elif isinstance(val, list):
+                    raw_shots = val
+                elif isinstance(val, dict):
+                    raw_shots = list(val.values())
+                break
+
+    if not raw_shots:
+        shot_keys = sorted(
+            [k for k in data.keys() if re.match(r"^shot[_\s]?\d+$", k.lower())],
+            key=lambda k: int(re.search(r"\d+", k).group()) if re.search(r"\d+", k) else 0,
+        )
+        if shot_keys:
+            raw_shots = [data[k] for k in shot_keys]
+
+    global_sound = _flatten_to_prose(data.get("overall_soundscape") or data.get("soundscape") or "")
+    global_music = _flatten_to_prose(data.get("non_diegetic_music") or data.get("music") or "")
 
     written = []
-    raw_shots = data.get("shots") or []
     prev_body = ""
 
-    global_sound = str(data.get("overall_soundscape") or data.get("soundscape") or "").strip()
-    global_music = str(data.get("non_diegetic_music") or data.get("music") or "").strip()
-
-    for index, item in enumerate(raw_shots):
+    for index, item in enumerate(raw_shots or []):
         if isinstance(item, dict):
-            body = str(item.get("body") or "").strip()
+            body_val = item.get("body") or item.get("prompt") or item.get("description") or ""
+            body = _flatten_to_prose(body_val)
             at = item.get("at_seconds")
-            own = {name: str(item.get(name) or "").strip() for name in _REF_SECTIONS}
+            own = {name: _flatten_to_prose(item.get(name) or "") for name in _REF_SECTIONS}
             own = own if any(own.values()) else None
             auto_seam = infer_seam_continuity(prev_body, body, item) if index > 0 else None
-            shot_sound = str(item.get("soundscape") or item.get("overall_soundscape") or global_sound or "").strip()
-            shot_music = str(item.get("music") or item.get("non_diegetic_music") or global_music or "").strip()
+            shot_sound = _flatten_to_prose(item.get("soundscape") or item.get("overall_soundscape") or global_sound)
+            shot_music = _flatten_to_prose(item.get("music") or item.get("non_diegetic_music") or global_music)
         else:
-            body = str(item or "").strip()
+            body = _flatten_to_prose(item or "")
             at, own = None, None
             auto_seam = infer_seam_continuity(prev_body, body) if index > 0 else None
             shot_sound = global_sound
@@ -568,17 +626,22 @@ def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
 
     bodies = [b for b, _, _, _, _, _ in written]
 
+    # Split single monolithic body if multiple shots were expected
+    if len(bodies) == 1 and shots > 1 and contextir.count_shots(bodies[0]) > 1:
+        split_b = _split_into_shots(bodies[0])
+        if len(split_b) >= shots:
+            bodies = split_b[:shots]
+            written = [(b, None, None, None, global_sound, global_music) for b in bodies]
+
+    if not bodies:
+        preview = (content or "").strip()[:200].replace("\n", " ")
+        raise RefineError(f"the model returned no shot bodies: {preview}...")
+
     timed = int(cuts) >= 2
-    if timed and not 1 <= len(bodies) <= int(cuts):
-        raise RefineError(
-            f"asked for 1 to {int(cuts)} shots and got {len(bodies)} — "
-            f"try again, or use a larger model"
-        )
     if not timed and len(bodies) != shots:
-        raise RefineError(
-            f"asked for {shots} shot{'s' if shots != 1 else ''} and got {len(bodies)} — "
-            f"try again, or use a larger model"
-        )
+        if len(bodies) > shots:
+            bodies = bodies[:shots]
+            written = written[:shots]
 
     out = {
         "shots": bodies,
@@ -587,16 +650,16 @@ def parse_reply(content, mode, shots, cuts=0, piece=False, ref_shots=()):
         "shot_musics": [mus for _, _, _, _, _, mus in written],
         "soundscape": global_sound,
         "music": global_music,
-        "seen": str(data.get(SEEN_FIELD) or "").strip(),
+        "seen": _flatten_to_prose(data.get(SEEN_FIELD) or ""),
     }
     if timed:
         out["cuts"] = [at for _, at, _, _, _, _ in written]
     if piece:
-        out["piece"] = str(data.get(PIECE_FIELD) or data.get("global_prompt") or "").strip()
+        out["piece"] = _flatten_to_prose(data.get(PIECE_FIELD) or data.get("global_prompt") or "")
     if ref_shots:
         out["shot_sections"] = [own for _, _, own, _, _, _ in written]
     elif mode == "REF2VA":
-        out["sections"] = {name: str(data.get(name) or "").strip() for name in _REF_SECTIONS}
+        out["sections"] = {name: _flatten_to_prose(data.get(name) or "") for name in _REF_SECTIONS}
     return out
 
 

@@ -41,7 +41,15 @@ export async function handleMediaFiles(files, targetContext) {
     for (const item of uploaded) {
       const target = targetContext.getTargetNode?.();
       if (target?.mmcBody) {
-        const handle = target.mmcBody.attachPoolFromMention?.(item);
+        const editor = target.mmcBody.editor || target.mmcBody;
+        let handle = null;
+        if (typeof target.mmcBody.attachPoolFromMention === "function") {
+          handle = target.mmcBody.attachPoolFromMention(item);
+        } else if (typeof editor.attachFromMention === "function") {
+          handle = editor.attachFromMention(item);
+        } else if (typeof target.mmcBody.attachFromMention === "function") {
+          handle = target.mmcBody.attachFromMention(item);
+        }
         if (handle) {
           targetContext.inputBox.value = (targetContext.inputBox.value || "") + ` @${handle} `;
           targetContext.flashNotice?.(`Attached @${handle} to project.`);
@@ -65,6 +73,10 @@ export async function handleMediaFiles(files, targetContext) {
   } else if (typeof targetContext.attachPoolFromMention === "function") {
     for (const asset of uploaded) {
       targetContext.attachPoolFromMention(asset);
+    }
+  } else if (typeof targetContext.attachFromMention === "function") {
+    for (const asset of uploaded) {
+      targetContext.attachFromMention(asset);
     }
   } else if (targetContext.state?.refs && Array.isArray(targetContext.state.refs)) {
     for (const asset of uploaded) {

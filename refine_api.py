@@ -39,9 +39,46 @@ def cancel_stream(node_id: str):
     return False
 
 
+def _unload_local_model(provider: str, url: str, model: str):
+    """Auto-unloads Ollama or LM Studio models from VRAM after generation."""
+    try:
+        if provider == "ollama" and model:
+            base = (url or "http://localhost:11434").rstrip("/")
+            endpoint = f"{base}/api/chat" if not base.endswith("/api") else f"{base}/chat"
+            req = urllib.request.Request(
+                endpoint,
+                data=json.dumps({"model": model, "keep_alive": 0}).encode("utf-8"),
+                headers={"Content-Type": "application/json", "User-Agent": "MiniMaxCreator"},
+            )
+            with urllib.request.urlopen(req, timeout=4) as _:
+                pass
+        elif provider in ("openai", "lmstudio") and model:
+            clean_base = (url or "http://localhost:1234").rstrip("/").replace("/v1", "")
+            for ep in (f"{clean_base}/api/v1/models/unload", f"{clean_base}/api/v0/models/unload", f"{clean_base}/v1/models/unload"):
+                try:
+                    req = urllib.request.Request(
+                        ep,
+                        data=json.dumps({"instance_id": model, "model": model}).encode("utf-8"),
+                        headers={"Content-Type": "application/json", "User-Agent": "MiniMaxCreator"},
+                    )
+                    with urllib.request.urlopen(req, timeout=3) as _:
+                        break
+                except Exception:
+                    continue
+    except Exception:
+        pass
+
+    try:
+        import torch
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
+    except Exception:
+        pass
+
+
 def pil_to_base64(img, fmt="JPEG"):
     buffer = BytesIO()
-    img.convert("RGB").save(buffer, format=fmt, quality=85)
+    img.convert("RGB").save(buffer, format=fmt, quality=80)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
@@ -50,7 +87,7 @@ def fetch_models_ollama(url):
     endpoint = f"{base}/tags" if base.endswith("/api") else f"{base}/api/tags"
     req = urllib.request.Request(endpoint, headers={"User-Agent": "MiniMaxCreator"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return [m.get("name") for m in data.get("models", []) if m.get("name")]
     except Exception as exc:
@@ -62,7 +99,7 @@ def fetch_models_openai(url):
     endpoint = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
     req = urllib.request.Request(endpoint, headers={"User-Agent": "MiniMaxCreator"})
     try:
-        with urllib.request.urlopen(req, timeout=5) as resp:
+        with urllib.request.urlopen(req, timeout=8) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return [m.get("id") for m in data.get("data", []) if m.get("id")]
     except Exception as exc:
@@ -83,7 +120,7 @@ def fetch_models_openrouter(url, api_key=""):
 
     req = urllib.request.Request(endpoint, headers=headers)
     try:
-        with urllib.request.urlopen(req, timeout=10) as resp:
+        with urllib.request.urlopen(req, timeout=12) as resp:
             data = json.loads(resp.read().decode("utf-8"))
             return sorted([m.get("id") for m in data.get("data", []) if m.get("id")])
     except Exception as exc:
@@ -147,6 +184,7 @@ def _raw_chat_ollama(
     node_id="",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
+    is_json=True,
 ):
     base = (url or "http://localhost:11434").rstrip("/")
     endpoint = f"{base}/chat" if base.endswith("/api") else f"{base}/api/chat"
@@ -164,13 +202,12 @@ def _raw_chat_ollama(
             user_msg,
         ]
 
-    # Explicitly set num_ctx so Ollama does not truncate at default 2048 context buffer
-    ctx_size = max(16384, int(max_tokens)) if max_tokens else 16384
+    ctx_size = max(8192, int(max_tokens)) if max_tokens else 16000
     options = {
         "temperature": max(float(temperature), 0.01),
         "repeat_penalty": 1.1,
         "num_ctx": ctx_size,
-        "stop": ["<|im_end|>", "<|endoftext|>"],
+        "stop": ["<|im_end|>", "<|endoftext|>", "<|eot_id|>", "</s>"],
     }
     if seed >= 0:
         options["seed"] = int(seed)
@@ -181,8 +218,11 @@ def _raw_chat_ollama(
         "model": model,
         "messages": messages,
         "stream": True,
+        "keep_alive": 0,  # Tells Ollama to immediately unload upon stream finish
         "options": options,
     }
+    if is_json and not raw_messages:
+        payload["format"] = "json"
 
     req = urllib.request.Request(
         endpoint,
@@ -231,6 +271,8 @@ def _raw_chat_ollama(
         if node_id:
             _ACTIVE_SOCKETS.pop(str(node_id), None)
             _CANCEL_EVENTS.pop(str(node_id), None)
+        # Automatic VRAM evacuation
+        _unload_local_model("ollama", url, model)
 
 
 def _raw_chat_openai(
@@ -245,6 +287,7 @@ def _raw_chat_openai(
     node_id="",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
+    is_json=True,
 ):
     base = (url or "http://localhost:1234/v1").rstrip("/")
     endpoint = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
@@ -270,11 +313,14 @@ def _raw_chat_openai(
         "messages": messages,
         "temperature": max(float(temperature), 0.01),
         "stream": True,
+        "ttl": 0,  # LM Studio JIT auto-evict signal
     }
     if seed >= 0:
         payload["seed"] = int(seed)
     if max_tokens:
         payload["max_tokens"] = int(max_tokens)
+    if is_json and not raw_messages:
+        payload["response_format"] = {"type": "json_object"}
 
     req = urllib.request.Request(
         endpoint,
@@ -309,7 +355,7 @@ def _raw_chat_openai(
                 choices = chunk_obj.get("choices", [])
                 if choices:
                     delta_obj = choices[0].get("delta", {})
-                    delta_text = delta_obj.get("content", "") or delta_obj.get("reasoning_content", "")
+                    delta_text = delta_obj.get("content", "") or delta_obj.get("reasoning_content", "") or delta_obj.get("reasoning", "")
                     tracker.process(delta_text)
             except Exception:
                 continue
@@ -329,6 +375,8 @@ def _raw_chat_openai(
         if node_id:
             _ACTIVE_SOCKETS.pop(str(node_id), None)
             _CANCEL_EVENTS.pop(str(node_id), None)
+        # Automatic VRAM evacuation
+        _unload_local_model("openai", url, model)
 
 
 def _raw_chat_openrouter(
@@ -344,6 +392,7 @@ def _raw_chat_openrouter(
     node_id="",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
+    is_json=True,
 ):
     base = (url or "https://openrouter.ai/api/v1").rstrip("/")
     endpoint = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
@@ -374,6 +423,8 @@ def _raw_chat_openrouter(
         payload["seed"] = int(seed)
     if max_tokens:
         payload["max_tokens"] = int(max_tokens)
+    if is_json and not raw_messages:
+        payload["response_format"] = {"type": "json_object"}
 
     headers = {
         "Content-Type": "application/json",
@@ -435,37 +486,37 @@ def _raw_chat_openrouter(
             _CANCEL_EVENTS.pop(str(node_id), None)
 
 
-def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None):
+def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None, is_json=True):
     if images and not raw_messages:
         try:
-            return _raw_chat_ollama(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk)
+            return _raw_chat_ollama(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
         except refine.RefineError as exc:
             err_msg = str(exc).lower()
             if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404")):
-                return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk)
+                return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
             raise
-    return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages)
+    return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages, is_json=is_json)
 
 
-def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None):
+def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None, is_json=True):
     if images and not raw_messages:
         try:
-            return _raw_chat_openai(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk)
+            return _raw_chat_openai(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
         except refine.RefineError as exc:
             err_msg = str(exc).lower()
             if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404", "detail")):
-                return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk)
+                return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
             raise
-    return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages)
+    return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages, is_json=is_json)
 
 
-def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key="", node_id="", on_chunk=None, raw_messages=None):
+def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key="", node_id="", on_chunk=None, raw_messages=None, is_json=True):
     if images and not raw_messages:
         try:
-            return _raw_chat_openrouter(url, model, system, message, images, temperature, seed, max_tokens, api_key, node_id, on_chunk)
+            return _raw_chat_openrouter(url, model, system, message, images, temperature, seed, max_tokens, api_key, node_id, on_chunk, is_json=is_json)
         except refine.RefineError as exc:
             err_msg = str(exc).lower()
             if any(k in err_msg for k in ("image", "vision", "multimodal", "400", "404", "endpoint")):
-                return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key, node_id, on_chunk)
+                return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key, node_id, on_chunk, is_json=is_json)
             raise
-    return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key, node_id, on_chunk, raw_messages=raw_messages)
+    return _raw_chat_openrouter(url, model, system, message, (), temperature, seed, max_tokens, api_key, node_id, on_chunk, raw_messages=raw_messages, is_json=is_json)

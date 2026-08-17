@@ -66,6 +66,7 @@ export class CreatorEditor {
 
     this.refinePanel = new RefinePanel({
       getState: () => this.state,
+      getNodeId: () => this.nodeId,
       onCommit: () => { this.onCommit?.(); this.syncPrompt(); },
       audioFields: !this.onRefined,
       onRevert: () => this.onReverted?.(),
@@ -112,6 +113,7 @@ export class CreatorEditor {
 
   destroy() {
     if (this.ownsStage) this.stage?.destroy();
+    this.refinePanel?.destroy?.();
   }
 
   getNode() {
@@ -174,15 +176,41 @@ export class CreatorEditor {
 
   async refine() {
     try {
-      const result = await refine(this.refineTarget());
+      const targetPayload = this.refineTarget ? this.refineTarget() : {};
+      const result = await refine({
+        ...targetPayload,
+        node_id: typeof this.nodeId === "function" ? this.nodeId() : this.nodeId,
+      });
       const shot = result.shots?.[0];
       if (!shot?.body) throw new Error(t("the refiner returned nothing for this prompt"));
       this.refinePanel.apply(result, shot);
       this.onRefined?.(result);
       this.commit();
     } catch (error) {
+      // Fallback: If HTTP returned 502 timeout, but the stream finished over WebSocket:
+      if (this.refinePanel?.streamContent && this.refinePanel.streamContent.includes("shots")) {
+        try {
+          const raw = this.refinePanel.streamContent;
+          const startIdx = raw.indexOf("{");
+          const endIdx = raw.lastIndexOf("}");
+          if (startIdx >= 0 && endIdx > startIdx) {
+            const parsed = JSON.parse(raw.slice(startIdx, endIdx + 1));
+            const shot = parsed.shots?.[0];
+            if (shot?.body) {
+              this.refinePanel.apply(parsed, shot);
+              this.onRefined?.(parsed);
+              this.commit();
+              return;
+            }
+          }
+        } catch {}
+      }
       this.refinePanel.fail(String(error.message || error));
     }
+  }
+
+  attachPoolFromMention(row) {
+    return this.attachFromMention(row);
   }
 
   attachFromMention(row) {
@@ -196,10 +224,14 @@ export class CreatorEditor {
     }
     const handle = S.nextHandle(this.state, row.kind);
     const entry = {
-      handle, kind: row.kind, role: "reference", filename: row.path,
+      handle,
+      kind: row.kind,
+      role: "reference",
+      filename: row.path || row.filename,
       ref_size: "max",
     };
     if (row.kind === "video") entry.track = S.DEFAULT_TRACK;
+    if (row.trim) entry.trim = row.trim;
     this.state.assets.push(entry);
     this.commit();
     if (row.kind === "video") this.applySoundDefault(entry);

@@ -3,7 +3,7 @@ import { app } from "../../../scripts/app.js";
 import { el, icon, ICONS, svg, floatAbove } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover } from "./pills.js";
-import { listModels, openSettings, settings as getRefineSettings, saveSettings } from "./refine.js";
+import { listModels, openSettings, settings as getRefineSettings, saveSettings, confirmIfOpenRouter } from "./refine.js";
 import { viewUrl, listAssets } from "./api.js";
 import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
@@ -40,7 +40,6 @@ function extractStoryboardPayload(text) {
     try {
       return JSON.parse(raw);
     } catch {
-      // Auto-repair truncated JSON by closing open brackets/braces
       let repaired = raw.trim();
       if (!repaired.endsWith("}")) {
         if (repaired.includes('"shots"') && !repaired.includes("]")) repaired += ']}';
@@ -54,7 +53,6 @@ function extractStoryboardPayload(text) {
     }
   };
 
-  // 1. Markdown code fence: ```json ... ```
   const fenced = /```(?:json)?\s*([\s\S]*?)(?:```|$)/.exec(text);
   if (fenced) {
     const parsed = tryParse(fenced[1]);
@@ -68,7 +66,6 @@ function extractStoryboardPayload(text) {
     }
   }
 
-  // 2. Bare JSON object containing "shots" or "global_prompt"
   const startIdx = text.indexOf("{");
   if (startIdx >= 0) {
     let endIdx = text.lastIndexOf("}");
@@ -152,7 +149,7 @@ function formatTimelineContext(target) {
   }
 
   if (cls === "MiniMaxH3Creator") {
-    const state = target.mmcBody?.state;
+    const state = target.mmcBody?.state || target.mmcBody?.editor?.state;
     if (!state) return { sheet: "", assets: [] };
     const dur = Number(state.duration_s || 6.0).toFixed(1);
     const mode = S.mode(state);
@@ -161,11 +158,19 @@ function formatTimelineContext(target) {
       `• Single Generation: ${state.aspect || "16:9"} @ ${state.short_edge || 768}p · Duration: ${dur}s [Mode: ${mode}]`,
       `• Current Prompt: "${(state.prompt || "").trim() || "(empty)"}"`,
     ];
+    if (state.soundscape?.trim()) {
+      lines.push(`• Soundscape: "${state.soundscape.trim()}"`);
+    }
+    if (state.music?.trim()) {
+      lines.push(`• Music: "${state.music.trim()}"`);
+    }
     const assets = state.assets || [];
     if (assets.length) {
       const assetDescriptions = assets.map((a) => {
         collectedAssets.push(a);
-        return `@${a.handle} (${a.kind}: ${a.filename})`;
+        const roleStr = a.role && a.role !== "reference" ? ` · role: ${a.role}` : "";
+        const trackStr = a.track ? ` · track: ${a.track}` : "";
+        return `@${a.handle} [${a.kind}${roleStr}${trackStr}] (File: ${a.filename})`;
       });
       lines.push(`• Attached References: ${assetDescriptions.join(", ")}`);
     }
@@ -221,7 +226,6 @@ export class DirectorBody {
       parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     } catch {}
 
-    // Fallback to local storage if widget JSON was reset
     if (!parsed || !parsed.history?.length) {
       try {
         const stored = JSON.parse(localStorage.getItem(this.getStorageKey()) || "null");
@@ -369,113 +373,126 @@ export class DirectorBody {
   async sendMessage(customText = null) {
     if (this.isGenerating) return;
 
-    const model = (this.data.model_config?.model || "").trim();
-    if (!model) {
-      this.flashNotice(t("Please select an LLM model first!"), true);
-      const modelBtn = this.root.querySelector(".mmc-director-model-pill");
-      if (modelBtn) {
-        openSettings(modelBtn, () => {
-          this.data.model_config = getRefineSettings();
-          this.commit();
-          this.render();
-        });
-      }
-      return;
-    }
+    const cfg = this.data.model_config || {};
+    const isOR = cfg.provider === "openrouter" || getRefineSettings().provider === "openrouter";
 
-    const text = customText ?? (this.inputBox?.value || "").trim();
-    if (!text) return;
-
-    if (this.inputBox) this.inputBox.value = "";
-    this.mentionMenu?.remove();
-
-    this.data.history.push({ role: "user", content: text, timestamp: Date.now() });
-    this.isGenerating = true;
-    this.ignoreStream = false;
-    this.activeStreamText = "";
-    this.activeThoughtText = "";
-    this.tokenCount = 0;
-    this.tokenSpeed = 0;
-
-    this.render();
-
-    try {
-      const target = this.getTargetNode();
-      const { sheet: contextSheet, assets } = formatTimelineContext(target);
-
-      let enrichedMessage = text;
-      if (contextSheet) {
-        enrichedMessage += `\n\n${contextSheet}`;
-      }
-
-      const msgsToSend = this.data.history.map((m, idx) => ({
-        role: m.role,
-        content: idx === this.data.history.length - 1 ? enrichedMessage : m.content,
-      }));
-
-      const resp = await api.fetchApi("/minimax_creator/director/chat", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          node_id: String(this.node.id),
-          messages: msgsToSend,
-          model_config: this.data.model_config,
-          assets,
-        }),
-      });
-
-      // Safely read response text to prevent "Unexpected end of JSON input" crashes
-      let body = {};
-      try {
-        const rawText = await resp.text();
-        if (rawText && rawText.trim()) {
-          body = JSON.parse(rawText);
-        }
-      } catch {}
-
-      const finalContent = body.content || this.activeStreamText;
-
-      if (!this.ignoreStream && (finalContent || this.activeThoughtText)) {
-        this.data.history.push({
-          role: "assistant",
-          content: finalContent || "(Response truncated)",
-          thought: this.activeThoughtText,
-          timestamp: Date.now(),
-        });
-
-        const extracted = extractStoryboardPayload(finalContent);
-        if (extracted?.payload) {
-          this.data.last_timeline_payload = extracted.payload;
-        }
-
-        this.commit();
-      }
-
-      if (!resp.ok && !finalContent) {
-        throw new Error(body.error || `Server returned status ${resp.status}`);
-      }
-    } catch (err) {
-      if (!this.ignoreStream) {
-        if (this.activeStreamText || this.activeThoughtText) {
-          const lastMsg = this.data.history[this.data.history.length - 1];
-          if (lastMsg?.role !== "assistant") {
-            this.data.history.push({
-              role: "assistant",
-              content: this.activeStreamText || "(Response truncated)",
-              thought: this.activeThoughtText,
-              timestamp: Date.now(),
-            });
+    const proceed = async () => {
+      const model = (cfg.model || getRefineSettings().model || "").trim();
+      if (!model) {
+        this.flashNotice(t("Please select an LLM model first!"), true);
+        const modelBtn = this.root.querySelector(".mmc-director-model-pill");
+        if (modelBtn) {
+          openSettings(modelBtn, () => {
+            this.data.model_config = getRefineSettings();
             this.commit();
-          }
+            this.render();
+          });
         }
-        this.flashNotice(t("Notice: {err}", { err: err.message || err }), false);
+        return;
       }
-    } finally {
-      this.isGenerating = false;
+
+      const text = customText ?? (this.inputBox?.value || "").trim();
+      if (!text) return;
+
+      if (this.inputBox) this.inputBox.value = "";
+      this.mentionMenu?.remove();
+
+      this.data.history.push({ role: "user", content: text, timestamp: Date.now() });
+      this.isGenerating = true;
       this.ignoreStream = false;
       this.activeStreamText = "";
       this.activeThoughtText = "";
+      this.tokenCount = 0;
+      this.tokenSpeed = 0;
+
       this.render();
+
+      try {
+        const target = this.getTargetNode();
+        const { sheet: contextSheet, assets } = formatTimelineContext(target);
+
+        let enrichedMessage = text;
+        if (contextSheet) {
+          enrichedMessage += `\n\n${contextSheet}`;
+        }
+
+        const msgsToSend = this.data.history.map((m, idx) => ({
+          role: m.role,
+          content: idx === this.data.history.length - 1 ? enrichedMessage : m.content,
+        }));
+
+        const resp = await api.fetchApi("/minimax_creator/director/chat", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({
+            node_id: String(this.node.id),
+            messages: msgsToSend,
+            model_config: this.data.model_config,
+            assets,
+          }),
+        });
+
+        let body = {};
+        try {
+          const rawText = await resp.text();
+          if (rawText && rawText.trim()) {
+            body = JSON.parse(rawText);
+          }
+        } catch {}
+
+        const finalContent = body.content || this.activeStreamText;
+
+        if (!this.ignoreStream && (finalContent || this.activeThoughtText)) {
+          this.data.history.push({
+            role: "assistant",
+            content: finalContent || "(Response truncated)",
+            thought: this.activeThoughtText,
+            timestamp: Date.now(),
+          });
+
+          const extracted = extractStoryboardPayload(finalContent);
+          if (extracted?.payload) {
+            this.data.last_timeline_payload = extracted.payload;
+          }
+
+          this.commit();
+        }
+
+        if (!resp.ok && !finalContent) {
+          throw new Error(body.error || `Server returned status ${resp.status}`);
+        }
+      } catch (err) {
+        if (!this.ignoreStream) {
+          if (this.activeStreamText || this.activeThoughtText) {
+            const lastMsg = this.data.history[this.data.history.length - 1];
+            if (lastMsg?.role !== "assistant") {
+              this.data.history.push({
+                role: "assistant",
+                content: this.activeStreamText || "(Response truncated)",
+                thought: this.activeThoughtText,
+                timestamp: Date.now(),
+              });
+              this.commit();
+            }
+          }
+          this.flashNotice(t("Notice: {err}", { err: err.message || err }), false);
+        }
+      } finally {
+        this.isGenerating = false;
+        this.ignoreStream = false;
+        this.activeStreamText = "";
+        this.activeThoughtText = "";
+        this.render();
+      }
+    };
+
+    if (isOR) {
+      confirmIfOpenRouter({
+        actionLabel: t("Director Chat Completion"),
+        onConfirm: proceed,
+      });
+    } else {
+      await proceed();
     }
   }
 
@@ -502,9 +519,8 @@ export class DirectorBody {
 
     const cls = target.comfyClass || target.type || "";
 
-    // 1. Target is Creator Node
     if (cls === "MiniMaxH3Creator") {
-      const body = target.mmcBody;
+      const body = target.mmcBody?.editor || target.mmcBody;
       if (!body) return;
       const shotBody = payload.shots?.[0]?.body || payload.global_prompt || "";
       if (shotBody) {
@@ -529,7 +545,6 @@ export class DirectorBody {
       return;
     }
 
-    // 2. Target is Timeline Node
     const tBody = target.mmcBody;
     const timeline = tBody?.timeline;
     if (!timeline) return;
@@ -614,22 +629,23 @@ export class DirectorBody {
 
     const cls = target.comfyClass || target.type || "";
     if (cls === "MiniMaxH3Creator") {
-      target.mmcBody.state.refined = {
+      const body = target.mmcBody?.editor || target.mmcBody;
+      body.state.refined = {
         body: shot.body || "",
         scope: "shot",
         enabled: true,
-        source: target.mmcBody.state.prompt || "",
+        source: body.state.prompt || "",
         replaced: {
-          prompt: target.mmcBody.state.prompt || "",
-          soundscape: target.mmcBody.state.soundscape || "",
-          music: target.mmcBody.state.music || "",
+          prompt: body.state.prompt || "",
+          soundscape: body.state.soundscape || "",
+          music: body.state.music || "",
         },
       };
-      target.mmcBody.state.prompt = shot.body || "";
-      target.mmcBody.prompt?.setValue(shot.body || "");
-      if (shot.soundscape) target.mmcBody.state.soundscape = shot.soundscape;
-      if (shot.music) target.mmcBody.state.music = shot.music;
-      target.mmcBody.commit?.();
+      body.state.prompt = shot.body || "";
+      body.prompt?.setValue(shot.body || "");
+      if (shot.soundscape) body.state.soundscape = shot.soundscape;
+      if (shot.music) body.state.music = shot.music;
+      body.commit?.();
       this.flashNotice(t("⚡ Applied Shot to Creator node!"));
       return;
     }
@@ -1040,10 +1056,23 @@ export class DirectorBody {
     const target = this.getTargetNode();
     const assets = [];
 
-    const tAssets = target?.mmcBody?.timeline?.assets || target?.mmcBody?.state?.assets || [];
-    tAssets.forEach((a) => assets.push(a));
+    const state = target?.mmcBody?.timeline || target?.mmcBody?.state || target?.mmcBody?.editor?.state;
+    if (state) {
+      if (Array.isArray(state.assets)) {
+        state.assets.forEach((a) => assets.push(a));
+      }
+      if (Array.isArray(state.segments)) {
+        state.segments.forEach((seg) => {
+          (seg.assets || []).forEach((a) => {
+            if (!assets.some((existing) => existing.handle === a.handle)) {
+              assets.push(a);
+            }
+          });
+        });
+      }
+    }
 
-    const filtered = assets.filter((a) => !query || a.handle.toLowerCase().includes(query) || a.filename.toLowerCase().includes(query));
+    const filtered = assets.filter((a) => !query || a.handle.toLowerCase().includes(query) || (a.filename && a.filename.toLowerCase().includes(query)));
 
     if (!this.mentionMenu) {
       this.mentionMenu = el("div", { class: "mmc-mention mmc-director-mention-menu" });
@@ -1069,7 +1098,7 @@ export class DirectorBody {
         el("img", { class: "mmc-mention-thumb", src: viewUrl(asset.filename, { preview: true }), alt: "" }),
         el("div", { class: "mmc-mention-text" }, [
           el("span", { class: "mmc-mention-handle", text: `@${asset.handle}` }),
-          el("span", { class: "mmc-mention-sub", text: asset.filename.split("/").pop() }),
+          el("span", { class: "mmc-mention-sub", text: (asset.filename || "").split("/").pop() }),
         ]),
       ])));
     }
