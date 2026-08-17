@@ -126,7 +126,7 @@ export class TimelineBody {
   constructor({ read, write, widgets = {}, onWidgetChange, nodeId, preStage = null }) {
     this.read = read;
     this.write = write;
-    this.widgets = widgets;
+    this.widgets = widgets || {};
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.preStage = preStage;
@@ -144,6 +144,7 @@ export class TimelineBody {
 
     this.selectedShotIndex = 0;
     this.activeDeckTab = "bible";
+    this._lastScrollLeft = 0;
 
     this.trackVideoLocked = false;
     this.trackAudioMuted = false;
@@ -219,6 +220,28 @@ export class TimelineBody {
       try { return this.nodeId(); } catch { return null; }
     }
     return this.nodeId;
+  }
+
+  getNode() {
+    const id = this.getId();
+    if (id !== null && id !== undefined) {
+      return (app?.canvas?.graph?._nodes ?? []).find((n) => String(n.id) === String(id));
+    }
+    return null;
+  }
+
+  getWidget(name) {
+    const node = this.getNode();
+    if (node?.widgets) {
+      const found = node.widgets.find((w) => w.name === name);
+      if (found) return found;
+    }
+    return this.widgets?.[name] || null;
+  }
+
+  value(name, fallback) {
+    const widget = this.getWidget(name);
+    return widget?.value !== undefined ? widget.value : fallback;
   }
 
   ours(id) {
@@ -615,20 +638,17 @@ export class TimelineBody {
     this.render();
   }
 
-  value(name, fallback) {
-    const widget = this.widgets[name];
-    return widget ? widget.value : fallback;
-  }
-
   widgetIO() {
     return {
       value: (name, fallback) => this.value(name, fallback),
       set: (name, value) => {
-        const widget = this.widgets[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
+        const widget = this.getWidget(name);
+        if (widget) {
+          widget.value = value;
+          widget.callback?.(value);
+        }
         this.onWidgetChange?.();
+        this.render();
       },
     };
   }
@@ -700,12 +720,40 @@ export class TimelineBody {
     this.commit();
   }
 
-  selectShot(index) {
+  selectShot(index, autoScroll = false) {
     const segments = this.timeline.segments || [];
     if (index < 0 || index >= segments.length) return;
     this.selectedShotIndex = index;
     this.activeDeckTab = "shot";
     this.render();
+    if (autoScroll) {
+      this.ensureShotVisible(index);
+    }
+  }
+
+  ensureShotVisible(index) {
+    if (!this.tracksViewport) return;
+    const segments = this.timeline.segments || [];
+    const isSingle = S.isSingle(this.timeline);
+    const pxPerSec = 45 * this.zoomScale;
+
+    let acc = 0;
+    for (let i = 0; i < index && i < segments.length; i++) {
+      acc += S.getEffectiveDuration(segments[i], i, isSingle);
+    }
+    const shotStartPx = acc * pxPerSec;
+    const shotDur = S.getEffectiveDuration(segments[index], index, isSingle);
+    const shotEndPx = shotStartPx + (shotDur * pxPerSec);
+
+    const viewLeft = this.tracksViewport.scrollLeft;
+    const viewWidth = this.tracksViewport.clientWidth || 600;
+    const viewRight = viewLeft + viewWidth;
+
+    if (shotStartPx < viewLeft) {
+      this.tracksViewport.scrollLeft = Math.max(0, shotStartPx - 40);
+    } else if (shotEndPx > viewRight) {
+      this.tracksViewport.scrollLeft = Math.max(0, shotEndPx - viewWidth + 60);
+    }
   }
 
   handleTimelineTrackDrop(uploadedItem) {
@@ -742,7 +790,6 @@ export class TimelineBody {
     const { segment, index, localTime } = this.getActiveShotInfo();
     const curDur = Number(segment.duration_s) || 6;
 
-    // Enforce 1.5s minimum sub-segment duration
     if (localTime < 1.5 || curDur - localTime < 1.5) return;
 
     this.pushUndoSnapshot("Razor Split");
@@ -967,6 +1014,7 @@ export class TimelineBody {
   }
 
   renderSplitBody() {
+    const savedDeckScroll = this.leftDeckEl?.scrollTop || 0;
     const segments = this.timeline.segments || [];
     const activeIdx = Math.max(0, Math.min(this.selectedShotIndex ?? 0, segments.length - 1));
     const selectedSeg = segments[activeIdx];
@@ -1019,9 +1067,14 @@ export class TimelineBody {
       ]);
     }
 
-    const leftDeck = el("div", { class: "mmc-nle-left-deck" }, [deckTabs, deckContent]);
+    if (!this.leftDeckEl) {
+      this.leftDeckEl = el("div", { class: "mmc-nle-left-deck" });
+    }
+    this.leftDeckEl.replaceChildren(deckTabs, deckContent);
+    this.leftDeckEl.scrollTop = savedDeckScroll;
+
     const rightMonitor = this.renderCinemaMonitor();
-    return el("div", { class: "mmc-nle-split-body" }, [leftDeck, rightMonitor]);
+    return el("div", { class: "mmc-nle-split-body" }, [this.leftDeckEl, rightMonitor]);
   }
 
   renderShotInspector(seg, idx) {
@@ -1423,6 +1476,8 @@ export class TimelineBody {
 
   updateTimelineTracks() {
     if (!this.tracksContainer) return;
+    const savedScrollLeft = this.tracksViewport?.scrollLeft ?? this._lastScrollLeft ?? 0;
+
     const totalDuration = S.timelineSeconds(this.timeline);
     const segments = this.timeline.segments || [];
     const isSingle = S.isSingle(this.timeline);
@@ -1479,10 +1534,13 @@ export class TimelineBody {
     this.rulerCanvas = el("canvas", { class: "mmc-nle-ruler-canvas", style: { width: `${contentWidth}px` } });
     this.drawRuler(this.rulerCanvas, totalDuration, contentWidth, pxPerSec);
 
-    this.rulerWrap = el("div", {
-      class: "mmc-nle-ruler-wrap",
-      onpointerdown: (e) => this.handleRulerPointer(e),
-    }, [this.rulerCanvas]);
+    if (!this.rulerWrap) {
+      this.rulerWrap = el("div", {
+        class: "mmc-nle-ruler-wrap",
+        onpointerdown: (e) => this.handleRulerPointer(e),
+      });
+    }
+    this.rulerWrap.replaceChildren(this.rulerCanvas);
 
     const videoTrack = el("div", { class: "mmc-nle-track mmc-nle-track-video" });
     let accV = 0;
@@ -1500,8 +1558,8 @@ export class TimelineBody {
       const vClip = el("div", {
         class: `mmc-nle-video-clip${isLocked ? " locked" : ""}${isSelected ? " selected" : ""}${isNarrow ? " narrow" : ""}`,
         style: { left: `${leftPx}px`, width: `${widthPx - 4}px` },
-        onclick: () => this.selectShot(idx),
-        ondblclick: () => this.selectShot(idx),
+        onclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); },
+        ondblclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); },
       }, [
         filmstripCanvas,
         el("div", {
@@ -1512,7 +1570,7 @@ export class TimelineBody {
         el("div", { class: `mmc-nle-clip-hud${idx === 0 ? " first-shot" : ""}` }, [
           el("span", { class: "mmc-nle-clip-title", text: `Shot ${idx + 1} (${dur.toFixed(1)}s)` }),
           el("div", { class: "mmc-nle-clip-actions" }, [
-            el("button", { class: "mmc-nle-clip-btn", title: t("Select & inspect shot"), onclick: (e) => { e.stopPropagation(); this.selectShot(idx); } }, [icon("edit", 11)]),
+            el("button", { class: "mmc-nle-clip-btn", title: t("Select & inspect shot"), onclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); } }, [icon("edit", 11)]),
             el("button", {
               class: `mmc-nle-clip-btn${isLocked ? " locked" : ""}`,
               title: t("Lock segment cache"),
@@ -1617,14 +1675,25 @@ export class TimelineBody {
       musicTrack,
     ]);
 
-    this.tracksViewport = el("div", {
-      class: "mmc-nle-tracks-viewport",
-      onscroll: () => {
-        if (this.rulerWrap && this.tracksViewport) {
-          this.rulerCanvas.style.transform = `translateX(-${this.tracksViewport.scrollLeft}px)`;
-        }
-      },
-    }, [timelineContent]);
+    if (!this.tracksViewport) {
+      this.tracksViewport = el("div", {
+        class: "mmc-nle-tracks-viewport",
+        onscroll: () => {
+          this._lastScrollLeft = this.tracksViewport.scrollLeft;
+          if (this.rulerCanvas) {
+            this.rulerCanvas.style.transform = `translateX(-${this.tracksViewport.scrollLeft}px)`;
+          }
+        },
+      });
+    }
+
+    this.tracksViewport.replaceChildren(timelineContent);
+    this.tracksViewport.scrollLeft = savedScrollLeft;
+    this._lastScrollLeft = savedScrollLeft;
+
+    if (this.rulerCanvas) {
+      this.rulerCanvas.style.transform = `translateX(-${savedScrollLeft}px)`;
+    }
 
     const tracksMain = el("div", { class: "mmc-nle-tracks-main" }, [
       this.rulerWrap,
@@ -1632,6 +1701,16 @@ export class TimelineBody {
     ]);
 
     this.tracksContainer.replaceChildren(headerCol, tracksMain);
+
+    requestAnimationFrame(() => {
+      if (this.tracksViewport) {
+        this.tracksViewport.scrollLeft = savedScrollLeft;
+        if (this.rulerCanvas) {
+          this.rulerCanvas.style.transform = `translateX(-${savedScrollLeft}px)`;
+        }
+      }
+    });
+
     this.updatePlayheadPosition();
   }
 
@@ -1894,12 +1973,14 @@ export class TimelineBody {
     return samplingBar({
       widgets: this.widgets,
       value: (name, fallback) => this.value(name, fallback),
-      set: (name, value) => {
-        const widget = this.widgets[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
+      set: (name, val) => {
+        const widget = this.getWidget(name);
+        if (widget) {
+          widget.value = val;
+          widget.callback?.(val);
+        }
         this.onWidgetChange?.();
+        this.render();
       },
       perSegment: !S.isSingle(this.timeline),
       turbo: Turbo.turboPills({

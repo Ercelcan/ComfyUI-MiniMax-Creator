@@ -476,7 +476,6 @@ function createPrestageBody(node) {
 
 function createDirectorBody(node) {
   return attach(node, (widget) => {
-    // Hide the native context_timeline text box widget completely
     const ctxWidget = node.widgets?.find((w) => w.name === "context_timeline");
     if (ctxWidget) hideWidget(ctxWidget);
 
@@ -537,6 +536,7 @@ app.registerExtension({
           widget.value = S.serializeState(state);
           node.graph?.setDirtyCanvas(true, true);
         };
+        body.samplingWidgets = collectSampling(node);
         body.setState(state);
       }
     } else if (node.comfyClass === PRESTAGE) {
@@ -547,6 +547,7 @@ app.registerExtension({
           widget.value = S.serializePreStage(state);
           node.graph?.setDirtyCanvas(true, true);
         };
+        body.samplingWidgets = collectSampling(node);
         body.setState(state);
       }
     } else if (node.comfyClass === DIRECTOR) {
@@ -559,6 +560,7 @@ app.registerExtension({
         body.render();
       }
     } else {
+      body.widgets = collectSampling(node);
       body.reload();
     }
   },

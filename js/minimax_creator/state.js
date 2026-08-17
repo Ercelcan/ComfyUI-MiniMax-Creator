@@ -468,8 +468,10 @@ export function parseTimeline(raw) {
         delete segment.version;
         delete segment.models;
         delete segment.turbo;
-        segment.continue = idx > 0 && rawSeg?.continue !== false;
-        segment.continue_audio = idx > 0 && rawSeg?.continue_audio !== false;
+        
+        // Exact boolean restoration — prevents defaulting to true
+        segment.continue = idx > 0 ? (rawSeg?.continue === true) : false;
+        segment.continue_audio = idx > 0 ? (rawSeg?.continue_audio === true) : false;
         segment.continuity_mode = rawSeg?.continuity_mode || "latent_mask";
         segment.locked = rawSeg?.locked === true;
         segment.cached_video = typeof rawSeg?.cached_video === "string" ? rawSeg.cached_video : null;
@@ -480,7 +482,7 @@ export function parseTimeline(raw) {
         const from = Number(rawSeg?.continue_from);
         if (Number.isInteger(from)) segment.continue_from = from;
         const width = Number(rawSeg?.feather);
-        segment.feather = FEATHER_GRID.includes(width) ? width : 39;
+        segment.feather = FEATHER_GRID.includes(width) ? width : (segment.continuity_mode === "latent_mask" ? 39 : 1);
         return segment;
       });
       return syncTimeline(timeline);
@@ -511,10 +513,12 @@ export function serializeTimeline(timeline) {
     ...(timeline.tracks ? { tracks: timeline.tracks } : {}),
     segments: (timeline.segments || []).map((segment, index) => {
       const out = serializeCommon(segment);
-      if (index > 0 && segment.continue) out.continue = true;
-      if (index > 0 && segment.continue_audio) out.continue_audio = true;
-      out.continuity_mode = segment.continuity_mode || "latent_mask";
-      out.feather = feather(segment);
+      if (index > 0) {
+        out.continue = segment.continue === true;
+        out.continue_audio = segment.continue_audio === true;
+        out.continuity_mode = segment.continuity_mode || "latent_mask";
+        out.feather = feather(segment);
+      }
       if (segment.cached_video) {
         out.cached_video = segment.cached_video;
       }

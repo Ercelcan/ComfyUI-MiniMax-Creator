@@ -90,10 +90,6 @@ def fetch_models_openrouter(url, api_key=""):
         raise RuntimeError(f"Could not connect to OpenRouter at {url}: {exc}") from exc
 
 
-# ---------------------------------------------------------------------------
-# Streaming Tracker
-# ---------------------------------------------------------------------------
-
 class _StreamTracker:
     def __init__(self, on_chunk: Optional[Callable[[str, bool, int, float], None]] = None):
         self.on_chunk = on_chunk
@@ -168,9 +164,12 @@ def _raw_chat_ollama(
             user_msg,
         ]
 
+    # Explicitly set num_ctx so Ollama does not truncate at default 2048 context buffer
+    ctx_size = max(16384, int(max_tokens)) if max_tokens else 16384
     options = {
         "temperature": max(float(temperature), 0.01),
         "repeat_penalty": 1.1,
+        "num_ctx": ctx_size,
         "stop": ["<|im_end|>", "<|endoftext|>"],
     }
     if seed >= 0:
@@ -435,10 +434,6 @@ def _raw_chat_openrouter(
             _ACTIVE_SOCKETS.pop(str(node_id), None)
             _CANCEL_EVENTS.pop(str(node_id), None)
 
-
-# ---------------------------------------------------------------------------
-# Public Wrappers
-# ---------------------------------------------------------------------------
 
 def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None):
     if images and not raw_messages:

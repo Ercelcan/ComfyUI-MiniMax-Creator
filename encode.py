@@ -1,4 +1,4 @@
-"""Conditioning + AV Latent Encoding Engine for MiniMax H3 with Raw Latent Continuity (Zero VAE Round-Trip)."""
+"""Conditioning + AV Latent Encoding Engine for MiniMax H3 with Raw Latent Continuity and Auto Master Audio Slicing."""
 
 from __future__ import annotations
 
@@ -125,7 +125,6 @@ def _resize_images(images: torch.Tensor, width: int, height: int, crop: str = "d
 
 
 def _context_keyframes_from_raw_latent(raw_latent_steps: torch.Tensor):
-    """Generates keyframe tokens directly from raw sampled latents (Zero VAE re-encode drift)."""
     steps = int(raw_latent_steps.shape[2])
     return [{
         "resolved_frame_index": 0,
@@ -157,7 +156,7 @@ def _seam_audio(audio_vae, compiled, loaded):
 
 
 def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip_start_seconds: float = 0.0):
-    """Injects exact master song slice into target audio stream."""
+    """Injects exact master song slice into target audio stream and pins it with an AV noise mask for lip-sync diffusion."""
     _require_mask_support()
     target_v, target_a = _streams_from_latent(target_latent_dict)
     expected_audio_steps = int(target_a.shape[-1])
@@ -166,7 +165,8 @@ def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip
     waveform = _stereo_first_batch(master_audio["waveform"], "master_audio")
     waveform = _resample_waveform(waveform, int(master_audio["sample_rate"]), vae_sr, "master_audio")
 
-    start_sample = int(round(float(clip_start_seconds) * vae_sr))
+    # Time-accurate sample offset calculation
+    start_sample = max(0, int(round(float(clip_start_seconds) * vae_sr)))
     needed_samples = int(math.ceil(expected_audio_steps / AUDIO_HZ * vae_sr))
     end_sample = start_sample + needed_samples
 
@@ -177,13 +177,22 @@ def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip
     audio_latent = audio_vae.encode(audio_slice.movedim(1, -1))
     if int(audio_latent.shape[-1]) > expected_audio_steps:
         audio_latent = audio_latent[..., :expected_audio_steps]
+    elif int(audio_latent.shape[-1]) < expected_audio_steps:
+        audio_latent = torch.nn.functional.pad(audio_latent, (0, expected_audio_steps - int(audio_latent.shape[-1])))
 
     out_video = target_v.clone()
     out_audio = target_a.clone()
     out_audio.copy_(audio_latent[:1].to(device=out_audio.device, dtype=out_audio.dtype))
 
+    # Construct noise masks: 1.0 on video (diffuse visuals & mouth), 0.0 on audio (keep master music locked)
+    v_mask = torch.ones((out_video.shape[0], 1, out_video.shape[2], out_video.shape[3], out_video.shape[4]), 
+                        device=out_video.device, dtype=out_video.dtype)
+    a_mask = torch.zeros((out_audio.shape[0], 1, 2, out_audio.shape[-1]), 
+                         device=out_audio.device, dtype=out_audio.dtype)
+
     out = target_latent_dict.copy()
     out["samples"] = comfy.nested_tensor.NestedTensor((out_video, out_audio))
+    out["noise_mask"] = comfy.nested_tensor.NestedTensor((v_mask, a_mask))
     return out
 
 
@@ -194,7 +203,7 @@ def encode(clip, vae, audio_vae, compiled, loaded):
     else:
         cond, latent = _encode_frames(clip, vae, audio_vae, compiled, loaded)
 
-    # Master Song Lip-Sync Mode
+    # Master Song Lip-Sync Mode with Auto Slicing & Audio Noise Mask
     if getattr(compiled, "master_audio_track", False) and MASTER_AUDIO in loaded:
         clip_start = getattr(compiled, "clip_start_seconds", 0.0)
         latent = prepare_master_song_latent(latent, audio_vae, loaded[MASTER_AUDIO]["audio"], clip_start)
@@ -209,7 +218,6 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
 
     # Visual context from previous shot
     if compiled.continues:
-        # 1. Prefer pristine RAW Latents from previous KSampler (No VAE encode/decode distortion!)
         if PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
             prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
             raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
@@ -219,13 +227,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
                 device=vae.device if hasattr(vae, "device") else "cuda", 
                 dtype=torch.bfloat16
             )
-            
-            # Keep raw latents uncorrupted (do not arbitrarily divide variance)
             keyframes.extend(_context_keyframes_from_raw_latent(raw_v_slice))
-
-            # CRITICAL FIX: DO NOT append tail[-1:] to images here!
-            # Appending tail[-1:] makes clip.tokenize treat this as an I2VA visual reference prompt,
-            # which amplifies exposure/contrast at every generation pass.
 
         elif PREV_FRAME in loaded:
             tail = _resize(loaded[PREV_FRAME]["image"], compiled.width, compiled.height, "center")

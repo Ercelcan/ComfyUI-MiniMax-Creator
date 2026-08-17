@@ -1,4 +1,4 @@
-"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending & Latent Chaining."""
+"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining & Pristine Audio Slicing."""
 
 from __future__ import annotations
 
@@ -182,7 +182,13 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             sampled_latents.append(current_latent)
 
             images = graph.node("VAEDecode", samples=current_latent, vae=links.vae).out(0)
-            audio = graph.node("VAEDecodeAudio", samples=current_latent, vae=links.audio_vae).out(0)
+            
+            # FIX: If master song is attached, mux the clean studio audio slice from segment.out(3).
+            # If no master song is attached, decode AI generated audio from neural VAE.
+            if one.master_audio_track:
+                audio = segment.out(3)
+            else:
+                audio = graph.node("VAEDecodeAudio", samples=current_latent, vae=links.audio_vae).out(0)
 
             if len(compiled) > 1:
                 saved_seg = graph.node(

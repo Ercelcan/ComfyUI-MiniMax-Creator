@@ -47,7 +47,7 @@ export class CreatorEditor {
     this.refineTarget = refineTarget;
     this.onRefined = onRefined;
     this.onReverted = onReverted;
-    this.samplingWidgets = samplingWidgets;
+    this.samplingWidgets = samplingWidgets || {};
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.sizes = new Map();
@@ -114,6 +114,28 @@ export class CreatorEditor {
     if (this.ownsStage) this.stage?.destroy();
   }
 
+  getNode() {
+    const id = typeof this.nodeId === "function" ? this.nodeId() : this.nodeId;
+    if (id !== null && id !== undefined) {
+      return (app?.canvas?.graph?._nodes ?? []).find((n) => String(n.id) === String(id));
+    }
+    return null;
+  }
+
+  getWidget(name) {
+    const node = this.getNode();
+    if (node?.widgets) {
+      const found = node.widgets.find((w) => w.name === name);
+      if (found) return found;
+    }
+    return this.samplingWidgets?.[name] || null;
+  }
+
+  value(name, fallback) {
+    const widget = this.getWidget(name);
+    return widget?.value !== undefined ? widget.value : fallback;
+  }
+
   adoptWeights() {
     if (S.guessModels(this.state.models, catalogFiles())) this.commit();
     else this.render();
@@ -121,20 +143,22 @@ export class CreatorEditor {
 
   widgetIO() {
     return {
-      value: (name, fallback) => this.samplingWidgets?.[name]?.value ?? fallback,
+      value: (name, fallback) => this.value(name, fallback),
       set: (name, value) => {
-        const widget = this.samplingWidgets?.[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
+        const widget = this.getWidget(name);
+        if (widget) {
+          widget.value = value;
+          widget.callback?.(value);
+        }
         this.onWidgetChange?.();
+        this.render();
       },
     };
   }
 
   commit() {
     S.normalizeCheckpoint(this.state);
-    if (this.samplingWidgets && this.state.turbo) Turbo.sync(this.state, this.widgetIO());
+    if (this.state.turbo) Turbo.sync(this.state, this.widgetIO());
     this.onCommit?.();
     this.render();
   }
@@ -325,17 +349,15 @@ export class CreatorEditor {
     this.assetsHost.replaceChildren(...(state.assets.length ? [this.renderAssets()] : []));
     this.loraHost.replaceChildren(...(state.loras.length ? [this.renderLoras()] : []));
     this.pillsHost.replaceChildren(this.renderPills(geometry, S.mode(state)));
-    this.samplingHost.replaceChildren(...(this.samplingWidgets && !this.compact ? [samplingBar({
+    this.samplingHost.replaceChildren(...(!this.compact ? [samplingBar({
       widgets: this.samplingWidgets,
-      value: (name, fallback) => {
-        const widget = this.samplingWidgets[name];
-        return widget ? widget.value : fallback;
-      },
-      set: (name, value) => {
-        const widget = this.samplingWidgets[name];
-        if (!widget) return;
-        widget.value = value;
-        widget.callback?.(value);
+      value: (name, fallback) => this.value(name, fallback),
+      set: (name, val) => {
+        const widget = this.getWidget(name);
+        if (widget) {
+          widget.value = val;
+          widget.callback?.(val);
+        }
         this.onWidgetChange?.();
         this.render();
       },

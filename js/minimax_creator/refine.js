@@ -102,6 +102,10 @@ export async function refine(payload) {
     apiKey = current.openrouterKey;
   }
 
+  if (!current.model) {
+    throw new Error(t("No text encoder or LLM model chosen. Select a model in the refiner settings."));
+  }
+
   const response = await api.fetchApi("/minimax_creator/refine", {
     method: "POST",
     headers: { "Content-Type": "application/json" },

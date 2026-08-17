@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import logging
 import re
-from dataclasses import dataclass, field, replace
+from dataclasses import dataclass, field
 
 from . import canvas, contextir
 from .h3_timing import FEATHER_GRID, largest_h3_video_run
@@ -17,7 +17,7 @@ MAX_REF_IMAGES = 9
 MAX_REF_VIDEOS = 3
 MAX_REF_AUDIOS = 3
 MAX_REF_FILES = 12
-MAX_SEGMENTS = 24
+MAX_SEGMENTS = 60
 
 DEFAULT_AUDIO_TAIL_S = 1.0
 MAX_AUDIO_TAIL_S = 4.0
@@ -98,6 +98,7 @@ class Compiled:
     continues_audio: bool = False
     audio_tail_s: float = 0.0
     master_audio_track: bool = False
+    master_audio_file: str | None = None
     clip_start_seconds: float = 0.0
     start_mode: str = "t2v"
     source_fps: float = 24.0
@@ -113,7 +114,7 @@ class Compiled:
         return bool(self.continues or self.first_frame or self.last_frame or self.ref_images or self.ref_videos or self.start_mode == "load_video")
 
     def encodes_audio(self):
-        return bool(self.continues_audio or self.ref_audios or self.master_audio_track or any(v.track == "picture+sound" for v in self.ref_videos))
+        return bool(self.continues_audio or self.ref_audios or self.master_audio_track or bool(self.master_audio_file) or any(v.track == "picture+sound" for v in self.ref_videos))
 
 
 def lora_modes(entry):
@@ -307,11 +308,9 @@ def _substitute(prompt, labels, assets, where="prompt"):
     known = {a.handle for a in assets}
     dangling = sorted({h for h in HANDLE_RE.findall(prompt) if h not in known})
     if dangling:
-        # Em vez de travar o workflow, remove a tag @ órfã e converte em texto comum
         _LOG.warning(f"[MiniMax-Creator] {where} references unattached assets {dangling}. Auto-converting to text.")
         for h in dangling:
-            prompt = re.sub(rf"@{re.escape(h)}\s*(\[image\s*\d+\])?", f"the reference", prompt)
-    
+            prompt = re.sub(rf"@{re.escape(h)}\s*(\[image\s*\d+\])?", "the reference", prompt)
     return HANDLE_RE.sub(lambda m: labels.get(m.group(1), m.group(0)), prompt)
 
 
@@ -444,11 +443,16 @@ def timeline_segments(data):
 def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=None,
                     continues_audio=False, shots=1, feather=1, locked=False,
                     cached_video=None, continuity_mode="latent_mask",
-                    master_audio_track=False, clip_start_seconds=0.0,
+                    master_audio_track=False, master_audio_file=None, clip_start_seconds=0.0,
                     start_mode="t2v", source_fps=24.0, crop="disabled",
                     gain=1.0, ducking=True, transition_type="latent_mask_39f"):
     if not isinstance(data, dict):
         raise CompileError("creator_data must be a JSON object")
+
+    if not master_audio_file and isinstance(data.get("master_audio"), dict):
+        master_audio_file = data["master_audio"].get("filename")
+    if master_audio_file:
+        master_audio_track = True
 
     assets = _parse_assets(data.get("assets"))
     frame_assets = [a for a in assets if a.role in ("first_frame", "last_frame")]
@@ -493,6 +497,13 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 
     soundscape = _substitute(str(data.get("soundscape") or ""), labels, assets, where="overall_soundscape") if data.get("soundscape") else ""
     music = _substitute(str(data.get("music") or ""), labels, assets, where="non_diegetic_music") if data.get("music") else ""
+    
+    # AUTO-FIX FOR MASTER AUDIO LIP-SYNC:
+    # When a master song track is attached, suppress internal model music generation by setting "N/A"
+    if master_audio_track or master_audio_file:
+        if not music.strip():
+            music = "N/A"
+
     sections = refined_sections(data)
     if sections:
         sections = {name: _substitute(text, labels, assets, where=name) for name, text in sections.items()}
@@ -557,6 +568,7 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         continues_audio=continues_audio,
         audio_tail_s=audio_tail_s,
         master_audio_track=master_audio_track,
+        master_audio_file=master_audio_file,
         clip_start_seconds=clip_start_seconds,
         start_mode=start_mode,
         source_fps=source_fps,
@@ -576,6 +588,9 @@ def timeline_payloads(data, image_size_lookup=None):
     pool = timeline_pool(data)
     global_cited = {asset.handle for asset in pool} & set(HANDLE_RE.findall(global_prompt))
     payloads = []
+
+    master_audio_obj = data.get("master_audio")
+    master_audio_file = master_audio_obj.get("filename") if isinstance(master_audio_obj, dict) else None
 
     cumulative_time = 0.0
 
@@ -642,7 +657,8 @@ def timeline_payloads(data, image_size_lookup=None):
             "continuity_mode": continuity_mode,
             "feather": feather,
             "continue_audio": index > 0 and bool(segment.get("continue_audio", True)),
-            "master_audio_track": bool(data.get("master_audio")),
+            "master_audio_track": bool(master_audio_file),
+            "master_audio_file": master_audio_file,
             "clip_start_seconds": cumulative_time,
             "start_mode": data.get("start_mode", "t2v"),
             "locked": locked,
@@ -660,7 +676,7 @@ def timeline_payloads(data, image_size_lookup=None):
         overlap_s = (feather / 24.0) if (index > 0 and payloads[-1]["continue"]) else 0.0
         cumulative_time += max(0.0, dur - overlap_s)
 
-    first = compile_request(payloads[0]["request"], image_size_lookup)
+    first = compile_request(payloads[0]["request"], image_size_lookup, master_audio_file=master_audio_file)
     spec = {
         "width": first.width, "height": first.height, "ratio": first.ratio,
         "label": first.ratio_label, "from_image": first.ratio_from_image,
@@ -673,6 +689,7 @@ def timeline_payloads(data, image_size_lookup=None):
 
 def compile_segment(payload, image_size_lookup=None):
     spec = payload.get("canvas")
+    master_audio_file = payload.get("master_audio_file")
     return compile_request(
         payload["request"],
         image_size_lookup,
@@ -680,7 +697,8 @@ def compile_segment(payload, image_size_lookup=None):
         continuity_mode=payload.get("continuity_mode", "latent_mask"),
         feather=int(payload.get("feather", 39)),
         continues_audio=bool(payload.get("continue_audio")),
-        master_audio_track=bool(payload.get("master_audio_track")),
+        master_audio_track=bool(payload.get("master_audio_track", master_audio_file is not None)),
+        master_audio_file=master_audio_file,
         clip_start_seconds=float(payload.get("clip_start_seconds", 0.0)),
         start_mode=payload.get("start_mode", "t2v"),
         locked=bool(payload.get("locked")),
@@ -708,7 +726,20 @@ def single_payload(data):
         "aspect": data.get("aspect", "16:9"),
         "short_edge": data.get("short_edge", canvas.NATIVE_SHORT_EDGE),
     }
-    return {"request": request, "shots": len(shots), "continue": False, "continue_audio": False}
+    master_audio_obj = data.get("master_audio")
+    master_audio_file = master_audio_obj.get("filename") if isinstance(master_audio_obj, dict) else None
+    if master_audio_obj:
+        request["master_audio"] = master_audio_obj
+
+    return {
+        "request": request,
+        "shots": len(shots),
+        "continue": False,
+        "continue_audio": False,
+        "master_audio_track": bool(master_audio_file),
+        "master_audio_file": master_audio_file,
+        "clip_start_seconds": 0.0,
+    }
 
 
 def compile_single(data, image_size_lookup=None):

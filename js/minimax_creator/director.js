@@ -36,39 +36,54 @@ function sanitizeJsonKeys(obj) {
 function extractStoryboardPayload(text) {
   if (!text) return null;
 
-  // 1. Markdown code fence: ```json ... ```
-  const fenced = /```(?:json)?\s*([\s\S]*?)\s*```/.exec(text);
-  if (fenced) {
+  const tryParse = (raw) => {
     try {
-      const parsed = JSON.parse(fenced[1]);
+      return JSON.parse(raw);
+    } catch {
+      // Auto-repair truncated JSON by closing open brackets/braces
+      let repaired = raw.trim();
+      if (!repaired.endsWith("}")) {
+        if (repaired.includes('"shots"') && !repaired.includes("]")) repaired += ']}';
+        else repaired += '}';
+      }
+      try {
+        return JSON.parse(repaired);
+      } catch {
+        return null;
+      }
+    }
+  };
+
+  // 1. Markdown code fence: ```json ... ```
+  const fenced = /```(?:json)?\s*([\s\S]*?)(?:```|$)/.exec(text);
+  if (fenced) {
+    const parsed = tryParse(fenced[1]);
+    if (parsed && (parsed.shots || parsed.global_prompt)) {
+      return {
+        payload: sanitizeJsonKeys(parsed),
+        rawJson: fenced[1].trim(),
+        preProse: text.slice(0, fenced.index).trim(),
+        postProse: fenced[0].endsWith("```") ? text.slice(fenced.index + fenced[0].length).trim() : "",
+      };
+    }
+  }
+
+  // 2. Bare JSON object containing "shots" or "global_prompt"
+  const startIdx = text.indexOf("{");
+  if (startIdx >= 0) {
+    let endIdx = text.lastIndexOf("}");
+    if (endIdx < startIdx) endIdx = text.length;
+    const candidate = text.slice(startIdx, endIdx + 1);
+    if (candidate.includes('"shots"') || candidate.includes('"global_prompt"')) {
+      const parsed = tryParse(candidate);
       if (parsed && (parsed.shots || parsed.global_prompt)) {
         return {
           payload: sanitizeJsonKeys(parsed),
-          rawJson: fenced[1].trim(),
-          preProse: text.slice(0, fenced.index).trim(),
-          postProse: text.slice(fenced.index + fenced[0].length).trim(),
+          rawJson: candidate.trim(),
+          preProse: text.slice(0, startIdx).trim(),
+          postProse: text.slice(endIdx + 1).trim(),
         };
       }
-    } catch {}
-  }
-
-  // 2. Bare JSON object containing "shots"
-  const startIdx = text.indexOf("{");
-  const endIdx = text.lastIndexOf("}");
-  if (startIdx >= 0 && endIdx > startIdx) {
-    const candidate = text.slice(startIdx, endIdx + 1);
-    if (candidate.includes('"shots"') || candidate.includes('"global_prompt"')) {
-      try {
-        const parsed = JSON.parse(candidate);
-        if (parsed && (parsed.shots || parsed.global_prompt)) {
-          return {
-            payload: sanitizeJsonKeys(parsed),
-            rawJson: candidate.trim(),
-            preProse: text.slice(0, startIdx).trim(),
-            postProse: text.slice(endIdx + 1).trim(),
-          };
-        }
-      } catch {}
     }
   }
 
@@ -196,31 +211,43 @@ export class DirectorBody {
     this.mentionMenu?.remove();
   }
 
+  getStorageKey() {
+    return `mmc-director-data-${this.node?.id ?? "default"}`;
+  }
+
   parseData(raw) {
+    let parsed = null;
     try {
-      const parsed = JSON.parse(raw || "{}");
-      return {
-        version: 1,
-        target_peer: parsed.target_peer ?? null,
-        model_config: { ...getRefineSettings(), ...(parsed.model_config || {}) },
-        history: Array.isArray(parsed.history) ? parsed.history : [],
-        last_timeline_payload: parsed.last_timeline_payload ?? null,
-        last_single_prompt: parsed.last_single_prompt ?? "",
-      };
-    } catch {
-      return {
-        version: 1,
-        target_peer: null,
-        model_config: getRefineSettings(),
-        history: [],
-        last_timeline_payload: null,
-        last_single_prompt: "",
-      };
+      parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    } catch {}
+
+    // Fallback to local storage if widget JSON was reset
+    if (!parsed || !parsed.history?.length) {
+      try {
+        const stored = JSON.parse(localStorage.getItem(this.getStorageKey()) || "null");
+        if (stored) {
+          parsed = { ...stored, ...(parsed || {}) };
+        }
+      } catch {}
     }
+
+    parsed = parsed || {};
+    return {
+      version: 1,
+      target_peer: parsed.target_peer ?? null,
+      model_config: { ...getRefineSettings(), ...(parsed.model_config || {}) },
+      history: Array.isArray(parsed.history) ? parsed.history : [],
+      last_timeline_payload: parsed.last_timeline_payload ?? null,
+      last_single_prompt: parsed.last_single_prompt ?? "",
+    };
   }
 
   commit() {
-    this.widget.value = JSON.stringify(this.data, null, 2);
+    const serialized = JSON.stringify(this.data, null, 2);
+    this.widget.value = serialized;
+    try {
+      localStorage.setItem(this.getStorageKey(), serialized);
+    } catch {}
     this.onCommit?.();
   }
 
@@ -397,27 +424,51 @@ export class DirectorBody {
         }),
       });
 
-      const body = await resp.json();
-      if (!resp.ok) throw new Error(body.error || "Director request failed");
+      // Safely read response text to prevent "Unexpected end of JSON input" crashes
+      let body = {};
+      try {
+        const rawText = await resp.text();
+        if (rawText && rawText.trim()) {
+          body = JSON.parse(rawText);
+        }
+      } catch {}
 
-      if (!this.ignoreStream) {
+      const finalContent = body.content || this.activeStreamText;
+
+      if (!this.ignoreStream && (finalContent || this.activeThoughtText)) {
         this.data.history.push({
           role: "assistant",
-          content: body.content,
+          content: finalContent || "(Response truncated)",
           thought: this.activeThoughtText,
           timestamp: Date.now(),
         });
 
-        const extracted = extractStoryboardPayload(body.content);
+        const extracted = extractStoryboardPayload(finalContent);
         if (extracted?.payload) {
           this.data.last_timeline_payload = extracted.payload;
         }
 
         this.commit();
       }
+
+      if (!resp.ok && !finalContent) {
+        throw new Error(body.error || `Server returned status ${resp.status}`);
+      }
     } catch (err) {
       if (!this.ignoreStream) {
-        this.flashNotice(t("Chat error: {err}", { err: err.message || err }), true);
+        if (this.activeStreamText || this.activeThoughtText) {
+          const lastMsg = this.data.history[this.data.history.length - 1];
+          if (lastMsg?.role !== "assistant") {
+            this.data.history.push({
+              role: "assistant",
+              content: this.activeStreamText || "(Response truncated)",
+              thought: this.activeThoughtText,
+              timestamp: Date.now(),
+            });
+            this.commit();
+          }
+        }
+        this.flashNotice(t("Notice: {err}", { err: err.message || err }), false);
       }
     } finally {
       this.isGenerating = false;
@@ -708,6 +759,10 @@ export class DirectorBody {
       title: t("Clear chat history"),
       onclick: () => {
         this.data.history = [];
+        this.data.last_timeline_payload = null;
+        try {
+          localStorage.removeItem(this.getStorageKey());
+        } catch {}
         this.commit();
         this.render();
       },
@@ -878,7 +933,7 @@ export class DirectorBody {
         }),
         el("button", {
           class: "mmc-nle-btn",
-          text: t("📋 Copy JSON"),
+          text: t("📋 Copy"),
           title: t("Copy raw JSON"),
           onclick: () => navigator.clipboard?.writeText(rawJsonText || JSON.stringify(payload, null, 2)),
         }),

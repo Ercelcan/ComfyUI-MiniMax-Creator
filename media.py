@@ -1,9 +1,4 @@
-"""Loading assets by filename out of ComfyUI/input.
-
-The whole point of the Creator node is that media is not wired in — the user
-picks files in the UI and the node fetches them here at execute time. That makes
-this the only module that touches disk.
-"""
+"""Loading assets by filename out of ComfyUI/input with automatic Master Song / Audio resolution."""
 
 import numpy as np
 import torch
@@ -11,12 +6,7 @@ from PIL import Image, ImageOps
 
 import folder_paths
 from comfy_api.latest import InputImpl
-# Core's PyAV-based loader, not torchaudio.load: recent torchaudio routes load()
-# through torchcodec, which ComfyUI does not ship. This is the same decoder
-# LoadAudio uses, so we accept exactly the files the rest of ComfyUI accepts.
 from comfy_extras.nodes_audio import load as _load_audio_file
-# The same snapping `encode` will do, so `load_all` can work out how much of a
-# reference clip can possibly survive it.
 from comfy_extras.nodes_minimax_h3 import align_frame_count
 
 TARGET_FPS = 24
@@ -65,61 +55,26 @@ def _cut_audio(filename, audio, trim):
 
 
 def load_audio(filename, trim=None):
-    """-> the ComfyUI AUDIO dict {waveform [1, C, L], sample_rate}.
-
-    The container may be a video: referencing a clip's soundtrack alone means
-    decoding the audio stream out of the same mp4 the picture would come from.
-    """
+    """-> the ComfyUI AUDIO dict {waveform [1, C, L], sample_rate}."""
     path = resolve(filename)
     try:
         waveform, sample_rate = _load_audio_file(path)
     except ValueError as exc:
-        # The decoder names no file, and "No audio stream found" on its own does
-        # not say which of a dozen references it is talking about.
         raise MediaError(f"{filename!r}: {exc}") from exc
     audio = {"waveform": waveform.unsqueeze(0), "sample_rate": int(sample_rate)}
     return _cut_audio(filename, audio, trim)
 
 
 def _decode_window(trim, max_seconds):
-    """-> (start_time, duration) for the decoder. A duration of 0 means "to EOF".
-
-    `VideoFromFile` takes a window, seeks to it and stops demuxing at the end of
-    it, so frames outside the window are never decoded. Handing it the window is
-    the whole difference between reading a 60-second source and reading the two
-    seconds of it that were asked for — and decode is where a long clip hurts,
-    because frames arrive as float32 and cost ~25 MB each at 1080p.
-    """
     start = trim[0] if trim is not None else 0.0
     duration = (trim[1] - trim[0]) if trim is not None else 0.0
     if max_seconds is not None:
-        # Two frames of slack. The 24 fps resample rounds, and a reference that
-        # came back one frame short of the generation's length would lose a frame
-        # off the end of the window the user actually asked for.
         cap = max_seconds + 2.0 / TARGET_FPS
         duration = min(duration, cap) if duration else cap
     return start, duration
 
 
 def load_video(filename, want_audio=False, trim=None, max_seconds=None):
-    """-> (frames [N, H, W, 3] resampled to 24 fps, audio dict or None).
-
-    H3 reads reference video at 24 fps, so a clip shot at any other rate is
-    resampled by nearest-frame index here rather than being handed over at the
-    wrong tempo — the model would read a 30 fps clip as 25% slow motion.
-
-    `trim` is (start, end) in seconds and `max_seconds` bounds how much of the
-    clip can matter downstream. Both go to the decoder as one seek window rather
-    than being sliced off a fully decoded clip — see `_decode_window`. The
-    soundtrack is cut to that same window by the decoder, which is what keeps
-    the picture and the sound from drifting apart.
-
-    The window anchors the resample at the requested second rather than at a
-    24 fps index counted from the head of the file. On a trim that lands on a
-    frame boundary the two agree exactly; off one they can pick a source frame
-    either side of it, which is a difference of one frame at 24 fps and is the
-    more faithful of the two readings of what was asked for.
-    """
     start, duration = _decode_window(trim, max_seconds)
     components = InputImpl.VideoFromFile(
         resolve(filename), start_time=start, duration=duration).get_components()
@@ -149,25 +104,6 @@ def load_video(filename, want_audio=False, trim=None, max_seconds=None):
 
 
 def load_all(compiled):
-    """Every file a `Compiled` names -> {handle: decoded media}, for `encode`.
-
-    Shared by the Creator node and by a timeline segment, which have the same
-    job here: a segment is a whole generation, so it loads its media the same
-    way. A continuing segment's inherited start frame is the one thing not from
-    disk, so the caller adds it under `encode.PREV_FRAME`.
-    """
-    # How much of a reference clip can possibly reach the model: `encode` cuts
-    # every reference video down to the generation's own frame count, so a
-    # 60-second source spends 60 seconds of decode to have 6 seconds of it used.
-    # Bounding the decode by the same number instead makes a long source cost
-    # what a short one does, and changes nothing about what is sent.
-    #
-    # It bounds the soundtrack of a `picture+sound` video too, which is a real
-    # change: that audio used to be sent at its full trimmed length while its
-    # picture was cut short, so the two halves of one reference described
-    # different spans of time. A standalone audio reference is not bounded — it
-    # is not paired with a picture and a long music cue is an ordinary thing to
-    # cite.
     limit = align_frame_count(max(5, compiled.frames)) / TARGET_FPS
 
     loaded = {}
@@ -181,8 +117,15 @@ def load_all(compiled):
             asset.filename, want_audio=asset.track == "picture+sound",
             trim=asset.trim, max_seconds=limit)
         loaded[asset.handle] = {"frames": frames, "audio": audio}
-    # Both real audio files and videos referenced for their sound alone: the
-    # decoder reads a soundtrack out of a video container the same way.
     for asset in compiled.ref_audios:
         loaded[asset.handle] = {"audio": load_audio(asset.filename, trim=asset.trim)}
+
+    # Automatic load for master soundtrack audio file
+    master_file = getattr(compiled, "master_audio_file", None)
+    if master_file:
+        try:
+            loaded["__master_audio__"] = {"audio": load_audio(master_file)}
+        except Exception as exc:
+            raise MediaError(f"Master audio track {master_file!r}: {exc}") from exc
+
     return loaded

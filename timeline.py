@@ -63,12 +63,10 @@ DEFAULT_DATA = json.dumps({
 
 
 def _remove_dc_offset(waveform: torch.Tensor) -> torch.Tensor:
-    """Removes floating DC bias from decoded neural audio."""
     return waveform - waveform.mean(dim=-1, keepdim=True)
 
 
 def _fit_audio_to_frames(waveform: torch.Tensor, num_frames: int, fps: float, sample_rate: int) -> torch.Tensor:
-    """Trim or pad audio waveform so its duration matches the exact video frame count."""
     clean = _remove_dc_offset(waveform)
     target_samples = int(round(num_frames / float(fps) * sample_rate))
     current_samples = clean.shape[-1]
@@ -80,9 +78,8 @@ def _fit_audio_to_frames(waveform: torch.Tensor, num_frames: int, fps: float, sa
 
 
 def _equal_power_audio_blend(wave_a: torch.Tensor, wave_b: torch.Tensor, sample_rate: int, fade_ms: float = 100.0) -> torch.Tensor:
-    """100ms studio-grade equal-power (cos/sin) audio crossfade with RMS gain matching and zero DC pop."""
     fade_len = min(int(round((fade_ms / 1000.0) * sample_rate)), wave_a.shape[-1], wave_b.shape[-1])
-    if fade_len <= 16:  # Guard against micro-slices or empty tails
+    if fade_len <= 16:
         return wave_b
 
     a_tail = wave_a[..., -fade_len:]
@@ -116,11 +113,6 @@ def _luma_stats(frames: torch.Tensor):
 
 
 def _photometric_match_seam(images_a: torch.Tensor, images_b: torch.Tensor, overlap_frames: int = 39) -> torch.Tensor:
-    """
-    Seamless local photometric correction at the junction.
-    Matches the incoming clip's exposure smoothly to the preceding clip's tail
-    without global color-space drift or clipping highlights.
-    """
     if images_a is None or images_b is None or images_a.numel() == 0 or images_b.numel() == 0:
         return images_b
 
@@ -270,7 +262,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
             node_id="MiniMaxH3TimelineSegment",
             display_name="MiniMaxH3 Timeline Segment",
             category="MiniMax/internal",
-            description="Executes one segment of a timeline using raw latent keyframe continuity.",
+            description="Executes one segment of a timeline using raw latent keyframe continuity and clean sliced master audio.",
             is_dev_only=True,
             inputs=[
                 io.Clip.Input("clip"),
@@ -291,6 +283,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 io.Model.Output(display_name="model"),
                 io.Conditioning.Output(display_name="positive"),
                 io.Latent.Output(display_name="latent"),
+                io.Audio.Output(display_name="clean_audio"),
             ],
             hidden=[io.Hidden.unique_id],
         )
@@ -332,27 +325,22 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
 
         loaded = media.load_all(compiled)
 
-        # 1. Raw Latent Continuity (Bit-exact without VAE roundtrip)
         if prev_latent is not None and getattr(prev_latent, "get", None) and prev_latent.get("samples") is not None:
             loaded[encoder.PREV_LATENT] = {"latent": prev_latent}
 
-        # 2. Inherited image frame for visual continuity tokens
         if prev_image is not None and getattr(prev_image, "shape", [0])[0] > 0:
             count = min(int(prev_image.shape[0]), compiled.feather if compiled.feather > 1 else 1)
             loaded[encoder.PREV_FRAME] = {"image": prev_image[-count:]}
 
-        # 3. Source video prefix (fallback if resuming from locked clip)
         if source_frames is not None and getattr(source_frames, "shape", [0])[0] > 0:
             loaded[encoder.SOURCE_VIDEO] = {
                 "frames": source_frames,
                 "audio": source_audio if source_audio is not None else prev_audio
             }
 
-        # 4. Audio carryover
         if prev_audio is not None:
             loaded[encoder.PREV_AUDIO] = {"audio": prev_audio}
 
-        # 5. Master song track
         if master_audio is not None:
             loaded[encoder.MASTER_AUDIO] = {"audio": master_audio}
 
@@ -360,7 +348,24 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
             model = payload_repair.repair(model)
 
         cond, latent = encoder.encode(clip, vae, audio_vae, compiled, loaded)
-        return io.NodeOutput(model, cond, latent)
+
+        clean_audio = None
+        if encoder.MASTER_AUDIO in loaded:
+            master_raw = loaded[encoder.MASTER_AUDIO]["audio"]
+            sr = int(master_raw["sample_rate"])
+            clip_start = float(getattr(compiled, "clip_start_seconds", 0.0))
+            dur = float(compiled.seconds)
+            start_samp = max(0, int(round(clip_start * sr)))
+            needed_samp = int(round(dur * sr))
+            end_samp = start_samp + needed_samp
+
+            wave = master_raw["waveform"]
+            slice_w = wave[..., start_samp:end_samp]
+            if slice_w.shape[-1] < needed_samp:
+                slice_w = torch.nn.functional.pad(slice_w, (0, needed_samp - slice_w.shape[-1]))
+            clean_audio = {"waveform": slice_w, "sample_rate": sr}
+
+        return io.NodeOutput(model, cond, latent, clean_audio)
 
 
 class MiniMaxH3TimelineJoin(io.ComfyNode):
@@ -388,7 +393,6 @@ class MiniMaxH3TimelineJoin(io.ComfyNode):
         if images_a.shape[1:] != images_b.shape[1:]:
             raise ValueError(f"Segment geometry differs: {images_a.shape[2]}x{images_a.shape[1]} vs {images_b.shape[2]}x{images_b.shape[1]}")
 
-        # Local Seam Photometric Match: matches B's exposure to A's tail without color cast
         images_b = _photometric_match_seam(images_a, images_b, overlap_frames)
 
         rate_a = int(audio_a["sample_rate"])
@@ -787,7 +791,6 @@ class MiniMaxH3LoadSegment(io.ComfyNode):
                 _LOG.warning(f"Could not load segment latent checkpoint: {e}")
                 latent_dict = None
 
-        # Fallback reconstruction if .safetensors is missing
         if latent_dict is None and vae is not None and frames is not None and frames.shape[0] > 0:
             try:
                 v_enc = vae.encode(frames)
