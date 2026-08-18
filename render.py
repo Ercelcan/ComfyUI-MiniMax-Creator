@@ -1,4 +1,4 @@
-"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining & 2-Pass Refine Upscaling with Pristine Pass-1 Audio Routing."""
+"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining, 2-Pass Refine Upscaling, and NVIDIA RTX VSR Video Super Resolution."""
 
 from __future__ import annotations
 
@@ -13,6 +13,7 @@ from . import accel, canvas, compile as compiler, lora, media, models, outputs, 
 
 SEGMENT_NODE = "MiniMaxH3TimelineSegment"
 REFINE_NODE = "MiniMaxH3RefinePass"
+RTX_NODE = "MiniMaxH3RTXUpscale"
 LAST_FRAME_NODE = "MiniMaxH3LastFrame"
 AUDIO_TAIL_NODE = "MiniMaxH3AudioTail"
 TRIM_NODE = "MiniMaxH3SeamTrim"
@@ -67,6 +68,13 @@ def routed(compiled, labels):
 
 def emit(payloads, labels, weights, sampling, acceleration, unique_id,
          filename_prefix=FILENAME_PREFIX):
+    # Evict any active LLMs from GPU VRAM before sampling H3
+    try:
+        from . import refine_api
+        refine_api.unload_all_active_refiners()
+    except Exception:
+        pass
+
     accel.plan(acceleration)
     payloads = [weights.routed(p) for p in payloads]
     if len(payloads) > 1:
@@ -75,7 +83,6 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
     compiled = compile_all(payloads, labels)
     where = routed(compiled, labels)
     models.check(weights, set(where), where)
-
     graph = GraphBuilder()
     links = models.emit_links(graph, weights, set(where))
 
@@ -206,20 +213,47 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
                     denoise=one.refine.denoise,
                     upscaler_model=one.refine.upscaler_model,
                     scale=one.refine.scale,
+                    clean_vram=one.refine.clean_vram,
                 )
                 current_video_latent = sampled_refine.out(0)
                 last_latent = current_video_latent
 
             sampled_latents.append(current_video_latent)
 
-            # Video decodes from Pass 2 (upscaled & refined)
+            # Video decodes from Pass 2 (upscaled & refined) or Pass 1
             images = graph.node("VAEDecode", samples=current_video_latent, vae=links.vae).out(0)
+
+            # ==========================================
+            # PASS 3: NVIDIA RTX Video Super Resolution (Pixel Level)
+            # ==========================================
+            if getattr(one, "rtx_upscale", False):
+                rtx_run = graph.node(
+                    RTX_NODE,
+                    images=images,
+                    scale=float(getattr(one, "rtx_scale", 2.0)),
+                    quality=str(getattr(one, "rtx_quality", "ULTRA")),
+                    enabled=True,
+                )
+                images = rtx_run.out(0)
 
             # Audio decodes directly from Pass 1 (full base generation) or studio track
             if one.master_audio_track:
                 audio = segment.out(3)
             else:
                 audio = graph.node("VAEDecodeAudio", samples=base_latent, vae=links.audio_vae).out(0)
+
+            # Optional: Save the non-upscaled Pass 1 base video alongside the final upscaled video
+            if one.refine and one.refine.save_pass1:
+                pass1_images = graph.node("VAEDecode", samples=base_latent, vae=links.vae).out(0)
+                pass1_prefix = f"{filename_prefix.rstrip('/')}_base"
+                graph.node(
+                    SAVE_NODE,
+                    images=pass1_images,
+                    audio=audio,
+                    fps=float(canvas.FPS),
+                    filename_prefix=pass1_prefix,
+                    crf=settings.video_crf(),
+                )
 
             if len(compiled) > 1:
                 saved_seg = graph.node(

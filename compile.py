@@ -23,12 +23,13 @@ DEFAULT_AUDIO_TAIL_S = 1.0
 MAX_AUDIO_TAIL_S = 4.0
 
 HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
-UPSCALE_MODES = ("two_pass", "direct")
+UPSCALE_MODES = ("two_pass", "rtx_vsr", "direct")
 DEFAULT_REFINE_DENOISE = 0.25
 MIN_REFINE_DENOISE = 0.01
 MAX_REFINE_DENOISE = 0.99
 DEFAULT_REFINE_STEPS = 1
 DEFAULT_UPSCALE_SCALE = 2.0
+DEFAULT_RTX_QUALITY = "ULTRA"
 
 CHECKPOINTS = ("fl2va", "ref2va")
 TRACKS = ("picture", "picture+sound", "sound")
@@ -71,6 +72,8 @@ class Refine:
     upscaler_model: str = ""
     scale: float = DEFAULT_UPSCALE_SCALE
     turbo_only: bool = False
+    save_pass1: bool = False
+    clean_vram: bool = True
 
 
 @dataclass
@@ -110,6 +113,9 @@ class Compiled:
     source_fps: float = 24.0
     crop: str = "disabled"
     refine: Refine | None = None
+    rtx_upscale: bool = False
+    rtx_scale: float = DEFAULT_UPSCALE_SCALE
+    rtx_quality: str = DEFAULT_RTX_QUALITY
     locked: bool = False
     cached_video: str | None = None
     gain: float = 1.0
@@ -498,8 +504,9 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 
     mode_raw = str(data.get("upscale") or UPSCALE_MODES[0])
     first_edge = min(int(data.get("sample_edge", short_edge)), canvas.NATIVE_SHORT_EDGE)
-    two_pass = first_edge < short_edge and mode_raw == "two_pass"
-    sample_edge = first_edge if two_pass else short_edge
+    two_pass = (first_edge < short_edge and mode_raw == "two_pass")
+    rtx_mode = (mode_raw == "rtx_vsr" or bool(data.get("rtx_upscale")))
+    sample_edge = first_edge if (two_pass or rtx_mode) else short_edge
 
     soundscape = _substitute(str(data.get("soundscape") or ""), labels, assets, where="overall_soundscape") if data.get("soundscape") else ""
     music = _substitute(str(data.get("music") or ""), labels, assets, where="non_diegetic_music") if data.get("music") else ""
@@ -546,7 +553,13 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
                 upscaler_model=str(data.get("upscaler_model") or data.get("upscale_model") or ""),
                 scale=float(data.get("refine_scale", DEFAULT_UPSCALE_SCALE)),
                 turbo_only=bool(data.get("refine_turbo_only", False)),
+                save_pass1=bool(data.get("save_pass1", False)),
+                clean_vram=bool(data.get("clean_vram", True)),
             )
+
+    rtx_upscale = bool(rtx_mode)
+    rtx_scale = float(data.get("rtx_scale", short_edge / max(1, sample_edge) if rtx_mode else DEFAULT_UPSCALE_SCALE))
+    rtx_quality = str(data.get("rtx_quality", DEFAULT_RTX_QUALITY))
 
     return Compiled(
         mode=mode,
@@ -584,6 +597,9 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         source_fps=source_fps,
         crop=crop,
         refine=refine,
+        rtx_upscale=rtx_upscale,
+        rtx_scale=rtx_scale,
+        rtx_quality=rtx_quality,
         locked=bool(locked),
         cached_video=cached_video,
         gain=float(gain),
@@ -630,7 +646,7 @@ def timeline_payloads(data, image_size_lookup=None):
 
         request["aspect"] = data.get("aspect", "16:9")
         request["short_edge"] = data.get("short_edge", canvas.NATIVE_SHORT_EDGE)
-        for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only"):
+        for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only", "save_pass1", "clean_vram", "rtx_upscale", "rtx_scale", "rtx_quality"):
             request.pop(key, None)
             if key in data:
                 request[key] = data[key]
@@ -736,7 +752,7 @@ def single_payload(data):
         "aspect": data.get("aspect", "16:9"),
         "short_edge": data.get("short_edge", canvas.NATIVE_SHORT_EDGE),
     }
-    for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only"):
+    for key in ("upscale", "sample_edge", "refine_denoise", "refine_steps", "upscaler_model", "upscale_model", "refine_scale", "refine_turbo_only", "save_pass1", "clean_vram", "rtx_upscale", "rtx_scale", "rtx_quality"):
         if key in data:
             request[key] = data[key]
 

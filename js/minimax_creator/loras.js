@@ -1,34 +1,12 @@
-// The LoRA manager: the full-screen modal behind the rail's third tool.
-//
-// Unlike the asset picker this edits in place rather than returning a selection.
-// Adding a LoRA is only the first of three decisions — strength and which
-// checkpoint it belongs to are the other two — and a pick-then-configure flow
-// would have meant closing the modal to find out what you picked. So every
-// control writes straight through to creator_data and the only exit is Done.
-//
-// Cards come from models/loras. Everything above the filename — showcase image,
-// title, base model, trigger words — comes from whatever sidecars are beside the
-// file, which is `lorameta.py`'s problem rather than this file's: half a dozen
-// tools write half a dozen layouts and they all arrive here as one row shape. A
-// LoRA nothing has ever described still gets a working card from its filename.
-//
-// A real collection is hundreds or thousands of files, so the grid never holds
-// all of them: a folder picker narrows what the server even walks, and what
-// comes back is appended a screenful at a time as you scroll.
-
 import { el, ICONS, svg, drawFrame, mountOverlay } from "./dom.js";
 import { listLoras, loraPreviewUrl } from "./api.js";
 import { openLoraDetail } from "./loradetail.js";
 import { t } from "./i18n.js";
 import * as S from "./state.js";
 
-// Cards added per pass, and how far below the fold to keep filling. One card is
-// a handful of elements and, once active, four controls — a thousand of them at
-// once is a locked-up tab, which is the whole reason for chunking.
 const CHUNK = 48;
 const LOOKAHEAD = 500;
 
-// The last folder browsed, so reopening the manager lands where you left off.
 const FOLDER_KEY = "mmc.loraFolder";
 
 const MAX_STRENGTH = 2;
@@ -38,16 +16,6 @@ const MODE_CHOICES = [
   ["both", "Both", "Patch whichever checkpoint is routed."],
 ];
 
-/**
- * @param {object} options
- * @param {object} options.state       anything with a `loras` array, mutated in
- *                                     place — a creator_data state or a timeline
- * @param {string[]} [options.targets] the checkpoints in play, for the idle
- *                                     marks. Defaults to the one this state
- *                                     routes to; a timeline passes the set its
- *                                     segments route to, which can be both.
- * @param {() => void} options.onChange called after every edit; reserialises
- */
 export function openLoras(options) {
   return new Promise((resolve) => {
     new LoraManager(options, resolve).mount();
@@ -55,9 +23,6 @@ export function openLoras(options) {
 }
 
 class LoraManager {
-  /** `checkpointModes: false` drops the FL2VA/Ref2VA segment and the idle
-   *  marks — the PreStage's image models have one DiT each, so "which
-   *  checkpoint does this LoRA claim" is not a question there. */
   constructor({ state, onChange, targets, checkpointModes = true }, resolve) {
     this.state = state;
     this.checkpointModes = checkpointModes;
@@ -67,13 +32,13 @@ class LoraManager {
     this.query = "";
     this.rows = [];
     this.folders = [];
-    this.cards = new Map();   // name -> the card element currently in the grid
+    this.cards = new Map();
     this.shown = 0;
     this.loaded = false;
     try {
       this.folder = localStorage.getItem(FOLDER_KEY) || "";
     } catch {
-      this.folder = "";   // storage can be denied outright; the picker still works
+      this.folder = "";
     }
   }
 
@@ -138,8 +103,6 @@ class LoraManager {
       body = { loras: [], folders: this.folders };
       this.loadError = error.message;
     }
-    // A slow folder answering after you have already moved on would otherwise
-    // repaint the grid with the wrong folder's cards.
     if (folder !== this.folder) return;
     this.rows = body.loras ?? [];
     this.folders = body.folders ?? [];
@@ -154,13 +117,11 @@ class LoraManager {
     this.folder = folder;
     try {
       localStorage.setItem(FOLDER_KEY, folder);
-    } catch { /* denied storage is not worth failing a click over */ }
+    } catch {}
     this.load();
   }
 
   renderPicker() {
-    // The remembered folder may have been renamed or emptied since; it stays in
-    // the list so the picker still shows what it is actually browsing.
     const known = this.folders.some((entry) => entry.path === this.folder);
     const entries = known ? this.folders : [...this.folders, { path: this.folder, count: 0 }];
     this.picker.replaceChildren(...entries.map((entry) => el("option", {
@@ -170,8 +131,6 @@ class LoraManager {
     this.picker.value = this.folder;
   }
 
-  /** Anything the user could reasonably type: filename, Civitai title, base
-   *  model, tag or trigger word. */
   visible() {
     if (!this.query) return this.rows;
     return this.rows.filter((row) =>
@@ -179,26 +138,22 @@ class LoraManager {
         .filter(Boolean).join(" ").toLowerCase().includes(this.query));
   }
 
-  // ---- edits ---------------------------------------------------------------
-
   changed() {
     this.onChange?.();
     this.renderFoot();
   }
 
   toggle(row) {
-    if (S.findLora(this.state, row.name)) S.removeLora(this.state, row.name);
-    // Both of these are the sidecar's opinion and both stay editable: the
-    // triggers become chips that can be switched off, the strength a slider
-    // that can be dragged. Starting from what the file's author chose is only
-    // a better guess than 1.00, not a decision.
-    else S.addLora(this.state, row.name, row.trained_words || [], row.strength);
+    const existing = S.findLora(this.state, row.name);
+    if (existing) {
+      S.removeLora(this.state, row.name);
+    } else {
+      S.addLora(this.state, row.name, row.trained_words || [], row.strength);
+    }
     this.refreshCard(row);
     this.changed();
   }
 
-  /** Neither of these re-renders the grid: the trigger row owns a text input,
-   *  and rebuilding the card under it would take the caret away between words. */
   toggleTrigger(entry, word) {
     const at = entry.triggers.findIndex((w) => w.toLowerCase() === word.toLowerCase());
     if (at >= 0) entry.triggers.splice(at, 1);
@@ -220,22 +175,12 @@ class LoraManager {
     this.changed();
   }
 
-  // ---- render --------------------------------------------------------------
-
-  /** Rebuild one card where it stands.
-   *
-   *  Adding a LoRA or switching its checkpoint changes only that card, and
-   *  redrawing the whole grid for it would throw away the scroll position and
-   *  every chunk appended to reach it.
-   */
   refreshCard(row) {
     const current = this.cards.get(row.name);
     if (!current) return;
     const next = this.card(row);
     current.replaceWith(next);
     this.cards.set(row.name, next);
-    // A card that just lost its controls is shorter, which can uncover room the
-    // next chunk should fill.
     this.fill();
   }
 
@@ -271,7 +216,6 @@ class LoraManager {
     this.fill();
   }
 
-  /** Append chunks until the note sits far enough below the fold. */
   fill() {
     if (!this.pending || this.shown >= this.pending.length) return;
     const bottom = this.grid.getBoundingClientRect().bottom + LOOKAHEAD;
@@ -299,9 +243,6 @@ class LoraManager {
     if (left > 0) {
       this.note.textContent = t("{left} more below…", { left });
     } else if (this.truncated) {
-      // The server described only the newest of what it found, and the search
-      // box only filters what it sent — so say so rather than let a LoRA that
-      // was never listed read as one that is not on disk.
       this.note.textContent = t(
         "Only the {shown} most recent of {matched} LoRAs in this scope were "
         + "listed. Choose a narrower folder to reach the older ones.",
@@ -311,24 +252,6 @@ class LoraManager {
     }
   }
 
-  /**
-   * A still of the showcase clip, so a video card shows something before
-   * anyone hovers it: an in-page <video> whose src carries a media fragment.
-   * `#t=0.12` makes the browser itself display the frame at 0.12s — a beat
-   * past the black or mid-fade these clips routinely open on — with no canvas
-   * capture at all. Every capture route tried here (frame counting, seek +
-   * drawImage) worked on one browser and not another; the fragment is the one
-   * the CiviMeta browser in roadmaus-utils has already proven on every
-   * machine this runs on.
-   *
-   * Lazy through an IntersectionObserver, for the reason hoverClip tears its
-   * decoder down: a folder of hundreds of cards each opening a connection at
-   * once is the media-element cap and the six-per-host budget both blown in
-   * one scroll. Only cards that reach the viewport ever get a src, and the
-   * grid already appends in viewport-sized chunks. The observer is the
-   * manager's own and is disconnected with it — a shared one would keep every
-   * dead card of every closed modal alive.
-   */
   still(source) {
     const video = el("video");
     video.muted = true;
@@ -353,15 +276,6 @@ class LoraManager {
     }, { rootMargin: "300px" });
   }
 
-  /**
-   * Run a showcase clip inside `art` for as long as the pointer is over it,
-   * drawn onto a canvas inserted ahead of `before`.
-   *
-   * Decoder and canvas are both built on hover and torn down on leave, so the
-   * grid never holds more than the one clip under the pointer: browsers cap how
-   * many media elements a page may have, and in a folder of hundreds every card
-   * past the cap silently stays blank.
-   */
   hoverClip(art, before, source) {
     let video = null;
     let stage = null;
@@ -370,8 +284,6 @@ class LoraManager {
     const follow = () => {
       timer = null;
       if (!video || video.paused) return;
-      // 480 rather than the default cap: the card is 230 px wide and the canvas
-      // is a hover preview nobody inspects closely.
       drawFrame(stage, video, 480);
       timer = requestAnimationFrame(follow);
     };
@@ -384,8 +296,6 @@ class LoraManager {
         video.muted = true;
         video.loop = true;
         video.playsInline = true;
-        // The clip is going to be decoded the moment it arrives, so there is
-        // nothing for `metadata` to save here.
         video.preload = "auto";
         video.src = source;
       }
@@ -397,8 +307,6 @@ class LoraManager {
       timer = null;
       if (video) {
         video.pause();
-        // Stop the download too: leaving the src on a dropped element keeps a
-        // connection out of the browser's six-per-host budget until it finishes.
         video.removeAttribute("src");
         video.load();
         video = null;
@@ -417,36 +325,27 @@ class LoraManager {
       role: "button",
       tabindex: "0",
       title: t("{name} — double-click for details", { name: row.name }),
-      // Double-clicks are detected by hand, same as the picker's cells: the
-      // first click's toggle rebuilds the card, so the second click lands on a
-      // replacement element and no browser synthesises a dblclick across two
-      // nodes. The second click re-toggles first, so viewing the details
-      // leaves the selection exactly where it stood.
       onclick: () => {
         const now = Date.now();
         const double = this.lastClick
           && this.lastClick.name === row.name && now - this.lastClick.at < 400;
         this.lastClick = double ? null : { name: row.name, at: now };
-        this.toggle(row);
-        if (double) openLoraDetail(row);
+        if (double) {
+          openLoraDetail(row);
+        } else {
+          this.toggle(row);
+        }
       },
       onkeydown: (event) => {
         if (event.key === "Enter" || event.key === " ") { event.preventDefault(); this.toggle(row); }
       },
     });
-    // The preview kind is decided server-side from what was actually found: an
-    // H3 LoRA usually showcases clips, CiviMeta only generates still thumbnails
-    // for still media, and `{name}.preview.mp4` is a video by definition — so a
-    // video card shows a still of its clip (see `still`) and plays it on hover.
+
     if (row.preview === "image") {
       art.appendChild(el("img", { src: loraPreviewUrl(row.name), loading: "lazy", alt: "" }));
     } else {
-      // Underneath the still and the clip, and on its own when there is no
-      // preview at all.
       art.appendChild(el("div", { class: "mmc-cell-fallback" }, [svg(ICONS.effect, 26)]));
     }
-    // The still sits over the fallback and under the hover clip, all three
-    // stacked by the art box's absolute positioning.
     if (row.preview === "video") {
       art.appendChild(this.still(loraPreviewUrl(row.name)));
     }
@@ -460,8 +359,7 @@ class LoraManager {
       el("div", { class: "mmc-lora-name", text: row.title || row.base, title: row.name }),
       el("div", { class: "mmc-lora-sub", text: meta || row.name }),
     ]);
-    // Until the LoRA is active its trigger words are just information; once it
-    // is, they become the editable list in the controls below.
+
     if (!entry && row.trained_words?.length) {
       body.appendChild(el("div", {
         class: "mmc-lora-words",
@@ -469,9 +367,7 @@ class LoraManager {
         text: row.trained_words.join(", "),
       }));
     }
-    // A LoRA nothing has described says so, rather than looking like one whose
-    // sidecar is merely empty. The manager is also where someone would go to
-    // find out why a card is bare.
+
     if (!entry && !row.sources?.length) {
       body.appendChild(el("div", {
         class: "mmc-lora-words",
@@ -484,15 +380,6 @@ class LoraManager {
     return card;
   }
 
-  /**
-   * The trigger words this LoRA contributes to the front of the prompt.
-   *
-   * The sidecar's words and your own are the same list once the LoRA is added —
-   * a sidecar word is a chip you can switch off, a word you type is a chip you
-   * can delete, and creator_data stores whichever survived. So a LoRA whose
-   * sidecar is wrong, or has none at all, is no harder to trigger than one whose
-   * sidecar is right.
-   */
   triggerBox(entry, row) {
     if (!Array.isArray(entry.triggers)) entry.triggers = [];
     const suggested = row.trained_words || [];
@@ -529,7 +416,6 @@ class LoraManager {
         if (this.addTrigger(entry, event.target.value)) renderChips();
         event.target.value = "";
       },
-      // The manager sits over the graph canvas, which reads keys of its own.
       onkeyup: (event) => event.stopPropagation(),
     });
 
@@ -541,16 +427,16 @@ class LoraManager {
   }
 
   controls(entry, row) {
-    // A hand-edited creator_data can carry anything; the slider needs a number.
-    if (!Number.isFinite(entry.strength)) entry.strength = S.DEFAULT_STRENGTH;
+    const rawVal = Number(entry.strength);
+    entry.strength = Number.isFinite(rawVal) ? Math.round(rawVal * 100) / 100 : S.DEFAULT_STRENGTH;
+
     const readout = el("span", { class: "mmc-lora-strength", text: entry.strength.toFixed(2) });
     const slider = el("input", {
-      type: "range", min: -1, max: MAX_STRENGTH, step: 0.05, value: entry.strength,
-      // Dragging must not re-render the card out from under the pointer, so the
-      // readout is updated by hand and only the release reserialises.
+      type: "range", min: "-1.0", max: String(MAX_STRENGTH), step: "0.05", value: String(entry.strength),
       oninput: (event) => {
-        entry.strength = Number(event.target.value);
+        entry.strength = Math.round(Number(event.target.value) * 100) / 100;
         readout.textContent = entry.strength.toFixed(2);
+        this.changed();
       },
       onchange: () => this.changed(),
       onpointerdown: (event) => event.stopPropagation(),
@@ -572,7 +458,7 @@ class LoraManager {
       ...(this.checkpointModes ? [modes] : []),
       this.triggerBox(entry, row),
     ];
-    // Active, but on none of the checkpoints this graph routes to.
+
     if (this.checkpointModes && !this.applies(entry)) {
       rows.push(el("div", {
         class: "mmc-lora-idle",
@@ -584,7 +470,6 @@ class LoraManager {
     return el("div", { class: "mmc-lora-ctl" }, rows);
   }
 
-  /** Whether this entry lands on anything the caller said is in play. */
   applies(entry) {
     return S.loraModes(entry).some((mode) => this.targets.includes(mode));
   }
@@ -594,7 +479,7 @@ class LoraManager {
   }
 
   renderFoot() {
-    const entries = this.state.loras;
+    const entries = this.state.loras || [];
     const active = entries.filter((entry) => this.applies(entry)).length;
     const extra = entries.length > active
       ? " " + t("({count} idle)", { count: entries.length - active })

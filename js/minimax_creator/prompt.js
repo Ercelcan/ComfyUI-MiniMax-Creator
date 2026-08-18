@@ -58,6 +58,33 @@ function diffWords(oldText, newText) {
   return result;
 }
 
+/**
+ * Recursively extracts plain text from contenteditable DOM while strictly
+ * converting <div>, <p>, <br> blocks into clean \n line breaks.
+ */
+function extractStructuredText(elNode) {
+  let text = "";
+  for (const node of elNode.childNodes) {
+    if (node.nodeType === Node.TEXT_NODE) {
+      text += node.nodeValue;
+    } else if (node.dataset?.handle) {
+      text += `@${node.dataset.handle}`;
+    } else if (node.tagName === "BR") {
+      text += "\n";
+    } else if (node.nodeType === Node.ELEMENT_NODE) {
+      const isBlock = /^(DIV|P|LI|TR|BLOCKQUOTE)$/i.test(node.tagName);
+      if (isBlock && text.length > 0 && !text.endsWith("\n")) {
+        text += "\n";
+      }
+      text += extractStructuredText(node);
+      if (isBlock && !text.endsWith("\n")) {
+        text += "\n";
+      }
+    }
+  }
+  return text;
+}
+
 export class PromptBox {
   constructor(hooks) {
     this.hooks = hooks;
@@ -74,7 +101,7 @@ export class PromptBox {
       autocomplete: "off",
       role: "textbox",
       "aria-multiline": "true",
-      "data-placeholder": t("Describe your video, use @ to reference images, videos, audio, or elements"),
+      "data-placeholder": t("Describe your video with structured lines...\n• Subject:\n• Environment:\n• Camera & Action:"),
     });
 
     this.wordCountEl = el("span", { class: "mmc-prompt-wordcount", text: "0 words" });
@@ -141,7 +168,7 @@ export class PromptBox {
     const history = this.getHistory();
     if (history.length && history[0].text.trim() === text) return;
     if (history.length && Date.now() - history[0].timestamp < 5000 && Math.abs(history[0].text.length - text.length) < 4) return;
-    
+
     const entry = { text, timestamp: Date.now(), label };
     history.unshift(entry);
     try {
@@ -188,7 +215,7 @@ export class PromptBox {
       for (const item of hist) {
         const timeStr = new Date(item.timestamp).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
         const words = (item.text || "").trim().split(/\s+/).filter(Boolean).length;
-        
+
         const row = el("div", { class: "mmc-history-item" }, [
           el("div", { class: "mmc-history-item-head" }, [
             el("span", { class: "mmc-history-time", text: timeStr }),
@@ -221,6 +248,22 @@ export class PromptBox {
     document.body.appendChild(pop);
     placeNear(pop, anchor);
     const close = dismissable(pop);
+  }
+
+  insertStructureTemplate() {
+    const current = this.getValue().trim();
+    if (!current) {
+      const template = "• Subject:\n• Wardrobe & Appearance:\n• Environment & Lighting:\n• Camera & Action:\n";
+      this.setValue(template);
+      this.hooks.onInput(template);
+    } else {
+      const formatted = `• Scene Description:\n${current}\n\n• Camera Motion:\n\n• Lighting & Style:\n`;
+      this.setValue(formatted);
+      this.hooks.onInput(formatted);
+    }
+    this.updateWordCount();
+    this.runLinter();
+    this.root.focus();
   }
 
   runLinter() {
@@ -294,6 +337,17 @@ export class PromptBox {
       onpointerdown: (e) => e.stopPropagation(),
     }, [icon("camera", 14), el("span", { text: t("Camera & Style") })]);
 
+    const structureBtn = el("button", {
+      class: "mmc-ghost mmc-prompt-tool-btn",
+      text: t("📄 Structure"),
+      title: t("Insert structured bullet template into prompt"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (e) => {
+        e.stopPropagation();
+        this.insertStructureTemplate();
+      },
+    });
+
     const historyBtn = el("button", {
       class: "mmc-ghost mmc-prompt-tool-btn",
       text: t("🕒 History"),
@@ -337,6 +391,7 @@ export class PromptBox {
 
     const topBar = el("div", { class: "mmc-prompt-top-row" }, [
       toggleBtn,
+      structureBtn,
       historyBtn,
       el("span", { style: { flex: "1" } }),
       copyBtn,
@@ -358,7 +413,7 @@ export class PromptBox {
         onpointerdown: (e) => e.stopPropagation(),
         onclick: (e) => {
           e.stopPropagation();
-          this.insertTextAtCursor(`${phrase}, `);
+          this.insertTextAtCursor(`\n• ${phrase}`);
           this.onEdit();
           this.updateWordCount();
         },
@@ -369,14 +424,7 @@ export class PromptBox {
   }
 
   getValue() {
-    let text = "";
-    for (const node of this.root.childNodes) {
-      if (node.nodeType === Node.TEXT_NODE) text += node.nodeValue;
-      else if (node.dataset?.handle) text += `@${node.dataset.handle}`;
-      else if (node.tagName === "BR") text += "\n";
-      else text += node.textContent;
-    }
-    return text;
+    return extractStructuredText(this.root);
   }
 
   setValue(text) {
@@ -400,7 +448,7 @@ export class PromptBox {
 
     const out = [];
     let at = 0;
-    
+
     const pattern = mode === "full"
       ? /(@[A-Za-z]+-\d+)|(\[Shot\s+\d+\])|(At\s+\d{1,3}:\d{2}\.\d{3},?)|(<\s*(?:Subject|Picture|Video|Audio)\s+\d+\s*>)|(<d>[\s\S]*?<\/d>)/gi
       : /@([A-Za-z]+-\d+)/g;
@@ -449,8 +497,7 @@ export class PromptBox {
   setSuperseded(on) {
     this.root.classList.toggle("superseded", !!on);
     this.root.title = on
-      ? t("Not queued while the rewrite below is on — that is what the model reads. "
-        + "Edit this and refine again, or revert the rewrite, to send it.")
+      ? t("Not queued while the rewrite below is on — that is what the model reads.")
       : "";
   }
 

@@ -1,13 +1,16 @@
-"""The neural latent upscaler & refine pass engine for MiniMax H3.
+"""The neural latent upscaler, refine pass engine, and NVIDIA RTX VSR pixel upscaler for MiniMax H3.
 
 Handles:
 - Loading 2D and 3D neural latent upscaler weights from models/latent_upscale_models/
 - Safe unbinding & repacking of ComfyUI NestedTensors (Video + Audio)
-- High-fidelity 2nd-pass refinement with custom denoise (default: 0.25), steps, and Turbo LoRA overrides.
+- High-fidelity 2nd-pass refinement with custom denoise, steps, and Turbo LoRA overrides
+- Automatic VRAM cleaning & CUDA cache flushing before upscaling to prevent OOM errors
+- Hardware-accelerated NVIDIA RTX Video Super Resolution (VSR) pixel upscaling
 """
 
 from __future__ import annotations
 
+import gc
 import glob
 import os
 import re
@@ -17,12 +20,15 @@ import torch.nn.functional as F
 from einops import rearrange
 
 import folder_paths
+import comfy.model_management as mm
 import comfy.nested_tensor
 import comfy.sample
 import comfy.samplers
 import comfy.utils
 import latent_preview
 from comfy_api.latest import io
+
+from . import rtx_vsr
 
 # ==========================================
 # Register Model Folder
@@ -69,6 +75,18 @@ def zero_module(module):
     for p in module.parameters():
         p.detach().zero_()
     return module
+
+
+def clean_gpu_vram():
+    """Flushes GPU VRAM cache, runs Python garbage collection, and notifies ComfyUI model management."""
+    gc.collect()
+    if torch.cuda.is_available():
+        torch.cuda.empty_cache()
+        torch.cuda.ipc_collect()
+        try:
+            mm.soft_empty_cache()
+        except Exception:
+            pass
 
 
 # ==========================================
@@ -325,6 +343,7 @@ class MiniMaxH3RefinePass(io.ComfyNode):
                 io.Float.Input("denoise", default=0.25, min=0.01, max=0.99, step=0.01),
                 io.String.Input("upscaler_model", default=""),
                 io.Float.Input("scale", default=2.0, min=1.0, max=4.0, step=0.1),
+                io.Boolean.Input("clean_vram", default=True),
             ],
             outputs=[io.Latent.Output()],
         )
@@ -332,7 +351,11 @@ class MiniMaxH3RefinePass(io.ComfyNode):
     @classmethod
     def execute(cls, model, positive, negative, latent, width, height,
                 seed, steps, cfg, sampler_name, scheduler, denoise,
-                upscaler_model="", scale=2.0) -> io.NodeOutput:
+                upscaler_model="", scale=2.0, clean_vram=True) -> io.NodeOutput:
+
+        if clean_vram:
+            clean_gpu_vram()
+
         samples = latent["samples"]
         is_nested = hasattr(samples, "unbind")
         audio = None
@@ -353,7 +376,7 @@ class MiniMaxH3RefinePass(io.ComfyNode):
         if video.ndim == 4:
             video = video.unsqueeze(0)
 
-        # 1. Upscale the video latent stream
+        # Upscale the video latent stream
         video = upscale_video_latent_tensor(
             video, width, height,
             model_name=upscaler_model,
@@ -362,7 +385,9 @@ class MiniMaxH3RefinePass(io.ComfyNode):
             precision="fp16",
         )
 
-        # 2. Setup schedule sigma for refine denoise (Default: 0.25)
+        if clean_vram:
+            clean_gpu_vram()
+
         sigma0 = float(comfy.samplers.KSampler(
             model, steps=steps, device=model.load_device, sampler=sampler_name,
             scheduler=scheduler, denoise=denoise, model_options=model.model_options,
@@ -371,7 +396,6 @@ class MiniMaxH3RefinePass(io.ComfyNode):
         if not 0.0 < sigma0 < 1.0:
             raise ValueError(f"Refine denoise {denoise} invalid for schedule starting sigma {sigma0}.")
 
-        # 3. Add noise only to video; preserve and scale audio to compensate for schedule lerp
         noise_video = torch.randn(
             video.size(), dtype=torch.float32, layout=video.layout,
             generator=torch.manual_seed(seed), device="cpu").to(video.dtype)
@@ -384,7 +408,6 @@ class MiniMaxH3RefinePass(io.ComfyNode):
             noise = noise_video
             start = video
 
-        # 4. Execute 2nd-pass refinement sampling on video
         refined = comfy.sample.sample(
             model, noise, steps, cfg, sampler_name, scheduler,
             positive, negative, start,
@@ -393,7 +416,6 @@ class MiniMaxH3RefinePass(io.ComfyNode):
             disable_pbar=not comfy.utils.PROGRESS_BAR_ENABLED,
         )
 
-        # 5. Repack with the original pristine audio latent from Pass 1
         if audio is not None:
             refined_video = refined.unbind()[0] if hasattr(refined, "unbind") else (refined[0] if isinstance(refined, (list, tuple)) else refined)
             out_samples = comfy.nested_tensor.NestedTensor((refined_video, audio))
@@ -405,4 +427,51 @@ class MiniMaxH3RefinePass(io.ComfyNode):
         return io.NodeOutput(out)
 
 
-NODES = [MiniMaxH3RefinePass]
+# ==========================================
+# NVIDIA RTX Video Super Resolution Node
+# ==========================================
+class MiniMaxH3RTXUpscale(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MiniMaxH3RTXUpscale",
+            display_name="MiniMax H3 RTX VSR Upscale",
+            category="MiniMax",
+            description=(
+                "Hardware-accelerated NVIDIA RTX Video Super Resolution (VSR) "
+                "AI upscaler for decoded video frames. Supports up to 16K with hybrid bicubic fallback."
+            ),
+            inputs=[
+                io.Image.Input("images"),
+                io.Float.Input("scale", default=2.0, min=1.0, max=4.0, step=0.05),
+                io.Combo.Input("quality", options=["ULTRA", "HIGH", "MEDIUM", "LOW"], default="ULTRA"),
+                io.Boolean.Input("enabled", default=True),
+            ],
+            outputs=[
+                io.Image.Output("images", display_name="images"),
+                io.Int.Output("output_width", display_name="width"),
+                io.Int.Output("output_height", display_name="height"),
+            ],
+        )
+
+    @classmethod
+    def execute(
+        cls,
+        images: torch.Tensor,
+        scale: float = 2.0,
+        quality: str = "ULTRA",
+        enabled: bool = True,
+    ) -> io.NodeOutput:
+        if not enabled or scale <= 1.001:
+            return io.NodeOutput(images, int(images.shape[2]), int(images.shape[1]))
+
+        upscaled = rtx_vsr.run_rtx_vsr_upscale(
+            images=images,
+            scale=scale,
+            quality=quality,
+        )
+
+        return io.NodeOutput(upscaled, int(upscaled.shape[2]), int(upscaled.shape[1]))
+
+
+NODES = [MiniMaxH3RefinePass, MiniMaxH3RTXUpscale]

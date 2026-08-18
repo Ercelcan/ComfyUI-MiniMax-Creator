@@ -188,7 +188,9 @@ export const CHECKPOINT_LABEL = { fl2va: "FL2VA", ref2va: "Ref2VA" };
 export const CHECKPOINT_CHOICES = ["auto", ...CHECKPOINTS];
 export const DEFAULT_STRENGTH = 1.0;
 
-export const UPSCALE_MODES = ["two_pass", "direct"];
+export const UPSCALE_MODES = ["two_pass", "rtx_vsr", "direct"];
+export const RTX_QUALITIES = ["ULTRA", "HIGH", "MEDIUM", "LOW"];
+export const DEFAULT_RTX_QUALITY = "ULTRA";
 export const DEFAULT_REFINE_DENOISE = 0.25;
 export const MIN_REFINE_DENOISE = 0.01;
 export const MAX_REFINE_DENOISE = 0.99;
@@ -206,7 +208,10 @@ export const sampleEdge = (target) =>
   Math.min(clampSampleEdge(target.sample_edge), target.short_edge || NATIVE_SHORT_EDGE);
 
 export const twoPass = (target) =>
-  sampleEdge(target) < (target.short_edge || NATIVE_SHORT_EDGE) && target.upscale !== "direct";
+  sampleEdge(target) < (target.short_edge || NATIVE_SHORT_EDGE) && target.upscale === "two_pass";
+
+export const rtxVsr = (target) =>
+  target.upscale === "rtx_vsr" || target.rtx_upscale === true;
 
 const clampRefineDenoise = (value) => {
   const n = Number(value);
@@ -216,6 +221,23 @@ const clampRefineDenoise = (value) => {
 
 export const CONTINUITY_MODES = ["latent_mask", "keyframe_still"];
 export const START_MODES = ["t2v", "load_video"];
+
+const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
+
+export function parseLoras(raw) {
+  if (!Array.isArray(raw)) return [];
+  return raw.map((entry) => {
+    if (!entry || typeof entry !== "object" || !entry.name) return null;
+    const strVal = Number(entry.strength);
+    return {
+      name: String(entry.name).trim(),
+      strength: Number.isFinite(strVal) ? round2(strVal) : DEFAULT_STRENGTH,
+      enabled: entry.enabled !== false,
+      triggers: Array.isArray(entry.triggers) ? [...entry.triggers] : [],
+      modes: Array.isArray(entry.modes) && entry.modes.length ? [...entry.modes] : [...CHECKPOINTS],
+    };
+  }).filter(Boolean);
+}
 
 export function emptyState() {
   return {
@@ -236,6 +258,11 @@ export function emptyState() {
     upscale_model: "",
     refine_scale: DEFAULT_UPSCALE_SCALE,
     refine_turbo_only: false,
+    save_pass1: false,
+    clean_vram: true,
+    rtx_upscale: false,
+    rtx_scale: DEFAULT_UPSCALE_SCALE,
+    rtx_quality: DEFAULT_RTX_QUALITY,
     checkpoint: "auto",
     start_mode: "t2v",
     models: emptyModels(),
@@ -248,7 +275,7 @@ export function parseState(raw) {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed && typeof parsed === "object") {
       const state = { ...emptyState(), ...parsed };
-      if (!Array.isArray(state.loras)) state.loras = [];
+      state.loras = parseLoras(parsed.loras);
       if (!Array.isArray(state.assets)) state.assets = [];
       if (!state.refined || typeof state.refined !== "object") state.refined = null;
       for (const key of ["soundscape", "music"]) {
@@ -263,6 +290,11 @@ export function parseState(raw) {
       state.upscale_model = String(state.upscale_model || state.upscaler_model || "");
       state.refine_scale = Number(state.refine_scale || DEFAULT_UPSCALE_SCALE);
       state.refine_turbo_only = state.refine_turbo_only === true;
+      state.save_pass1 = state.save_pass1 === true;
+      state.clean_vram = state.clean_vram !== false;
+      state.rtx_upscale = state.rtx_upscale === true || state.upscale === "rtx_vsr";
+      state.rtx_scale = Number(state.rtx_scale || DEFAULT_UPSCALE_SCALE);
+      state.rtx_quality = RTX_QUALITIES.includes(state.rtx_quality) ? state.rtx_quality : DEFAULT_RTX_QUALITY;
       state.models = parseModels(state.models);
       state.turbo = parseTurbo(state.turbo);
       normalizeCheckpoint(state);
@@ -278,8 +310,12 @@ export function parseState(raw) {
 }
 
 function serializeLoras(entries) {
-  return entries.map((entry) => {
-    const out = { name: entry.name, strength: round2(entry.strength) };
+  return (entries || []).map((entry) => {
+    const strNum = Number(entry.strength);
+    const out = {
+      name: entry.name,
+      strength: Number.isFinite(strNum) ? round2(strNum) : DEFAULT_STRENGTH,
+    };
     if (entry.enabled === false) out.enabled = false;
     if (entry.triggers?.length) out.triggers = [...entry.triggers];
     if (!claimsBoth(entry)) out.modes = [...entry.modes];
@@ -354,6 +390,11 @@ export function serializeState(state) {
     ...(state.upscale_model ? { upscale_model: state.upscale_model } : {}),
     ...(state.refine_scale !== DEFAULT_UPSCALE_SCALE ? { refine_scale: state.refine_scale } : {}),
     ...(state.refine_turbo_only ? { refine_turbo_only: true } : {}),
+    ...(state.save_pass1 ? { save_pass1: true } : {}),
+    ...(state.clean_vram === false ? { clean_vram: false } : {}),
+    ...(state.rtx_upscale ? { rtx_upscale: true } : {}),
+    ...(state.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: state.rtx_scale } : {}),
+    ...(state.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: state.rtx_quality } : {}),
     ...serializeModels(state.models),
     ...serializeTurbo(state.turbo),
   }, null, 2);
@@ -413,6 +454,11 @@ export function emptyTimeline() {
     upscale_model: "",
     refine_scale: DEFAULT_UPSCALE_SCALE,
     refine_turbo_only: false,
+    save_pass1: false,
+    clean_vram: true,
+    rtx_upscale: false,
+    rtx_scale: DEFAULT_UPSCALE_SCALE,
+    rtx_quality: DEFAULT_RTX_QUALITY,
     loras: [],
     assets: [],
     start_mode: "t2v",
@@ -435,6 +481,11 @@ export function syncTimeline(timeline) {
     segment.upscale_model = timeline.upscale_model;
     segment.refine_scale = timeline.refine_scale;
     segment.refine_turbo_only = timeline.refine_turbo_only;
+    segment.save_pass1 = timeline.save_pass1;
+    segment.clean_vram = timeline.clean_vram;
+    segment.rtx_upscale = timeline.rtx_upscale;
+    segment.rtx_scale = timeline.rtx_scale;
+    segment.rtx_quality = timeline.rtx_quality;
     segment.pool = timeline.assets ?? [];
     segment.master_audio = timeline.master_audio ?? null;
     segment.globalTexts = {
@@ -459,7 +510,7 @@ export function parseTimeline(raw) {
     const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
     if (parsed && typeof parsed === "object") {
       const timeline = { ...emptyTimeline(), ...parsed };
-      if (!Array.isArray(timeline.loras)) timeline.loras = [];
+      timeline.loras = parseLoras(parsed.loras);
       if (!Array.isArray(timeline.assets)) timeline.assets = [];
       timeline.assets = timeline.assets.filter(
         (asset) => asset && typeof asset.handle === "string" && typeof asset.filename === "string");
@@ -483,6 +534,11 @@ export function parseTimeline(raw) {
       timeline.upscale_model = String(timeline.upscale_model || timeline.upscaler_model || "");
       timeline.refine_scale = Number(timeline.refine_scale || DEFAULT_UPSCALE_SCALE);
       timeline.refine_turbo_only = timeline.refine_turbo_only === true;
+      timeline.save_pass1 = timeline.save_pass1 === true;
+      timeline.clean_vram = timeline.clean_vram !== false;
+      timeline.rtx_upscale = timeline.rtx_upscale === true || timeline.upscale === "rtx_vsr";
+      timeline.rtx_scale = Number(timeline.rtx_scale || DEFAULT_UPSCALE_SCALE);
+      timeline.rtx_quality = RTX_QUALITIES.includes(timeline.rtx_quality) ? timeline.rtx_quality : DEFAULT_RTX_QUALITY;
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
 
@@ -534,6 +590,11 @@ export function serializeTimeline(timeline) {
     ...(timeline.upscale_model ? { upscale_model: timeline.upscale_model } : {}),
     ...(timeline.refine_scale !== DEFAULT_UPSCALE_SCALE ? { refine_scale: timeline.refine_scale } : {}),
     ...(timeline.refine_turbo_only ? { refine_turbo_only: true } : {}),
+    ...(timeline.save_pass1 ? { save_pass1: true } : {}),
+    ...(timeline.clean_vram === false ? { clean_vram: false } : {}),
+    ...(timeline.rtx_upscale ? { rtx_upscale: true } : {}),
+    ...(timeline.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: timeline.rtx_scale } : {}),
+    ...(timeline.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: timeline.rtx_quality } : {}),
     loras: serializeLoras(timeline.loras ?? []),
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),
@@ -632,7 +693,6 @@ export function nextPoolHandle(timeline) {
   }
 }
 
-const round2 = (value) => Math.round((Number(value) || 0) * 100) / 100;
 export function loraModes(entry) {
   const claimed = (entry.modes || []).filter((m) => CHECKPOINTS.includes(m));
   return claimed.length ? claimed : [...CHECKPOINTS];
@@ -666,11 +726,17 @@ export function activeLoras(state) {
 }
 
 export function addLora(state, name, triggers = [], strength = null) {
-  if (findLora(state, name)) return null;
+  const existing = findLora(state, name);
+  if (existing) {
+    if (strength !== null && Number.isFinite(Number(strength))) {
+      existing.strength = round2(strength);
+    }
+    return existing;
+  }
   const preferred = Number(strength);
   const entry = {
     name,
-    strength: Number.isFinite(preferred) && preferred >= -1 && preferred <= 2 ? preferred : DEFAULT_STRENGTH,
+    strength: Number.isFinite(preferred) && preferred >= -1 && preferred <= 2 ? round2(preferred) : DEFAULT_STRENGTH,
     enabled: true,
     modes: [...CHECKPOINTS],
     triggers: [...triggers],
@@ -929,7 +995,7 @@ export function parsePreStage(raw) {
       const state = { ...emptyPreStage(), ...parsed };
       if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
       if (!Array.isArray(state.refs)) state.refs = [];
-      if (!Array.isArray(state.loras)) state.loras = [];
+      state.loras = parseLoras(parsed.loras);
       if (!state.turbo || typeof state.turbo !== "object") state.turbo = emptyPreStage().turbo;
       if (!state.minimax || typeof state.minimax !== "object") state.minimax = emptyPreStage().minimax;
       state.minimax.request = parseState(JSON.stringify(state.minimax.request ?? {}));

@@ -958,8 +958,11 @@ export class TimelineBody {
     }, [svg(ICONS.scissors, 12), el("span", { text: this.aiSeamMode === "auto" ? t("AI Seams: Auto") : t("AI Seams: User") })]);
 
     const refined = S.twoPass(this.timeline);
-    const refineInfo = refined
-      ? `${S.sampleEdge(this.timeline)} → ${width}×${height} · ${this.timeline.refine_steps ?? 1}st@${(this.timeline.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}`
+    const rtxOn = S.rtxVsr(this.timeline);
+    const refineInfo = rtxOn
+      ? `${S.sampleEdge(this.timeline)} → ${width}×${height} · RTX VSR ${this.timeline.rtx_quality || "ULTRA"}`
+      : refined
+      ? `${S.sampleEdge(this.timeline)} → ${width}×${height} · ${this.timeline.refine_steps ?? 1}st@${(this.timeline.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}${this.timeline.save_pass1 ? " (+base)" : ""}`
       : `${width}×${height}`;
 
     return el("div", { class: "mmc-nle-top-bar" }, [

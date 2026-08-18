@@ -655,13 +655,16 @@ export class CreatorEditor {
       : [aspectGlyph(geometry.ratio, PILL_GLYPH), el("span", { text: state.aspect })]);
 
     const refined = S.twoPass(state);
-    const refineInfo = refined
-      ? `${S.sampleEdge(state)} → ${geometry.width}×${geometry.height} · ${state.refine_steps ?? 1}st@${(state.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}`
+    const rtxOn = S.rtxVsr(state);
+    const refineInfo = rtxOn
+      ? `${S.sampleEdge(state)} → ${geometry.width}×${geometry.height} · RTX VSR ${state.rtx_quality || "ULTRA"}`
+      : refined
+      ? `${S.sampleEdge(state)} → ${geometry.width}×${geometry.height} · ${state.refine_steps ?? 1}st@${(state.refine_denoise ?? S.DEFAULT_REFINE_DENOISE).toFixed(2)}${state.save_pass1 ? " (+base)" : ""}`
       : `${geometry.width} × ${geometry.height}`;
 
     const resPill = el("button", {
       class: "mmc-pill mmc-pill-res",
-      title: t("Short edge resolution & two-pass neural latent upscale settings"),
+      title: t("Short edge resolution, two-pass latent refine & NVIDIA RTX VSR upscaling"),
       onclick: (event) => this.openResolution(event.currentTarget),
     }, [
       icon("res", 15),

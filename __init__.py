@@ -17,7 +17,7 @@ from .timeline import (
     MiniMaxH3LoadSegment,
 )
 from .prestage import MiniMaxH3PreStage, MiniMaxH3SaveImage, MiniMaxH3StillLatent
-from .hires import MiniMaxH3RefinePass
+from .hires import MiniMaxH3RefinePass, MiniMaxH3RTXUpscale
 from .director_node import MiniMaxH3Director
 
 NODE_CLASS_MAPPINGS = {
@@ -36,6 +36,7 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3SaveImage": MiniMaxH3SaveImage,
     "MiniMaxH3StillLatent": MiniMaxH3StillLatent,
     "MiniMaxH3RefinePass": MiniMaxH3RefinePass,
+    "MiniMaxH3RTXUpscale": MiniMaxH3RTXUpscale,
     "MiniMaxH3Director": MiniMaxH3Director,
 }
 
@@ -45,6 +46,7 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3TimelineSegment": "MiniMax H3 Timeline Segment",
     "MiniMaxH3StreamedAssembly": "MiniMax H3 Streamed Assembly",
     "MiniMaxH3PreStage": "MiniMax H3 PreStage",
+    "MiniMaxH3RTXUpscale": "MiniMax H3 RTX VSR Upscale",
     "MiniMaxH3Director": "MiniMax H3 AI Director",
 }
 

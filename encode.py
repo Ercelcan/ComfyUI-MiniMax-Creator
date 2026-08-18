@@ -1,4 +1,4 @@
-"""Conditioning + AV Latent Encoding Engine for MiniMax H3 with Raw Latent Continuity and Auto Master Audio Slicing."""
+"""Conditioning + AV Latent Encoding Engine for MiniMax H3 with Raw Latent Continuity, Auto Spatial Alignment, and Auto Master Audio Slicing."""
 
 from __future__ import annotations
 
@@ -124,6 +124,29 @@ def _resize_images(images: torch.Tensor, width: int, height: int, crop: str = "d
     return torch.cat(out, dim=0)
 
 
+def _match_latent_spatial_size(raw_v_slice: torch.Tensor, target_h: int, target_w: int) -> torch.Tensor:
+    """Spatially aligns inherited raw latent slices to the target generation canvas."""
+    target_lat_h = target_h // 16
+    target_lat_w = target_w // 16
+
+    if raw_v_slice.ndim == 4:
+        raw_v_slice = raw_v_slice.unsqueeze(0)
+
+    if raw_v_slice.shape[-2:] == (target_lat_h, target_lat_w):
+        return raw_v_slice
+
+    b, c, t, h, w = raw_v_slice.shape
+    reshaped = raw_v_slice.movedim(2, 0).reshape(t * b, c, h, w)
+    resized = torch.nn.functional.interpolate(
+        reshaped.float(),
+        size=(target_lat_h, target_lat_w),
+        mode="bicubic",
+        align_corners=False,
+    ).to(raw_v_slice.dtype)
+
+    return resized.reshape(t, b, c, target_lat_h, target_lat_w).movedim(0, 2)
+
+
 def _context_keyframes_from_raw_latent(raw_latent_steps: torch.Tensor):
     steps = int(raw_latent_steps.shape[2])
     return [{
@@ -165,7 +188,6 @@ def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip
     waveform = _stereo_first_batch(master_audio["waveform"], "master_audio")
     waveform = _resample_waveform(waveform, int(master_audio["sample_rate"]), vae_sr, "master_audio")
 
-    # Time-accurate sample offset calculation
     start_sample = max(0, int(round(float(clip_start_seconds) * vae_sr)))
     needed_samples = int(math.ceil(expected_audio_steps / AUDIO_HZ * vae_sr))
     end_sample = start_sample + needed_samples
@@ -184,7 +206,6 @@ def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip
     out_audio = target_a.clone()
     out_audio.copy_(audio_latent[:1].to(device=out_audio.device, dtype=out_audio.dtype))
 
-    # Construct noise masks: 1.0 on video (diffuse visuals & mouth), 0.0 on audio (keep master music locked)
     v_mask = torch.ones((out_video.shape[0], 1, out_video.shape[2], out_video.shape[3], out_video.shape[4]), 
                         device=out_video.device, dtype=out_video.dtype)
     a_mask = torch.zeros((out_audio.shape[0], 1, 2, out_audio.shape[-1]), 
@@ -203,7 +224,6 @@ def encode(clip, vae, audio_vae, compiled, loaded):
     else:
         cond, latent = _encode_frames(clip, vae, audio_vae, compiled, loaded)
 
-    # Master Song Lip-Sync Mode with Auto Slicing & Audio Noise Mask
     if getattr(compiled, "master_audio_track", False) and MASTER_AUDIO in loaded:
         clip_start = getattr(compiled, "clip_start_seconds", 0.0)
         latent = prepare_master_song_latent(latent, audio_vae, loaded[MASTER_AUDIO]["audio"], clip_start)
@@ -216,17 +236,19 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
     images = []
     keyframes = []
 
-    # Visual context from previous shot
     if compiled.continues:
         if PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
             prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
             raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
+            if raw_v.ndim == 4:
+                raw_v = raw_v.unsqueeze(0)
             
             latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
             raw_v_slice = raw_v[:, :, -latent_t_count:].to(
                 device=vae.device if hasattr(vae, "device") else "cuda", 
                 dtype=torch.bfloat16
             )
+            raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
             keyframes.extend(_context_keyframes_from_raw_latent(raw_v_slice))
 
         elif PREV_FRAME in loaded:
@@ -369,11 +391,15 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
         if PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
             prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
             raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
+            if raw_v.ndim == 4:
+                raw_v = raw_v.unsqueeze(0)
+            
             latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
             raw_v_slice = raw_v[:, :, -latent_t_count:].to(
                 device=vae.device if hasattr(vae, "device") else "cuda", 
                 dtype=torch.bfloat16
             )
+            raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
             cond = node_helpers.conditioning_set_values(cond, {
                 "minimax_keyframes": _context_keyframes_from_raw_latent(raw_v_slice),
                 "minimax_frame_count": frame_count,

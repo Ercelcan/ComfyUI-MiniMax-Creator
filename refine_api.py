@@ -15,6 +15,7 @@ from . import refine
 
 _ACTIVE_SOCKETS = {}
 _CANCEL_EVENTS = {}
+_ACTIVE_MODELS = set()  # Track (provider, url, model) to unload when Generate is clicked
 
 
 def cancel_stream(node_id: str):
@@ -40,7 +41,7 @@ def cancel_stream(node_id: str):
 
 
 def _unload_local_model(provider: str, url: str, model: str):
-    """Auto-unloads Ollama or LM Studio models from VRAM after generation."""
+    """Unloads Ollama or LM Studio models from VRAM."""
     try:
         if provider == "ollama" and model:
             base = (url or "http://localhost:11434").rstrip("/")
@@ -54,11 +55,11 @@ def _unload_local_model(provider: str, url: str, model: str):
                 pass
         elif provider in ("openai", "lmstudio") and model:
             clean_base = (url or "http://localhost:1234").rstrip("/").replace("/v1", "")
-            for ep in (f"{clean_base}/api/v1/models/unload", f"{clean_base}/api/v0/models/unload", f"{clean_base}/v1/models/unload"):
+            for ep in (f"{clean_base}/api/v1/models/unload", f"{clean_base}/v1/models/unload", f"{clean_base}/models/unload"):
                 try:
                     req = urllib.request.Request(
                         ep,
-                        data=json.dumps({"instance_id": model, "model": model}).encode("utf-8"),
+                        data=json.dumps({"instance_id": model}).encode("utf-8"),
                         headers={"Content-Type": "application/json", "User-Agent": "MiniMaxCreator"},
                     )
                     with urllib.request.urlopen(req, timeout=3) as _:
@@ -68,10 +69,25 @@ def _unload_local_model(provider: str, url: str, model: str):
     except Exception:
         pass
 
+
+def unload_all_active_refiners():
+    """Triggered ONLY when user clicks Generate: evicts all refine LLMs from VRAM for H3 sampling."""
+    global _ACTIVE_MODELS
+    for provider, url, model in list(_ACTIVE_MODELS):
+        _unload_local_model(provider, url, model)
+    _ACTIVE_MODELS.clear()
+
+    try:
+        from . import refine_local
+        refine_local.unload()
+    except Exception:
+        pass
+
     try:
         import torch
         if torch.cuda.is_available():
             torch.cuda.empty_cache()
+            torch.cuda.ipc_collect()
     except Exception:
         pass
 
@@ -186,6 +202,7 @@ def _raw_chat_ollama(
     raw_messages: Optional[list] = None,
     is_json=True,
 ):
+    global _ACTIVE_MODELS
     base = (url or "http://localhost:11434").rstrip("/")
     endpoint = f"{base}/chat" if base.endswith("/api") else f"{base}/api/chat"
 
@@ -218,7 +235,7 @@ def _raw_chat_ollama(
         "model": model,
         "messages": messages,
         "stream": True,
-        "keep_alive": 0,  # Tells Ollama to immediately unload upon stream finish
+        "keep_alive": "15m",  # Stays alive across chat/refine iterations
         "options": options,
     }
     if is_json and not raw_messages:
@@ -239,6 +256,8 @@ def _raw_chat_ollama(
         resp = urllib.request.urlopen(req, timeout=600)
         if node_id:
             _ACTIVE_SOCKETS[str(node_id)] = resp
+
+        _ACTIVE_MODELS.add(("ollama", url, model))
 
         while True:
             if cancel_ev.is_set():
@@ -271,8 +290,6 @@ def _raw_chat_ollama(
         if node_id:
             _ACTIVE_SOCKETS.pop(str(node_id), None)
             _CANCEL_EVENTS.pop(str(node_id), None)
-        # Automatic VRAM evacuation
-        _unload_local_model("ollama", url, model)
 
 
 def _raw_chat_openai(
@@ -289,6 +306,7 @@ def _raw_chat_openai(
     raw_messages: Optional[list] = None,
     is_json=True,
 ):
+    global _ACTIVE_MODELS
     base = (url or "http://localhost:1234/v1").rstrip("/")
     endpoint = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
@@ -313,14 +331,11 @@ def _raw_chat_openai(
         "messages": messages,
         "temperature": max(float(temperature), 0.01),
         "stream": True,
-        "ttl": 0,  # LM Studio JIT auto-evict signal
     }
     if seed >= 0:
         payload["seed"] = int(seed)
     if max_tokens:
         payload["max_tokens"] = int(max_tokens)
-    if is_json and not raw_messages:
-        payload["response_format"] = {"type": "json_object"}
 
     req = urllib.request.Request(
         endpoint,
@@ -337,6 +352,8 @@ def _raw_chat_openai(
         resp = urllib.request.urlopen(req, timeout=600)
         if node_id:
             _ACTIVE_SOCKETS[str(node_id)] = resp
+
+        _ACTIVE_MODELS.add(("openai", url, model))
 
         while True:
             if cancel_ev.is_set():
@@ -375,8 +392,6 @@ def _raw_chat_openai(
         if node_id:
             _ACTIVE_SOCKETS.pop(str(node_id), None)
             _CANCEL_EVENTS.pop(str(node_id), None)
-        # Automatic VRAM evacuation
-        _unload_local_model("openai", url, model)
 
 
 def _raw_chat_openrouter(

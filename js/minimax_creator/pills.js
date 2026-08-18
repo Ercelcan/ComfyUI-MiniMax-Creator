@@ -2,7 +2,8 @@ import { el, icon, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { ASPECT_PRESETS, MIN_SHORT_EDGE, MAX_SHORT_EDGE, NATIVE_SHORT_EDGE, CANVAS_MULTIPLE } from "./canvas.js";
 import { UPSCALE_MODES, DEFAULT_REFINE_DENOISE, MIN_REFINE_DENOISE, MAX_REFINE_DENOISE,
-         DEFAULT_REFINE_STEPS, DEFAULT_UPSCALE_SCALE, twoPass, sampleEdge } from "./state.js";
+         DEFAULT_REFINE_STEPS, DEFAULT_UPSCALE_SCALE, RTX_QUALITIES, DEFAULT_RTX_QUALITY,
+         twoPass, rtxVsr, sampleEdge } from "./state.js";
 import { catalogLatentUpscalers, loadCatalog } from "./models.js";
 
 export function stepperPill({ value, onChange, min = -Infinity, max = Infinity, step = 1,
@@ -164,6 +165,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
       "aria-checked": target.upscale === mode,
       onclick: () => {
         target.upscale = mode;
+        target.rtx_upscale = (mode === "rtx_vsr");
         body.repaint();
         commit();
       },
@@ -178,11 +180,15 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     const rows = [];
     if (over) {
       rows.push(
-        option(UPSCALE_MODES[0], t("two passes"),
-               t("{edge} px first, refined up to {width} × {height}",
+        option("two_pass", t("two passes (latent refine)"),
+               t("{edge} px base latent, refined up to {width} × {height}",
+                 { edge: curSampleEdge, width, height })),
+        option("rtx_vsr", t("NVIDIA RTX VSR (AI pixel upscaler)"),
+               t("{edge} px base render, upscaled to {width} × {height} via RTX Tensor Cores",
                  { edge: curSampleEdge, width, height })),
         option("direct", t("direct"),
-               t("one pass at {width} × {height} — off-distribution", { width, height })));
+               t("one pass at {width} × {height} — off-distribution", { width, height }))
+      );
     }
 
     // Base sampling resolution selector & quick presets
@@ -194,7 +200,9 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
         title: t("Sample Pass 1 at {edge}px base resolution", { edge: p.edge }),
         onclick: () => {
           target.sample_edge = p.edge;
-          if (p.edge < target.short_edge) target.upscale = UPSCALE_MODES[0];
+          if (p.edge < target.short_edge && target.upscale === "direct") {
+            target.upscale = "two_pass";
+          }
           body.repaint();
           commit();
         },
@@ -206,11 +214,13 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           stepperPill({
             value: curSampleEdge,
             min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "56px",
-            title: t("The short edge Pass 1 samples at. Lower is much faster; the upscaler and refine pass upscale it to target size."),
+            title: t("The short edge Pass 1 samples at. Lower is much faster; the upscaler upscales it to target size."),
             format: (n) => `${n} px`,
             onChange: (next) => {
               target.sample_edge = next;
-              if (next < target.short_edge) target.upscale = UPSCALE_MODES[0];
+              if (next < target.short_edge && target.upscale === "direct") {
+                target.upscale = "two_pass";
+              }
               body.repaint();
               commit();
             },
@@ -220,8 +230,39 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
       ]));
     }
 
+    // NVIDIA RTX VSR Specific Settings
+    if (rtxVsr(target)) {
+      const curQuality = target.rtx_quality || DEFAULT_RTX_QUALITY;
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("rtx quality") }),
+        el("button", {
+          class: "mmc-pill",
+          title: t("NVIDIA RTX VSR AI Model Quality Level (ULTRA, HIGH, MEDIUM, LOW)"),
+          onclick: (e) => openChoicePopover(e.currentTarget, {
+            title: t("RTX VSR Quality"),
+            options: [...RTX_QUALITIES],
+            value: curQuality,
+            onPick: (picked) => {
+              target.rtx_quality = picked;
+              body.repaint();
+              commit();
+            },
+          }),
+        }, [el("span", { text: curQuality })]),
+      ]));
+
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("hardware") }),
+        el("span", {
+          class: "mmc-pill-sub",
+          style: { color: "var(--mmc-accent, #f0a63c)", fontSize: "11px" },
+          text: t("NVIDIA RTX 20/30/40/50+ Series GPU"),
+        }),
+      ]));
+    }
+
+    // Two-pass Latent Refine Specific Settings
     if (twoPass(target)) {
-      // 1. Latent Upscaler Model Selection with Clean Truncation & Ellipsis
       const curUpscaler = target.upscale_model || "bicubic (interpolated)";
       const formatModelLabel = (name) => {
         if (!name || name.startsWith("bicubic")) return "bicubic";
@@ -266,7 +307,6 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
         ]),
       ]));
 
-      // 2. Refine Steps (Default: 1)
       rows.push(el("div", { class: "mmc-refine-row" }, [
         el("span", { class: "mmc-refine-label", text: t("refine steps") }),
         stepperPill({
@@ -278,7 +318,6 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
         }),
       ]));
 
-      // 3. Refine Denoise (Default: 0.25)
       rows.push(el("div", { class: "mmc-refine-row" }, [
         el("span", { class: "mmc-refine-label", text: t("refine denoise") }),
         stepperPill({
@@ -290,7 +329,6 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
         }),
       ]));
 
-      // 4. Turbo on Refine Only Toggle
       const isGlobalTurbo = target.turbo?.on === true;
       if (!isGlobalTurbo) {
         rows.push(el("div", { class: "mmc-refine-row" }, [
@@ -306,6 +344,32 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           }, [icon("bolt", 13), el("span", { text: target.refine_turbo_only ? t("on (1-step)") : t("off") })]),
         ]));
       }
+
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("clean vram") }),
+        el("button", {
+          class: `mmc-pill${target.clean_vram !== false ? " on" : ""}`,
+          title: t("Flush PyTorch CUDA cache and run garbage collection right before upscaling to prevent Out of Memory (OOM) errors."),
+          onclick: () => {
+            target.clean_vram = target.clean_vram === false;
+            body.repaint();
+            commit();
+          },
+        }, [icon("broom", 13), el("span", { text: target.clean_vram !== false ? t("auto-flush") : t("off") })]),
+      ]));
+
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("save pass 1 (base)") }),
+        el("button", {
+          class: `mmc-pill${target.save_pass1 ? " on" : ""}`,
+          title: t("Also save the original non-upscaled Pass 1 base video alongside the final upscaled video (saved with _base suffix)."),
+          onclick: () => {
+            target.save_pass1 = !target.save_pass1;
+            body.repaint();
+            commit();
+          },
+        }, [el("span", { text: target.save_pass1 ? t("on (save both)") : t("off") })]),
+      ]));
     }
 
     section.className = rows.length ? "mmc-twopass" : "";
@@ -320,6 +384,14 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
       renderSection();
       const { width, height } = geometry();
       const over = target.short_edge > NATIVE_SHORT_EDGE;
+      if (rtxVsr(target)) {
+        return {
+          size: `${width} × ${height}`,
+          warn: false,
+          note: t("Pass 1 sampled at {edge} px, upscaled to {width} × {height} via NVIDIA RTX VSR ({quality}).",
+                  { edge: sampleEdge(target), width, height, quality: target.rtx_quality || DEFAULT_RTX_QUALITY }),
+        };
+      }
       if (twoPass(target)) {
         return {
           size: `${width} × ${height}`,

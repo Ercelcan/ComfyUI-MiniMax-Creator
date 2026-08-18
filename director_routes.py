@@ -1,4 +1,3 @@
-
 """MiniMax H3 AI Director / Copilot Node Server Routes.
 
 Handles multimodal chat completions, live token streaming over WebSocket,
@@ -804,7 +803,6 @@ def _load_asset_image(filename_or_path: str) -> Image.Image | None:
             return None
         with Image.open(path) as raw_img:
             img = raw_img.convert("RGB")
-            # Downscaling to max 768px significantly accelerates Vision LLM prefill
             if max(img.size) > 768:
                 img.thumbnail((768, 768), Image.BILINEAR)
             return img
@@ -843,6 +841,23 @@ async def unload_director_vram(request: web.Request) -> web.Response:
                         pass
                 except Exception:
                     pass
+            elif provider in ("openai", "lmstudio") and model:
+                clean_base = (url or "http://localhost:1234").rstrip("/").replace("/v1", "")
+                for ep in (
+                    f"{clean_base}/api/v1/models/unload",
+                    f"{clean_base}/v1/models/unload",
+                    f"{clean_base}/models/unload",
+                ):
+                    try:
+                        req = urllib.request.Request(
+                            ep,
+                            data=json.dumps({"instance_id": model}).encode("utf-8"),
+                            headers={"Content-Type": "application/json", "User-Agent": "MiniMaxCreator"},
+                        )
+                        with urllib.request.urlopen(req, timeout=3) as _:
+                            break
+                    except Exception:
+                        continue
             elif provider == "comfy":
                 refine_local.unload()
 
@@ -904,7 +919,6 @@ async def director_chat(request: web.Request) -> web.Response:
                 status=400,
             )
 
-        # Collect and prepare real images for Multimodal Vision LLMs (from both Creator and Timeline)
         pictures: list[Image.Image] = []
         seen_files = set()
         for item in asset_map:
@@ -988,13 +1002,9 @@ async def director_chat(request: web.Request) -> web.Response:
                         max_tokens=max_tokens,
                     )
             finally:
-                # Guaranteed stream termination announcement
                 server = getattr(PromptServer, "instance", None)
                 if server is not None:
                     server.send_sync("mmc_director_stream", {"node": node_id, "done": True})
-                # Auto-unload local model from VRAM
-                if provider in ("ollama", "openai",):
-                    refine_api._unload_local_model(provider, url, model)
 
         loop = asyncio.get_running_loop()
         content = await loop.run_in_executor(None, _do_stream)
