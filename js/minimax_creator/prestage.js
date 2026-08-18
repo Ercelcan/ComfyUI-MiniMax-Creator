@@ -12,6 +12,7 @@ import { t } from "./i18n.js";
 import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
 import { app } from "../../../scripts/app.js";
+import { api } from "../../../scripts/api.js";
 
 const QUALITY_TITLE = {
   quality: "48 steps on the tight schedule — the hosted service's 'Quality' tier.",
@@ -24,6 +25,54 @@ const TURBO_TITLE = {
   medium: "6 steps — quick and usable.",
   good: "8 steps — what the Turbo checkpoint was distilled for.",
 };
+
+/**
+ * Queues execution strictly for the specified node and its upstream dependencies,
+ * preventing other output nodes on the canvas (e.g. Creator / Timeline) from running.
+ */
+async function queuePreStageOnly(nodeId) {
+  const idStr = String(typeof nodeId === "function" ? nodeId() : nodeId);
+  try {
+    const p = await app.graphToPrompt();
+    if (!p || !p.output || !p.output[idStr]) {
+      app.queuePrompt(0);
+      return;
+    }
+
+    const needed = new Set([idStr]);
+    const toCheck = [idStr];
+
+    while (toCheck.length > 0) {
+      const curId = toCheck.pop();
+      const nodeData = p.output[curId];
+      if (!nodeData || !nodeData.inputs) continue;
+      for (const val of Object.values(nodeData.inputs)) {
+        if (Array.isArray(val) && val.length === 2) {
+          const depId = String(val[0]);
+          if (!needed.has(depId) && p.output[depId]) {
+            needed.add(depId);
+            toCheck.push(depId);
+          }
+        }
+      }
+    }
+
+    const filteredOutput = {};
+    for (const id of needed) {
+      if (p.output[id]) {
+        filteredOutput[id] = p.output[id];
+      }
+    }
+
+    await api.queuePrompt(0, {
+      output: filteredOutput,
+      workflow: p.workflow,
+    });
+  } catch (err) {
+    console.error("[MiniMax Creator] queuePreStageOnly error:", err);
+    try { app.queuePrompt(0); } catch {}
+  }
+}
 
 export class PreStageEditor {
   constructor({ state, onCommit, samplingWidgets, onWidgetChange, nodeId,
@@ -61,7 +110,7 @@ export class PreStageEditor {
 
     this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [this.promptBox]);
 
-    this.root = el("div", { class: "mmc-root mmc-prestage" }, [
+    this.root = el("div", { class: `mmc-root mmc-prestage` }, [
       this.railHost,
       this.assetsHost,
       this.loraHost,
@@ -234,19 +283,8 @@ export class PreStageEditor {
       el("div", { class: "mmc-rail-group" }, [
         el("button", {
           class: "mmc-tool mmc-tool-primary",
-          title: t("Queue prompt in ComfyUI to generate this image"),
-          onclick: () => {
-            try {
-              const id = typeof this.nodeId === "function" ? this.nodeId() : this.nodeId;
-              if (id !== null && id !== undefined && app.queuePrompt) {
-                app.queuePrompt(0, [id]);
-              } else {
-                app.queuePrompt(0);
-              }
-            } catch {
-              try { app.queuePrompt(0); } catch {}
-            }
-          },
+          title: t("Generate only this still image (without triggering video generation)"),
+          onclick: () => queuePreStageOnly(this.nodeId),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
         el("button", {
           class: `mmc-tool${this.stage?.showing() ? " active" : ""}`,
