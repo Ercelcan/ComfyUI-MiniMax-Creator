@@ -120,6 +120,9 @@ const TIMELINE = "MiniMaxH3Timeline";
 const PRESTAGE = "MiniMaxH3PreStage";
 const DIRECTOR = "MiniMaxH3Director";
 
+const getNodeClass = (node) =>
+  node?.comfyClass || node?.type || node?.constructor?.comfyClass || node?.constructor?.type || "";
+
 const MIN_SIZE = {
   [CREATOR]: [620, 520],
   [TIMELINE]: [720, 560],
@@ -166,8 +169,16 @@ const OUTPUT_SOCKETS = {
 };
 
 function syncOutputs(node) {
-  const schemaOutputs = OUTPUT_SOCKETS[node.comfyClass];
+  const cls = getNodeClass(node);
+  const schemaOutputs = OUTPUT_SOCKETS[cls];
   if (!schemaOutputs) return;
+
+  if (cls === PRESTAGE) {
+    if (!node.outputs || node.outputs.length === 0) {
+      node.outputs = schemaOutputs.map((o) => ({ name: o.name, type: o.type, links: null }));
+    }
+    return;
+  }
 
   const enabled = node.properties?.show_outputs === true;
   const rootEl = node.mmcBody?.root || node.mmcBody?.editor?.root;
@@ -189,7 +200,7 @@ function syncOutputs(node) {
     if (rootEl) rootEl.classList.add("mmc-has-outputs");
   }
 
-  const [minW, minH] = MIN_SIZE[node.comfyClass] || [620, 520];
+  const [minW, minH] = MIN_SIZE[cls] || [620, 520];
   const targetW = enabled ? minW + 115 : minW;
   node.size = [Math.max(node.size?.[0] ?? 0, targetW), Math.max(node.size?.[1] ?? 0, minH)];
   node.setDirtyCanvas?.(true, true);
@@ -200,13 +211,13 @@ const nodeById = (graph, id) =>
 
 function findPreStage(node) {
   return (node.graph?._nodes ?? []).find((n) =>
-    n.comfyClass === PRESTAGE && n.mmcBody
+    getNodeClass(n) === PRESTAGE && n.mmcBody
     && String(n.mmcBody.state?.peer) === String(node.id)) ?? null;
 }
 
 function adoptOrphan(node) {
   const orphan = (node.graph?._nodes ?? []).find((n) =>
-    n.comfyClass === PRESTAGE && n.mmcBody
+    getNodeClass(n) === PRESTAGE && n.mmcBody
     && n.mmcBody.state?.peer != null
     && !nodeById(node.graph, n.mmcBody.state.peer)
     && n.pos[0] < node.pos[0]
@@ -277,7 +288,7 @@ const peerOf = (node) => () => {
   const body = peer?.mmcBody;
   if (!body?.attachFromPreStage) return null;
   return {
-    label: peer.title || peer.comfyClass,
+    label: peer.title || getNodeClass(peer),
     attach: (role, filename) => body.attachFromPreStage({ role, filename }),
   };
 };
@@ -287,7 +298,7 @@ function hideWidget(widget) {
   widget.hidden = true;
   widget.options = widget.options || {};
   widget.options.hidden = true;
-  widget.computeSize = () => [0, 0];
+  widget.computeSize = () => [0, -4];
   if (widget.element) {
     widget.element.style.display = "none";
     widget.element.style.visibility = "hidden";
@@ -325,7 +336,8 @@ function attach(node, build) {
   if (!node) return null;
   if (node.mmcBody) return node.mmcBody;
 
-  const targetWidgetName = WIDGET[node.comfyClass];
+  const cls = getNodeClass(node);
+  const targetWidgetName = WIDGET[cls];
   if (!targetWidgetName) return null;
 
   const doAttach = () => {
@@ -341,7 +353,7 @@ function attach(node, build) {
       if (!body) return null;
       node.mmcBody = body;
 
-      const [minWidth, minHeight] = MIN_SIZE[node.comfyClass] || [620, 520];
+      const [minWidth, minHeight] = MIN_SIZE[cls] || [620, 520];
       const hasOutputs = node.properties?.show_outputs === true;
       const initialW = hasOutputs ? minWidth + 115 : minWidth;
 
@@ -374,17 +386,19 @@ function attach(node, build) {
         body.root.style.width = "100%";
         body.root.style.height = "100%";
         body.root.style.boxSizing = "border-box";
-        node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
-          serialize: false,
-          hideOnZoom: false,
-          getMinHeight: () => minHeight - 60,
-        });
+        if (!node.widgets?.some((w) => w.name === "mmc_ui")) {
+          node.addDOMWidget("mmc_ui", "MMC_CREATOR", body.root, {
+            serialize: false,
+            hideOnZoom: false,
+            getMinHeight: () => minHeight - 60,
+          });
+        }
       }
 
       syncOutputs(node);
 
       const satellite = body.stage
-        ? new Satellite({ node, stage: body.stage, side: SIDE[node.comfyClass] ?? "right" })
+        ? new Satellite({ node, stage: body.stage, side: SIDE[cls] ?? "right" })
         : null;
 
       const removed = node.onRemoved;
@@ -491,44 +505,46 @@ app.registerExtension({
   name: "minimax.creator",
 
   async nodeCreated(node) {
-    if (!MIN_SIZE[node.comfyClass]) return;
+    const cls = getNodeClass(node);
+    if (!MIN_SIZE[cls]) return;
 
-    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass];
+    const [minWidth, minHeight] = MIN_SIZE[cls];
     if (node.size) {
       node.size[0] = Math.max(node.size[0] || 0, minWidth);
       node.size[1] = Math.max(node.size[1] || 0, minHeight);
     }
-    if (node.comfyClass === CREATOR) {
+    if (cls === CREATOR) {
       createCreatorBody(node);
-    } else if (node.comfyClass === TIMELINE) {
+    } else if (cls === TIMELINE) {
       createTimelineBody(node);
-    } else if (node.comfyClass === PRESTAGE) {
+    } else if (cls === PRESTAGE) {
       createPrestageBody(node);
-    } else if (node.comfyClass === DIRECTOR) {
+    } else if (cls === DIRECTOR) {
       createDirectorBody(node);
     }
   },
 
   loadedGraphNode(node) {
-    if (!MIN_SIZE[node.comfyClass]) return;
+    const cls = getNodeClass(node);
+    if (!MIN_SIZE[cls]) return;
 
-    const [minWidth, minHeight] = MIN_SIZE[node.comfyClass];
+    const [minWidth, minHeight] = MIN_SIZE[cls];
     if (node.size) {
       node.size[0] = Math.max(node.size[0] || 0, minWidth);
       node.size[1] = Math.max(node.size[1] || 0, minHeight);
     }
-    if (WIDGET[node.comfyClass] && !node.mmcBody) {
-      if (node.comfyClass === CREATOR) createCreatorBody(node);
-      else if (node.comfyClass === TIMELINE) createTimelineBody(node);
-      else if (node.comfyClass === PRESTAGE) createPrestageBody(node);
-      else if (node.comfyClass === DIRECTOR) createDirectorBody(node);
+    if (WIDGET[cls] && !node.mmcBody) {
+      if (cls === CREATOR) createCreatorBody(node);
+      else if (cls === TIMELINE) createTimelineBody(node);
+      else if (cls === PRESTAGE) createPrestageBody(node);
+      else if (cls === DIRECTOR) createDirectorBody(node);
     }
     const body = node.mmcBody;
     if (!body) return;
 
     syncOutputs(node);
 
-    if (node.comfyClass === CREATOR) {
+    if (cls === CREATOR) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[CREATOR]);
       if (widget) {
         const state = S.parseState(widget.value);
@@ -539,18 +555,18 @@ app.registerExtension({
         body.samplingWidgets = collectSampling(node);
         body.setState(state);
       }
-    } else if (node.comfyClass === PRESTAGE) {
+    } else if (cls === PRESTAGE) {
       const widget = node.widgets?.find((w) => w.name === WIDGET[PRESTAGE]);
       if (widget) {
         const state = S.parsePreStage(widget.value);
         body.onCommit = () => {
-          widget.value = S.serializePreStage(state);
+          widget.value = S.serializePreStage(body.state);
           node.graph?.setDirtyCanvas(true, true);
         };
         body.samplingWidgets = collectSampling(node);
         body.setState(state);
       }
-    } else if (node.comfyClass === DIRECTOR) {
+    } else if (cls === DIRECTOR) {
       const ctxWidget = node.widgets?.find((w) => w.name === "context_timeline");
       if (ctxWidget) hideWidget(ctxWidget);
 

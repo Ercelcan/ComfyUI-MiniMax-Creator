@@ -822,3 +822,178 @@ export function blockedReason(state, action) {
   }
   return null;
 }
+
+// ==============================================================================
+// PreStage Image Model & Still Constants & Helpers
+// ==============================================================================
+
+export const PRESTAGE_ARCHES = ["krea2", "ideogram4", "minimax"];
+export const PRESTAGE_ARCH_LABEL = {
+  krea2: "Krea 2",
+  ideogram4: "Ideogram 4.0",
+  minimax: "MiniMax H3",
+};
+
+export const PRESTAGE_ASPECTS = [
+  ["21:9", 21 / 9], ["16:9", 16 / 9], ["3:2", 3 / 2], ["4:3", 4 / 3],
+  ["1:1", 1], ["3:4", 3 / 4], ["2:3", 2 / 3], ["9:16", 9 / 16],
+];
+
+export const PRESTAGE_MIN_EDGE = 512;
+export const PRESTAGE_MAX_EDGE = 2048;
+export const PRESTAGE_DEFAULT_EDGE = 1024;
+export const PRESTAGE_CANVAS_MULTIPLE = 16;
+export const PRESTAGE_MAX_PIXELS = 2048 * 2048;
+
+export const PRESTAGE_MAX_REFS = 3;
+export const PRESTAGE_DEFAULT_DENOISE = 0.65;
+export const PRESTAGE_MIN_DENOISE = 0.05;
+
+export const PRESTAGE_TURBO_QUALITIES = ["draft", "medium", "good"];
+export const PRESTAGE_TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
+export const PRESTAGE_KREA_RAW = { steps: 52, cfg: 3.5, sampler_name: "euler", scheduler: "simple" };
+export const PRESTAGE_KREA_TURBO = { cfg: 1.0, sampler_name: "euler", scheduler: "simple" };
+
+export const PRESTAGE_IDEOGRAM_QUALITIES = ["quality", "default", "turbo"];
+export const PRESTAGE_IDEOGRAM_STEPS = { quality: 48, default: 20, turbo: 12 };
+export const PRESTAGE_IDEOGRAM_ROW = { cfg: 7.0, sampler_name: "euler" };
+
+export const PRESTAGE_STILL_LENGTHS = [5, 22, 39, 56, 90, 124];
+export const PRESTAGE_STILL_ROW = { steps: 20, cfg: 1.0, sampler_name: "res_multistep", scheduler: "simple" };
+
+export const stillLatentFrames = (frames) => (frames <= 5 ? 2 : Math.floor((frames - 5) / 17) * 5 + 2);
+export const isStill = (state) => state?.arch === "minimax";
+
+export const PRESTAGE_FIELDS = {
+  krea2: ["model", "turbo_model", "clip", "vae"],
+  ideogram4: ["model", "uncond_model", "clip", "vae"],
+};
+
+export const PRESTAGE_FIELD_LABEL = {
+  model: "Model checkpoint",
+  turbo_model: "Turbo checkpoint",
+  uncond_model: "Unconditional model",
+  clip: "Text encoder",
+  vae: "VAE",
+};
+
+export const PRESTAGE_FIELD_HINT = {
+  krea2: {
+    model: "Krea 2 RAW — the full 12.9B base DiT. Used when Turbo is off.",
+    turbo_model: "Krea 2 Turbo — the 8-step distilled checkpoint. Used when Turbo is on.",
+    clip: "Qwen3-VL-4B or 8B. Loaded as CLIPLoader type 'krea2'.",
+    vae: "Qwen Image VAE — decodes the 16-channel latent into pixels.",
+  },
+  ideogram4: {
+    model: "Ideogram 4.0 DiT — the conditional branch.",
+    uncond_model: "Ideogram 4.0 unconditional branch checkpoint.",
+    clip: "Qwen3-VL-8B. Loaded as CLIPLoader type 'ideogram4'.",
+    vae: "Flux/SD3 16-channel VAE.",
+  },
+};
+
+export function emptyPreStageModels() {
+  return {
+    krea2: { model: "", turbo_model: "", clip: "", vae: "" },
+    ideogram4: { model: "", uncond_model: "", clip: "", vae: "" },
+    dtype: "default",
+  };
+}
+
+export function emptyPreStage() {
+  return {
+    version: 1,
+    arch: "krea2",
+    prompt: "",
+    aspect: "16:9",
+    short_edge: PRESTAGE_DEFAULT_EDGE,
+    init: null,
+    refs: [],
+    loras: [],
+    turbo: { on: false, quality: "good", saved: null },
+    quality: "default",
+    minimax: {
+      frames: 5,
+      latent_index: 0,
+      request: emptyState(),
+    },
+    models: emptyPreStageModels(),
+    peer: null,
+  };
+}
+
+export function parsePreStage(raw) {
+  try {
+    const parsed = typeof raw === "string" ? JSON.parse(raw) : raw;
+    if (parsed && typeof parsed === "object") {
+      const state = { ...emptyPreStage(), ...parsed };
+      if (!PRESTAGE_ARCHES.includes(state.arch)) state.arch = "krea2";
+      if (!Array.isArray(state.refs)) state.refs = [];
+      if (!Array.isArray(state.loras)) state.loras = [];
+      if (!state.turbo || typeof state.turbo !== "object") state.turbo = emptyPreStage().turbo;
+      if (!state.minimax || typeof state.minimax !== "object") state.minimax = emptyPreStage().minimax;
+      state.minimax.request = parseState(JSON.stringify(state.minimax.request ?? {}));
+      state.models = { ...emptyPreStageModels(), ...(parsed.models || {}) };
+      state.models.dtype = parsed.models?.dtype || "default";
+      return state;
+    }
+  } catch {}
+  return emptyPreStage();
+}
+
+export function serializePreStage(state) {
+  return JSON.stringify(state, null, 2);
+}
+
+export function nextPreStageHandle(state) {
+  const taken = new Set((state.refs || []).map((r) => r.handle));
+  for (let n = 1; ; n += 1) {
+    const handle = `style-${n}`;
+    if (!taken.has(handle)) return handle;
+  }
+}
+
+export function missingPreStageModels(state) {
+  const fields = PRESTAGE_FIELDS[state?.arch] || [];
+  const side = state?.models?.[state?.arch] || {};
+  return fields.filter((f) => !side[f]);
+}
+
+export function guessPreStageModels(models, byFolder) {
+  let changed = false;
+  for (const arch of ["krea2", "ideogram4"]) {
+    const side = models[arch] || {};
+    const unets = byFolder.diffusion_models || [];
+    const clips = byFolder.text_encoders || [];
+    const vaes = byFolder.vae || [];
+
+    if (!side.model) {
+      const hit = unets.find((n) => n.toLowerCase().includes(arch));
+      if (hit) { side.model = hit; changed = true; }
+    }
+    if (arch === "krea2" && !side.turbo_model) {
+      const hit = unets.find((n) => n.toLowerCase().includes("krea") && n.toLowerCase().includes("turbo"));
+      if (hit) { side.turbo_model = hit; changed = true; }
+    }
+    if (!side.clip) {
+      const hit = clips.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes(arch));
+      if (hit) { side.clip = hit; changed = true; }
+    }
+    if (!side.vae) {
+      const hit = vaes.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes("flux") || n.toLowerCase().includes("sd3"));
+      if (hit) { side.vae = hit; changed = true; }
+    }
+  }
+  return changed;
+}
+
+export function resolvedPreStage(state, initSize = null) {
+  let ratio = PRESTAGE_ASPECTS.find(([label]) => label === state.aspect)?.[1] ?? 16 / 9;
+  let fromImage = false;
+  if (initSize && initSize.width && initSize.height) {
+    ratio = initSize.width / initSize.height;
+    fromImage = true;
+  }
+  const [width, height] = resolveCanvas(ratio, state.short_edge || PRESTAGE_DEFAULT_EDGE);
+  return { width, height, ratio, fromImage };
+}

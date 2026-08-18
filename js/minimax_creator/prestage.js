@@ -30,7 +30,7 @@ export class PreStageEditor {
                 stage = null, archPill = null }) {
     this.state = state;
     this.onCommit = onCommit;
-    this.samplingWidgets = samplingWidgets;
+    this.samplingWidgets = samplingWidgets || {};
     this.onWidgetChange = onWidgetChange;
     this.nodeId = nodeId;
     this.stage = stage;
@@ -136,14 +136,11 @@ export class PreStageEditor {
 
   async addRefs(fromVideo = false) {
     if (this.state.arch === "ideogram4") {
-      return this.flash(t("Ideogram 4.0 has no local reference conditioning — switch the model "
-                        + "pill to Krea 2 to use style references."));
+      return this.flash(t("Ideogram 4.0 has no local reference conditioning — switch the model pill to Krea 2 to use style references."));
     }
     const room = S.PRESTAGE_MAX_REFS - this.state.refs.length;
     if (room <= 0) {
-      return this.flash(t("At most {max} style references — the Qwen edit encoder "
-                        + "the model reads them through has exactly three image slots.",
-                        { max: S.PRESTAGE_MAX_REFS }));
+      return this.flash(t("At most {max} style references — the Qwen edit encoder the model reads them through has exactly three image slots.", { max: S.PRESTAGE_MAX_REFS }));
     }
     if (fromVideo) {
       const clip = await openPicker({
@@ -195,10 +192,10 @@ export class PreStageEditor {
     this.railHost.replaceChildren(this.renderRail());
     const chips = [
       ...(state.init ? [this.renderInitChip()] : []),
-      ...state.refs.map((ref) => this.renderRefChip(ref)),
+      ...(state.refs || []).map((ref) => this.renderRefChip(ref)),
     ];
     this.assetsHost.replaceChildren(...(chips.length ? [el("div", { class: "mmc-assets" }, chips)] : []));
-    this.loraHost.replaceChildren(...(state.loras.length ? [this.renderLoras()] : []));
+    this.loraHost.replaceChildren(...((state.loras || []).length ? [this.renderLoras()] : []));
     this.pillsHost.replaceChildren(this.renderPills());
     this.noticeHost.replaceChildren(
       ...(this.notice ? [el("div", { class: "mmc-warn", text: this.notice })] : []));
@@ -225,14 +222,13 @@ export class PreStageEditor {
         tool(t("Style refs"), "image",
              this.state.arch === "ideogram4"
                ? t("Ideogram 4.0 has no local reference conditioning — style references are a Krea 2 feature.")
-               : t("Up to three images whose look this render should carry. Encoded through the Qwen edit "
-                 + "path Krea 2 was post-trained against; the krea2_style_reference LoRA strengthens it."),
+               : t("Up to three images whose look this render should carry."),
              () => this.addRefs(false)),
         tool(t("From video"), "video",
-             t("Pull a single frame off a video's playhead — as the init image, saved as a PNG in the input folder."),
+             t("Pull a single frame off a video's playhead — as the init image."),
              () => this.setInit(true)),
         tool(t("Add LoRA"), "effect",
-             t("Manage the LoRAs patched onto the image model. Krea LoRAs train on RAW and apply on Turbo too."),
+             t("Manage the LoRAs patched onto the image model."),
              () => this.manageLoras()),
       ]),
       el("div", { class: "mmc-rail-group" }, [
@@ -272,7 +268,7 @@ export class PreStageEditor {
       el("button", {
         class: "mmc-ghost",
         style: { fontSize: "11px" },
-        title: t("How much of the render is new. 1.00 ignores the init entirely; low values keep its composition and only restyle. Click to step down, right-click to step up."),
+        title: t("img2img strength"),
         text: init.denoise.toFixed(2),
         onclick: () => {
           init.denoise = Math.max(S.PRESTAGE_MIN_DENOISE, Math.round((init.denoise - 0.05) * 100) / 100);
@@ -316,7 +312,7 @@ export class PreStageEditor {
       el("button", {
         class: "mmc-ghost",
         style: { fontSize: "11px" },
-        title: t("Strength — edit on the LoRA card"),
+        title: t("Strength"),
         text: Number(entry.strength ?? 1).toFixed(2),
         onclick: () => this.manageLoras(),
       }),
@@ -331,7 +327,7 @@ export class PreStageEditor {
     if (triggers.length) {
       parts.push(el("div", {
         class: "mmc-note",
-        title: t("Prefixed to the prompt when this queues. Edit the list on the LoRA cards."),
+        title: t("Triggers"),
       }, [
         el("span", { class: "mmc-note-key", text: t("triggers") }),
         el("span", { text: triggers.join(", ") }),
@@ -389,8 +385,7 @@ export class PreStageEditor {
     if (state.init) {
       pills.push(stepperPill({
         value: state.init.denoise, min: S.PRESTAGE_MIN_DENOISE, max: 1, step: 0.05, width: "52px",
-        title: t("img2img strength — how much of the render is new. 1.00 ignores the init entirely; "
-               + "low values keep its composition and only restyle."),
+        title: t("img2img strength"),
         format: (n) => t("img {value}", { value: n.toFixed(2) }),
         onChange: (next) => { state.init.denoise = next; this.commit(); },
       }));
@@ -409,11 +404,8 @@ export class PreStageEditor {
       el("button", {
         class: "mmc-turbo-main",
         title: turbo.on
-          ? t("Turbo — running the Turbo checkpoint at {steps} steps, cfg 1. "
-            + "Switching off loads RAW again and puts the sampler row back.",
-            { steps: io.value("steps", "?") })
-          : t("Turbo off — running RAW. On, the Turbo checkpoint (an 8-step distillation) is loaded "
-            + "instead and the row drops to the picked quality at cfg 1."),
+          ? t("Turbo on", { steps: io.value("steps", "?") })
+          : t("Turbo off"),
         onclick: () => {
           if (turbo.on) {
             const saved = turbo.saved ?? S.PRESTAGE_KREA_RAW;
@@ -464,17 +456,17 @@ export class PreStageEditor {
 
   renderWeightsPill() {
     const missing = S.missingPreStageModels(this.state);
+    const dtype = this.state.models?.dtype || "default";
     const label = missing.length
       ? (missing.length === 1
-          ? t("no {field}", { field: t(S.PRESTAGE_FIELD_LABEL[missing[0]]).toLowerCase() })
+          ? t("no {field}", { field: t(S.PRESTAGE_FIELD_LABEL[missing[0]] || "").toLowerCase() })
           : t("{count} weights missing", { count: missing.length }))
-      : this.state.models.dtype === "default"
-        ? t("weights") : t("weights · {dtype}", { dtype: this.state.models.dtype.replace("fp8_", "fp8 ") });
+      : dtype === "default"
+        ? t("weights") : t("weights · {dtype}", { dtype: dtype.replace("fp8_", "fp8 ") });
     return el("button", {
       class: `mmc-pill mmc-weights${missing.length ? " missing" : ""}`,
       title: missing.length
-        ? t("Not picked yet: {fields}. The render is refused without them.",
-            { fields: missing.map((f) => t(S.PRESTAGE_FIELD_LABEL[f])).join(", ") })
+        ? t("Not picked yet: {fields}.", { fields: missing.map((f) => t(S.PRESTAGE_FIELD_LABEL[f] || "")).join(", ") })
         : t("Which files {arch} loads.", { arch: S.PRESTAGE_ARCH_LABEL[this.state.arch] }),
       onclick: (event) => this.openWeights(event.currentTarget),
     }, [icon("weights", 16), el("span", { text: label })]);
@@ -493,19 +485,19 @@ export class PreStageEditor {
         uncond_model: byFolder.diffusion_models ?? [],
         clip: byFolder.text_encoders ?? [], vae: byFolder.vae ?? [],
       };
-      const side = state.models[state.arch];
+      const side = state.models?.[state.arch] || {};
       const missing = new Set(S.missingPreStageModels(state));
 
-      const rows = S.PRESTAGE_FIELDS[state.arch].map((field) => el("div", {
+      const rows = (S.PRESTAGE_FIELDS[state.arch] || []).map((field) => el("div", {
         class: `mmc-weight-row${missing.has(field) ? " missing" : ""}`,
       }, [
-        el("span", { class: "mmc-weight-name", text: t(S.PRESTAGE_FIELD_LABEL[field]) }),
+        el("span", { class: "mmc-weight-name", text: t(S.PRESTAGE_FIELD_LABEL[field] || field) }),
         el("button", {
           class: `mmc-weight-file${side[field] ? "" : " empty"}`,
-          title: t(S.PRESTAGE_FIELD_HINT[state.arch][field]),
+          title: t(S.PRESTAGE_FIELD_HINT[state.arch]?.[field] || ""),
           text: side[field] || t("not set"),
           onclick: (event) => openChoicePopover(event.currentTarget, {
-            title: t(S.PRESTAGE_FIELD_LABEL[field]),
+            title: t(S.PRESTAGE_FIELD_LABEL[field] || field),
             options: [NONE, ...lists[field]],
             value: side[field] || NONE,
             onPick: (picked) => {
@@ -517,19 +509,23 @@ export class PreStageEditor {
         }),
       ]));
 
+      const curDtype = state.models?.dtype || "default";
       rows.push(el("div", { class: "mmc-weight-row" }, [
         el("span", { class: "mmc-weight-name", text: t("Precision") }),
         el("button", {
           class: "mmc-weight-file",
-          title: t("How the checkpoints are loaded. fp8 halves the weights in VRAM at some cost "
-                 + "in fidelity; 'default' loads them as they were saved. GGUF files ignore "
-                 + "this — their precision was baked in when they were quantized."),
-          text: state.models.dtype,
+          title: t("Precision"),
+          text: curDtype,
           onclick: (event) => openChoicePopover(event.currentTarget, {
             title: t("Precision"),
             options: S.MODEL_DTYPES,
-            value: state.models.dtype,
-            onPick: (picked) => { state.models.dtype = picked; this.commit(); render(); },
+            value: curDtype,
+            onPick: (picked) => {
+              state.models = state.models || {};
+              state.models.dtype = picked;
+              this.commit();
+              render();
+            },
           }),
         }),
       ]));
@@ -709,28 +705,29 @@ export class PreStageBody {
   }
 
   promptOf() {
-    return (S.isStill(this.state) ? this.state.minimax.request.prompt : this.state.prompt) ?? "";
+    return (S.isStill(this.state) ? this.state.minimax?.request?.prompt : this.state.prompt) ?? "";
   }
 
   setPrompt(text) {
-    if (S.isStill(this.state)) this.state.minimax.request.prompt = text;
-    else this.state.prompt = text;
+    if (S.isStill(this.state)) {
+      this.state.minimax = this.state.minimax || {};
+      this.state.minimax.request = this.state.minimax.request || {};
+      this.state.minimax.request.prompt = text;
+    } else {
+      this.state.prompt = text;
+    }
   }
 
   renderArchPill() {
     const state = this.state;
     const ARCH_TITLE = {
-      krea2: "Krea 2 — 12.9B open-weights DiT. RAW samples at cfg 3.5; the turbo pill swaps in "
-           + "the 8-step Turbo checkpoint.",
-      ideogram4: "Ideogram 4.0 — 9.3B open-weights DiT with its own resolution-shifted schedule "
-               + "and a second checkpoint for the unconditional branch.",
-      minimax: "MiniMax H3 — experimental. The still is a video generation whose first latent "
-             + "frame is decoded by the single-image H3 VAE, on the weights and the canvas your "
-             + "render already uses. No second model family is loaded.",
+      krea2: "Krea 2 — 12.9B open-weights DiT.",
+      ideogram4: "Ideogram 4.0 — 9.3B open-weights DiT.",
+      minimax: "MiniMax H3 — experimental still generation.",
     };
     return el("button", {
       class: `mmc-pill mmc-prestage-arch${S.isStill(state) ? " mmc-experimental" : ""}`,
-      title: t("{arch} Click to switch.", { arch: t(ARCH_TITLE[state.arch]) }),
+      title: t("{arch} Click to switch.", { arch: t(ARCH_TITLE[state.arch] || "") }),
       onclick: (event) => openChoicePopover(event.currentTarget, {
         title: t("Image model"),
         options: S.PRESTAGE_ARCHES.map((arch) => S.PRESTAGE_ARCH_LABEL[arch]),
@@ -738,25 +735,23 @@ export class PreStageBody {
         onPick: (picked) => this.setArch(
           S.PRESTAGE_ARCHES.find((arch) => S.PRESTAGE_ARCH_LABEL[arch] === picked) ?? "krea2"),
       }),
-    }, [icon("model", 16), el("span", { text: S.PRESTAGE_ARCH_LABEL[state.arch] })]);
+    }, [icon("model", 16), el("span", { text: S.PRESTAGE_ARCH_LABEL[state.arch] || state.arch })]);
   }
 
   renderStillPills() {
-    const still = this.state.minimax;
-    const latents = S.stillLatentFrames(still.frames);
+    const still = this.state.minimax || {};
+    const framesCount = still.frames || 5;
+    const latents = S.stillLatentFrames(framesCount);
 
     const lengthLabel = (n) => t("{frames} frames · {latents} latent",
                                  { frames: n, latents: S.stillLatentFrames(n) });
     const length = el("button", {
       class: "mmc-pill",
-      title: t("{frames} frames sampled — {latents} latent frames, of which one is "
-           + "decoded. The shortest clip is the cheapest still; H3's trained range starts at "
-           + "124 frames, so longer is more in-distribution and proportionally slower.",
-           { frames: still.frames, latents }),
+      title: t("Sampled length"),
       onclick: (event) => openChoicePopover(event.currentTarget, {
         title: t("Sampled length"),
         options: S.PRESTAGE_STILL_LENGTHS.map(lengthLabel),
-        value: lengthLabel(still.frames),
+        value: lengthLabel(framesCount),
         onPick: (picked) => {
           const frames = S.PRESTAGE_STILL_LENGTHS.find((n) => lengthLabel(n) === picked);
           if (frames == null) return;
@@ -767,14 +762,12 @@ export class PreStageBody {
           this.commit();
         },
       }),
-    }, [icon("clock", 16), el("span", { text: `${still.frames}f` }),
+    }, [icon("clock", 16), el("span", { text: `${framesCount}f` }),
         el("span", { class: "mmc-pill-sub", text: t("{latents} latent", { latents }) })]);
 
     const index = stepperPill({
-      value: still.latent_index, min: -latents, max: latents - 1, step: 1, width: "56px",
-      title: t("Which latent frame becomes the picture. 0 is the causal first frame — the one "
-             + "slice the single-image VAE was trained on, and the only one that is a function "
-             + "of a single video frame. Negative counts from the end."),
+      value: still.latent_index || 0, min: -latents, max: latents - 1, step: 1, width: "56px",
+      title: t("Which latent frame becomes the picture."),
       format: (n) => t("latent {n}", { n }),
       onChange: (next) => { still.latent_index = Math.round(next); this.commit(); },
     });
@@ -785,14 +778,14 @@ export class PreStageBody {
   renderFrameGrabTool() {
     return el("button", {
       class: "mmc-tool",
-      title: t("Pull a single frame off a video's playhead and open on it — saved as a PNG in "
-             + "the input folder."),
+      title: t("Pull frame from video"),
       onclick: () => this.grabFrame(),
     }, [el("span", { class: "mmc-tool-icon" }, [icon("video")]), el("span", { text: t("From video") })]);
   }
 
   async grabFrame() {
-    const request = this.state.minimax.request;
+    const request = this.state.minimax?.request;
+    if (!request) return;
     const blocked = S.blockedReason(request, "first_frame");
     if (blocked) return;
     const clip = await openPicker({

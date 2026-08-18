@@ -76,7 +76,7 @@ export function samplingBar({ widgets = {}, value, set, perSegment = false, turb
   const cfgVal = Number(value("cfg", 1.0));
   pills.push(stepperPill({
     value: cfgVal, min: 0, max: 30, step: 0.5, width: "52px",
-    title: t("Classifier-free guidance. The distilled H3 checkpoints want 1.0, and at 1.0 the negative is skipped entirely."),
+    title: t("Classifier-free guidance."),
     format: (n) => t("cfg {n}", { n: n.toFixed(1) }),
     onChange: (next) => set("cfg", next),
   }));
@@ -105,47 +105,51 @@ export function samplingBar({ widgets = {}, value, set, perSegment = false, turb
   // 5. Turbo Pills
   pills.push(...turbo);
 
-  // 6. FirstBlockCache
-  const curCache = String(value("block_cache", "off"));
-  const cacheWidget = widgets.block_cache;
-  const cacheOptions = cacheWidget?.options?.values || ["off", "safe", "fast", "aggressive"];
-  pills.push(el("button", {
-    class: `mmc-pill${curCache !== "off" ? " accel-on" : ""}`,
-    title: BLOCK_CACHE_TITLE[curCache] ? t(BLOCK_CACHE_TITLE[curCache]) : t("FirstBlockCache"),
-    onpointerdown: (e) => e.stopPropagation(),
-    onclick: (event) => {
-      event.stopPropagation();
-      openChoicePopover(event.currentTarget, {
-        title: t("Block cache"),
-        options: typeof cacheOptions === "function" ? cacheOptions(cacheWidget) : cacheOptions,
-        value: curCache,
-        onPick: (picked) => set("block_cache", picked),
-      });
-    },
-  }, [el("span", { text: curCache === "off" ? t("cache off") : t("cache {preset}", { preset: curCache }) })]));
+  // 6. FirstBlockCache (Rendered only on nodes that support it)
+  if (widgets.block_cache || value("block_cache", null) !== null) {
+    const curCache = String(value("block_cache", "off"));
+    const cacheWidget = widgets.block_cache;
+    const cacheOptions = cacheWidget?.options?.values || ["off", "safe", "fast", "aggressive"];
+    pills.push(el("button", {
+      class: `mmc-pill${curCache !== "off" ? " accel-on" : ""}`,
+      title: BLOCK_CACHE_TITLE[curCache] ? t(BLOCK_CACHE_TITLE[curCache]) : t("FirstBlockCache"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (event) => {
+        event.stopPropagation();
+        openChoicePopover(event.currentTarget, {
+          title: t("Block cache"),
+          options: typeof cacheOptions === "function" ? cacheOptions(cacheWidget) : cacheOptions,
+          value: curCache,
+          onPick: (picked) => set("block_cache", picked),
+        });
+      },
+    }, [el("span", { text: curCache === "off" ? t("cache off") : t("cache {preset}", { preset: curCache }) })]));
+  }
 
-  // 7. Spectrum & Spectrum Blend Stepper
-  const spectrumOn = Boolean(value("spectrum", false));
-  pills.push(el("button", {
-    class: `mmc-pill${spectrumOn ? " accel-on" : ""}`,
-    title: spectrumOn
-      ? t("Spectrum on — forecasting features across steps. Click to turn off.")
-      : t("Spectrum off. Click to turn on."),
-    onpointerdown: (e) => e.stopPropagation(),
-    onclick: (e) => {
-      e.stopPropagation();
-      set("spectrum", !spectrumOn);
-    },
-  }, [el("span", { text: spectrumOn ? t("spectrum") : t("spectrum off") })]));
+  // 7. Spectrum (Rendered only on nodes that support it)
+  if (widgets.spectrum || value("spectrum", null) !== null) {
+    const spectrumOn = Boolean(value("spectrum", false));
+    pills.push(el("button", {
+      class: `mmc-pill${spectrumOn ? " accel-on" : ""}`,
+      title: spectrumOn
+        ? t("Spectrum on — forecasting features across steps. Click to turn off.")
+        : t("Spectrum off. Click to turn on."),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (e) => {
+        e.stopPropagation();
+        set("spectrum", !spectrumOn);
+      },
+    }, [el("span", { text: spectrumOn ? t("spectrum") : t("spectrum off") })]));
 
-  if (spectrumOn) {
-    const blendVal = Number(value("spectrum_blend", 0.5));
-    pills.push(stepperPill({
-      value: blendVal, min: 0, max: 1, step: 0.05, width: "52px",
-      title: t("Spectrum's video spectral share — higher is faster and further from a native render"),
-      format: (n) => t("blend {n}", { n: n.toFixed(2) }),
-      onChange: (next) => set("spectrum_blend", next),
-    }));
+    if (spectrumOn) {
+      const blendVal = Number(value("spectrum_blend", 0.5));
+      pills.push(stepperPill({
+        value: blendVal, min: 0, max: 1, step: 0.05, width: "52px",
+        title: t("Spectrum's video spectral share — higher is faster and further from a native render"),
+        format: (n) => t("blend {n}", { n: n.toFixed(2) }),
+        onChange: (next) => set("spectrum_blend", next),
+      }));
+    }
   }
 
   return el("div", { class: "mmc-pills", onpointerdown: (e) => e.stopPropagation() }, [...pills, ...trailing]);
