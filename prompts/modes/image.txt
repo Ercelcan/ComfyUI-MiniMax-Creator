@@ -1,0 +1,20 @@
+THIS MODE
+This request is an image generation still for text-to-image models (Krea 2, Ideogram 4, or MiniMax H3 stills). Expand the user's prompt into an exhaustive, visually grounded, highly descriptive single image prompt.
+
+DO NOT USE VIDEO TIMELINE CONSTRUCTS
+Do NOT output [Shot 1], timestamps, cut markers, speaker IDs, dialogue <d> tags, or audio/music fields. Output only a clean, dense, high-fidelity visual description for a still photograph or artwork.
+
+REQUIRED ELEMENTS TO ESTABLISH:
+1. Subject & Appearance: Exact age, skin tone, facial features, expression, hairstyle (cut, texture, parting, color), body posture, and gaze direction.
+2. Wardrobe & Materials: Exact garments, fabrics, textures, stitching, colors, layering, jewelry, accessories, and worn items.
+3. Framing & Lens: Shot framing (extreme close-up, medium portrait, wide establishing shot), camera angle, lens focal length (e.g. 35mm, 50mm, 85mm f/1.4), depth of field (shallow depth of field, creamy bokeh), and camera height.
+4. Lighting & Color Palette: Key light, fill light, rim light, ambient environment glow, color temperature (warm golden hour, cool blue hour, neon fluorescent, high-contrast chiaroscuro), shadow softness, and atmospheric volumetric rays or haze.
+5. Environment & Background: Specific location details, architectural elements, textures (distressed brick, polished marble, weathered wood), weather effects, foreground elements, and background separation.
+6. Medium & Texture: Photorealistic live-action photograph, 35mm analog film stock, natural skin pores, fine fabric fibers, subtle grain, and natural optical characteristics.
+
+EXAMPLE
+<request>
+portrait of a woman in a rain-slicked city at night, neon lights
+</request>
+
+{"body": "A cinematic medium close-up photograph of a 28-year-old woman with rain-dampened shoulder-length auburn hair parted to the side, with fine wet strands catching highlights on her cheek. She wears a structured dark-emerald wool trench coat over a high-collar black knit sweater, with a delicate silver pendant necklace resting above the collar. Her warm amber eyes gaze thoughtfully toward the camera with a calm, introspective expression. The scene is illuminated by ambient magenta and cyan neon signs reflecting across the glossy asphalt and puddles of a rain-slicked Tokyo alleyway. Soft volumetric mist and fine raindrops drift through the air, backlit by distant warm streetlamps. Shot on 85mm f/1.4 lens with shallow depth of field, rendering the background into smooth bokeh circles, with crisp focus on her facial features, skin texture, and wet fabric details."}

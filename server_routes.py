@@ -1,5 +1,7 @@
 """HTTP & WebSocket server routes for asset browsing, previews, models, and timeline export."""
 
+from __future__ import annotations
+
 import asyncio
 import json
 import os
@@ -15,14 +17,14 @@ MAX_ASSETS = 20000
 MAX_LORAS = 600
 
 
-def _classify(filename):
+def _classify(filename: str) -> str | None:
     for kind in ("image", "video", "audio"):
         if folder_paths.filter_files_content_types([filename], [kind]):
             return kind
     return None
 
 
-def _scan(root, annotation=""):
+def _scan(root: str, annotation: str = ""):
     """Scans media directory for valid image/video/audio assets."""
     for directory, dirnames, filenames in os.walk(root):
         dirnames[:] = sorted(d for d in dirnames if not d.startswith("."))
@@ -53,14 +55,14 @@ def _scan(root, annotation=""):
             }
 
 
-def _input_path(request):
+def _input_path(request: web.Request) -> str | None:
     filename = request.query.get("filename", "")
     if not filename or not folder_paths.exists_annotated_filepath(filename):
         return None
     return folder_paths.get_annotated_filepath(filename)
 
 
-def _read_header(path):
+def _read_header(path: str) -> dict:
     import av
 
     with av.open(path) as container:
@@ -73,7 +75,7 @@ def _read_header(path):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/probe")
-async def probe_asset(request):
+async def probe_asset(request: web.Request) -> web.Response:
     path = _input_path(request)
     if path is None:
         return web.json_response({"has_audio": None, "error": "not in the input folder"}, status=404)
@@ -85,7 +87,7 @@ async def probe_asset(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/thumb")
-async def asset_thumb(request):
+async def asset_thumb(request: web.Request) -> web.Response:
     path = _input_path(request)
     if path is None:
         return web.Response(status=404)
@@ -99,7 +101,7 @@ async def asset_thumb(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/peaks")
-async def asset_peaks(request):
+async def asset_peaks(request: web.Request) -> web.Response:
     path = _input_path(request)
     if path is None:
         return web.json_response({"peaks": None, "duration": 0}, status=404)
@@ -109,11 +111,11 @@ async def asset_peaks(request):
     return web.json_response(result, headers={"Cache-Control": "no-cache"})
 
 
-def _lora_names():
+def _lora_names() -> list[str]:
     return [name.replace(os.sep, "/") for name in folder_paths.get_filename_list("loras")]
 
 
-def _folder_counts(names):
+def _folder_counts(names: list[str]) -> list[dict]:
     counts = {"": len(names)}
     for name in names:
         parts = name.split("/")[:-1]
@@ -122,11 +124,11 @@ def _folder_counts(names):
     return [{"path": path, "count": counts[path]} for path in sorted(counts)]
 
 
-def _in_folder(name, folder):
+def _in_folder(name: str, folder: str) -> bool:
     return not folder or name.startswith(folder + "/")
 
 
-def _collect_loras(folder, refresh=False):
+def _collect_loras(folder: str, refresh: bool = False) -> dict:
     if refresh:
         lorameta.forget()
     names = _lora_names()
@@ -153,18 +155,18 @@ def _collect_loras(folder, refresh=False):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/loras")
-async def list_loras(request):
+async def list_loras(request: web.Request) -> web.Response:
     folder = request.query.get("folder", "").strip("/")
-    refresh = request.query.get("refresh") == "1"
+    refresh = request.query.get("refresh") == "1" or request.query.get("force") == "1"
     loop = asyncio.get_running_loop()
     return web.json_response(await loop.run_in_executor(None, _collect_loras, folder, refresh))
 
 
-def _lora_path(request):
+def _lora_path(request: web.Request) -> str | None:
     return folder_paths.get_full_path("loras", request.query.get("name", ""))
 
 
-def _serve(path, data):
+def _serve(path: str | None, data: tuple[bytes, str] | None) -> web.Response:
     if path is not None:
         return web.FileResponse(path)
     if data is not None:
@@ -174,7 +176,7 @@ def _serve(path, data):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_preview")
-async def lora_preview(request):
+async def lora_preview(request: web.Request) -> web.Response:
     path = _lora_path(request)
     if path is None:
         return web.Response(status=404)
@@ -184,7 +186,7 @@ async def lora_preview(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_detail")
-async def lora_detail(request):
+async def lora_detail(request: web.Request) -> web.Response:
     name = request.query.get("name", "")
     path = folder_paths.get_full_path("loras", name)
     if path is None:
@@ -194,7 +196,7 @@ async def lora_detail(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/lora_showcase")
-async def lora_showcase(request):
+async def lora_showcase(request: web.Request) -> web.Response:
     path = _lora_path(request)
     if path is None:
         return web.Response(status=404)
@@ -217,13 +219,17 @@ async def lora_showcase(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/models")
-async def list_models(request):
+async def list_models(request: web.Request) -> web.Response:
+    """Lists available models with dynamic cache invalidation on 'R' / force refresh."""
+    refresh = request.query.get("refresh") == "1" or request.query.get("force") == "1"
+    if refresh:
+        lorameta.forget()
     loop = asyncio.get_running_loop()
-    return web.json_response(await loop.run_in_executor(None, models.available))
+    return web.json_response(await loop.run_in_executor(None, models.available, refresh))
 
 
 @PromptServer.instance.routes.get("/minimax_creator/assets")
-async def list_assets(request):
+async def list_assets(request: web.Request) -> web.Response:
     if request.query.get("root") == "output":
         root, annotation = folder_paths.get_output_directory(), " [output]"
     else:
@@ -238,8 +244,8 @@ async def list_assets(request):
     return web.json_response({"assets": assets[:MAX_ASSETS], "truncated": truncated})
 
 
-def _clean_subfolder(raw):
-    raw = str(raw).strip().strip("/")
+def _clean_subfolder(raw: Any) -> str | None:
+    raw = str(raw or "").strip().strip("/")
     if not raw:
         return ""
     parts = raw.replace("\\", "/").split("/")
@@ -248,7 +254,7 @@ def _clean_subfolder(raw):
     return "/".join(parts)
 
 
-def _rooted(filename):
+def _rooted(filename: str) -> tuple[str, str, str] | None:
     name, base = folder_paths.annotated_filepath(str(filename))
     if base is None:
         base, annotation = folder_paths.get_input_directory(), ""
@@ -260,7 +266,7 @@ def _rooted(filename):
 
 
 @PromptServer.instance.routes.post("/minimax_creator/move")
-async def move_asset(request):
+async def move_asset(request: web.Request) -> web.Response:
     body = await request.json()
     subfolder = _clean_subfolder(body.get("subfolder", ""))
     if subfolder is None:
@@ -301,7 +307,7 @@ async def move_asset(request):
 
 
 @PromptServer.instance.routes.post("/minimax_creator/delete")
-async def delete_asset(request):
+async def delete_asset(request: web.Request) -> web.Response:
     body = await request.json()
     rooted = _rooted(body.get("filename", ""))
     if rooted is None:
@@ -325,7 +331,7 @@ async def delete_asset(request):
 
 
 @PromptServer.instance.routes.post("/minimax_creator/clear_cache")
-async def clear_timeline_cache(request):
+async def clear_timeline_cache(request: web.Request) -> web.Response:
     """Purge all intermediate rendered segment videos and .safetensors latent checkpoints from disk."""
     output_dir = folder_paths.get_output_directory()
     deleted_files = 0
@@ -350,12 +356,12 @@ async def clear_timeline_cache(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/settings")
-async def read_settings(request):
+async def read_settings(request: web.Request) -> web.Response:
     return web.json_response({"settings": settings.load()})
 
 
 @PromptServer.instance.routes.post("/minimax_creator/settings")
-async def write_settings(request):
+async def write_settings(request: web.Request) -> web.Response:
     try:
         stored = settings.save(await request.json())
     except ValueError as problem:
@@ -366,7 +372,7 @@ async def write_settings(request):
 
 
 # ---- EDL & Final Cut Pro XML Export -----------------------------------------
-def _frames_to_tc(frames, fps=24):
+def _frames_to_tc(frames: int, fps: int = 24) -> str:
     total_seconds = int(frames // fps)
     rem_frames = int(frames % fps)
     hours = total_seconds // 3600
@@ -375,7 +381,7 @@ def _frames_to_tc(frames, fps=24):
     return f"{hours:02d}:{minutes:02d}:{seconds:02d}:{rem_frames:02d}"
 
 
-def _build_cmx3600_edl(timeline_data, fps=24):
+def _build_cmx3600_edl(timeline_data: dict, fps: int = 24) -> str:
     segments = timeline_data.get("segments", [])
     lines = ["TITLE: MINIMAX_TIMELINE_EXPORT", "FCM: NON-DROP FRAME", ""]
     current_rec_frame = 0
@@ -405,7 +411,7 @@ def _build_cmx3600_edl(timeline_data, fps=24):
     return "\n".join(lines)
 
 
-def _build_fcpxml(timeline_data, fps=24):
+def _build_fcpxml(timeline_data: dict, fps: int = 24) -> str:
     root = ET.Element("xmeml", version="4")
     seq = ET.SubElement(root, "sequence")
     ET.SubElement(seq, "name").text = "MiniMax_Timeline_Sequence"
@@ -441,7 +447,7 @@ def _build_fcpxml(timeline_data, fps=24):
 
 
 @PromptServer.instance.routes.post("/minimax_creator/export_timeline")
-async def export_timeline_file(request):
+async def export_timeline_file(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         export_format = str(body.get("format", "edl")).lower()

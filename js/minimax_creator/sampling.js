@@ -16,6 +16,30 @@ const BLOCK_CACHE_TITLE = {
   aggressive: "FirstBlockCache, most skipping — fastest, furthest from a native render.",
 };
 
+export function randomizeSeed(set) {
+  const newSeed = Math.floor(Math.random() * 0xffffffff);
+  set("seed", newSeed);
+  return newSeed;
+}
+
+export function handlePreGenerateSeed(value, set) {
+  const control = value("control_after_generate", "fixed");
+  if (control === "randomize") {
+    return randomizeSeed(set);
+  } else if (control === "increment") {
+    const cur = Number(value("seed", 0));
+    const next = (cur + 1) % 0xffffffff;
+    set("seed", next);
+    return next;
+  } else if (control === "decrement") {
+    const cur = Number(value("seed", 0));
+    const next = cur > 0 ? cur - 1 : 0xffffffff;
+    set("seed", next);
+    return next;
+  }
+  return value("seed", 0);
+}
+
 export function samplingBar({ widgets = {}, value, set, perSegment = false, turbo = [], trailing = [] }) {
   const pills = [];
 
@@ -29,7 +53,7 @@ export function samplingBar({ widgets = {}, value, set, perSegment = false, turb
       onpointerdown: (e) => e.stopPropagation(),
       onclick: (e) => {
         e.stopPropagation();
-        set("seed", Math.floor(Math.random() * 0xffffffff));
+        randomizeSeed(set);
       },
     }, [icon("dice", 15)]),
     el("input", {

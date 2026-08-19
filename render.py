@@ -1,4 +1,4 @@
-"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining, 2-Pass Refine Upscaling, and NVIDIA RTX VSR Video Super Resolution."""
+"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining, Tiled VAE Decoding, 2-Pass Refine Upscaling, and NVIDIA RTX VSR."""
 
 from __future__ import annotations
 
@@ -43,11 +43,11 @@ class Links:
     model_fl2va: Optional[Any] = None
     model_ref2va: Optional[Any] = None
 
-    def model_for(self, checkpoint: str):
+    def model_for(self, checkpoint: str) -> Any:
         return {"fl2va": self.model_fl2va, "ref2va": self.model_ref2va}[checkpoint]
 
 
-def compile_all(payloads, labels):
+def compile_all(payloads: list[dict], labels: list[str]) -> list[any]:
     out = []
     for index, payload in enumerate(payloads):
         where = labels[index] if index < len(labels) else f"Segment {index + 1}"
@@ -58,7 +58,7 @@ def compile_all(payloads, labels):
     return out
 
 
-def routed(compiled, labels):
+def routed(compiled: list[any], labels: list[str]) -> dict[str, str]:
     where = {}
     for index, one in enumerate(compiled):
         label = labels[index] if index < len(labels) else f"Segment {index + 1}"
@@ -66,8 +66,8 @@ def routed(compiled, labels):
     return where
 
 
-def emit(payloads, labels, weights, sampling, acceleration, unique_id,
-         filename_prefix=FILENAME_PREFIX):
+def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampling: Sampling, acceleration: accel.Settings, unique_id: any,
+         filename_prefix: str = FILENAME_PREFIX) -> tuple[GraphBuilder, tuple]:
     # Evict any active LLMs from GPU VRAM before sampling H3
     try:
         from . import refine_api
@@ -85,6 +85,9 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
     models.check(weights, set(where), where)
     graph = GraphBuilder()
     links = models.emit_links(graph, weights, set(where))
+
+    use_tiled_vae = settings.tiled_vae() or bool(payloads[0].get("request", {}).get("tiled_vae"))
+    vae_tile_size = settings.vae_tile_size()
 
     sampled_latents = []
     decoded_segments = []
@@ -221,7 +224,13 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
             sampled_latents.append(current_video_latent)
 
             # Video decodes from Pass 2 (upscaled & refined) or Pass 1
-            images = graph.node("VAEDecode", samples=current_video_latent, vae=links.vae).out(0)
+            images = models.decode_vae_node(
+                graph,
+                samples=current_video_latent,
+                vae=links.vae,
+                tiled=use_tiled_vae or (one.height > 768 or one.width > 1344),
+                tile_size=vae_tile_size,
+            )
 
             # ==========================================
             # PASS 3: NVIDIA RTX Video Super Resolution (Pixel Level)
@@ -244,7 +253,13 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
 
             # Optional: Save the non-upscaled Pass 1 base video alongside the final upscaled video
             if one.refine and one.refine.save_pass1:
-                pass1_images = graph.node("VAEDecode", samples=base_latent, vae=links.vae).out(0)
+                pass1_images = models.decode_vae_node(
+                    graph,
+                    samples=base_latent,
+                    vae=links.vae,
+                    tiled=use_tiled_vae,
+                    tile_size=vae_tile_size,
+                )
                 pass1_prefix = f"{filename_prefix.rstrip('/')}_base"
                 graph.node(
                     SAVE_NODE,
@@ -299,7 +314,7 @@ def emit(payloads, labels, weights, sampling, acceleration, unique_id,
     return graph, result_links
 
 
-def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
+def emit_tail(graph: GraphBuilder, images: Any, audio: Any, unique_id: Any, filename_prefix: str = FILENAME_PREFIX) -> Any:
     save = graph.node(
         SAVE_NODE,
         images=images,
@@ -314,11 +329,11 @@ def emit_tail(graph, images, audio, unique_id, filename_prefix=FILENAME_PREFIX):
 
 class _NoExportedLinks(io.NodeOutput):
     @property
-    def result(self):
+    def result(self) -> tuple:
         return ()
 
 
-def expanded(graph, outputs=()):
+def expanded(graph: GraphBuilder, outputs: tuple = ()) -> io.NodeOutput:
     if not outputs:
         return _NoExportedLinks(expand=graph.finalize())
     return io.NodeOutput(*outputs, expand=graph.finalize())

@@ -3,9 +3,19 @@ import { el, mountOverlay } from "./dom.js";
 import { listAssets, deleteAsset, outputUrl } from "./api.js";
 import { t } from "./i18n.js";
 
-const EVENTS = ["progress_state", "b_preview_with_metadata", "b_preview",
-                "kj_preview_override", "executed", "execution_error", "execution_start",
-                "mmc_segment", "mmc_segment_cached"];
+const EVENTS = [
+  "progress",
+  "progress_state",
+  "executing",
+  "execution_start",
+  "b_preview_with_metadata",
+  "b_preview",
+  "kj_preview_override",
+  "executed",
+  "execution_error",
+  "mmc_segment",
+  "mmc_segment_cached",
+];
 
 export class Stage {
   constructor({ nodeId, onVisibility, onGallery, resultChips, segmentLabel }) {
@@ -18,6 +28,8 @@ export class Stage {
     this.segment = null;
     this.progress = null;
     this.frame = null;
+    this.frameUrl = null;
+    this.frameIsClip = false;
     this.result = null;
     this.error = null;
     this.startedAt = 0;
@@ -246,7 +258,7 @@ export class Stage {
   }
 
   handle(type, detail) {
-    if (!detail) return;
+    if (!detail && type !== "execution_start") return;
     switch (type) {
       case "execution_start":
         this.stopMedia();
@@ -262,6 +274,28 @@ export class Stage {
         }
         this.renderReadout();
         break;
+
+      case "executing": {
+        const nodeId = detail?.node ?? detail;
+        if (nodeId && this.ours(nodeId)) {
+          if (this.state !== "sampling" && !this.previewDisabled) {
+            this.begin();
+            this.render();
+          }
+        }
+        break;
+      }
+
+      case "progress": {
+        if (detail.node && !this.ours(detail.node)) break;
+        if (this.state !== "sampling" && !this.previewDisabled) {
+          this.begin();
+          this.render();
+        }
+        this.progress = { step: detail.value ?? 0, total: detail.max ?? 0 };
+        this.renderReadout();
+        break;
+      }
 
       case "progress_state": {
         let best = null;
@@ -290,10 +324,12 @@ export class Stage {
         if (parentId || nodeId || displayId) {
           if (!this.ours(parentId) && !this.ours(nodeId) && !this.ours(displayId)) break;
         }
+        const blob = detail.blob || (detail instanceof Blob ? detail : null);
+        if (!blob) break;
         this.metaFrameAt = Date.now();
         if (this.state !== "sampling" && !this.previewDisabled) this.begin();
         this.releaseFrame();
-        this.frameUrl = URL.createObjectURL(detail.blob);
+        this.frameUrl = URL.createObjectURL(blob);
         this.frame = this.frameUrl;
         this.frameIsClip = false;
         if (!this.previewDisabled) this.render();
@@ -301,12 +337,12 @@ export class Stage {
       }
 
       case "b_preview": {
-        const blob = detail instanceof Blob ? detail : detail.blob;
+        const blob = detail instanceof Blob ? detail : detail?.blob;
         if (!blob) break;
         if (this.metaFrameAt && Date.now() - this.metaFrameAt < 2000) break;
         if (this.state !== "sampling" && !this.previewDisabled) this.begin();
         this.releaseFrame();
-        this.frameUrl = URL.createObjectURL(detail.blob);
+        this.frameUrl = URL.createObjectURL(blob);
         this.frame = this.frameUrl;
         this.frameIsClip = false;
         if (!this.previewDisabled) this.render();
@@ -328,7 +364,7 @@ export class Stage {
       }
 
       case "executed": {
-        if (String(detail.display_node) !== String(this.getId() ?? "")) break;
+        if (String(detail.display_node) !== String(this.getId() ?? "") && !this.ours(detail.node)) break;
         const saved = detail.output?.mmc_video?.[0] ?? detail.output?.mmc_image?.[0] ?? detail.output?.videos?.[0] ?? detail.output?.gifs?.[0] ?? detail.output?.images?.[0];
         if (!saved) break;
         this.stopMedia();

@@ -1,5 +1,7 @@
 """HTTP routes for prompt refinement, LLM model listings, skills, and cancellation."""
 
+from __future__ import annotations
+
 import asyncio
 import os
 
@@ -40,7 +42,7 @@ _TAKES_NOTE = {
 }
 
 
-def _slot(asset, label, show_label):
+def _slot(asset: any, label: str | None, show_label: bool) -> dict:
     what = _WHAT.get(asset.role)
     if what is None:
         what = {
@@ -62,7 +64,7 @@ def _slot(asset, label, show_label):
     return row
 
 
-def _still(path):
+def _still(path: str) -> any:
     import io
     from PIL import Image
 
@@ -78,7 +80,7 @@ def _still(path):
     return Image.open(buffer)
 
 
-def _picture(asset):
+def _picture(asset: any) -> any:
     from PIL import Image
 
     try:
@@ -92,7 +94,7 @@ def _picture(asset):
     return None
 
 
-def _sighted(slot, asset, picture):
+def _sighted(slot: dict, asset: any, picture: any) -> dict:
     if picture is not None:
         slot["picture"] = True
     elif asset.kind != "audio" and asset.track != "sound":
@@ -100,7 +102,7 @@ def _sighted(slot, asset, picture):
     return slot
 
 
-def _look(compiled, show_labels):
+def _look(compiled: any, show_labels: bool) -> tuple[list[dict], list[any]]:
     slots, images = [], []
     ordered = [a for a in (compiled.first_frame, compiled.last_frame) if a is not None]
     ordered += compiled.ref_images + compiled.ref_videos + compiled.ref_audios
@@ -114,7 +116,7 @@ def _look(compiled, show_labels):
     return slots, images
 
 
-def _look_pool(pool):
+def _look_pool(pool: list[any]) -> tuple[list[dict], list[any]]:
     slots, images = [], []
     for asset in pool:
         slot = _slot(asset, None, False)
@@ -125,7 +127,7 @@ def _look_pool(pool):
     return slots, images
 
 
-def _shot(compiled, text, seconds, continues, show_labels):
+def _shot(compiled: any, text: str, seconds: float, continues: bool, show_labels: bool) -> tuple[dict, list[any]]:
     slots, images = _look(compiled, show_labels)
     assets = [a for a in [compiled.first_frame, compiled.last_frame] if a is not None]
     assets += compiled.ref_images + compiled.ref_videos + compiled.ref_audios
@@ -141,13 +143,67 @@ def _shot(compiled, text, seconds, continues, show_labels):
     }, images
 
 
-def _plan(body):
+def _plan(body: dict) -> tuple[str, list[dict], list[any], str | None, bool, dict | None]:
     kind = body.get("kind")
     data = body.get("data")
     if not isinstance(data, dict):
         raise compiler.CompileError("no state was sent")
-    if kind not in ("creator", "segment", "timeline"):
+    if kind not in ("creator", "segment", "timeline", "prestage"):
         raise compiler.CompileError(f"unknown refine target {kind!r}")
+
+    # PreStage Image Prompt Refinement
+    if kind == "prestage":
+        arch = data.get("arch", "krea2")
+        prompt_text = ""
+        pictures = []
+        slots = []
+
+        if arch == "minimax":
+            req = (data.get("minimax") or {}).get("request") or {}
+            prompt_text = str(req.get("prompt") or "")
+            for asset in req.get("assets") or []:
+                fn = asset.get("filename")
+                if fn:
+                    try:
+                        from PIL import Image
+                        img = Image.open(media.resolve(fn))
+                        pictures.append(img)
+                        slots.append({"handle": asset.get("handle", "img-1"), "what": "reference image", "picture": True})
+                    except Exception:
+                        pass
+        else:
+            prompt_text = str(data.get("prompt") or "")
+            init_obj = data.get("init")
+            if isinstance(init_obj, dict) and init_obj.get("filename"):
+                try:
+                    from PIL import Image
+                    img = Image.open(media.resolve(init_obj["filename"]))
+                    pictures.append(img)
+                    slots.append({"handle": "init", "what": "init image", "picture": True})
+                except Exception:
+                    pass
+            for r in data.get("refs") or []:
+                fn = r.get("filename") if isinstance(r, dict) else r
+                if fn:
+                    try:
+                        from PIL import Image
+                        img = Image.open(media.resolve(fn))
+                        pictures.append(img)
+                        slots.append({"handle": r.get("handle", "style"), "what": "style reference", "picture": True})
+                    except Exception:
+                        pass
+
+        shot = {
+            "mode": "IMAGE",
+            "seconds": 0.0,
+            "text": prompt_text,
+            "continues": False,
+            "slots": slots,
+            "labels": {},
+            "handles": set(),
+            "refs": set(),
+        }
+        return "IMAGE", [shot], pictures, None, False, None
 
     if kind == "creator":
         compiled = compiler.compile_request(data, media.image_size)
@@ -195,7 +251,7 @@ def _plan(body):
     return _representative(data, shots, single), shots, images, piece, single, pool
 
 
-def _representative(data, shots, single):
+def _representative(data: dict, shots: list[dict], single: bool) -> str:
     if single:
         return compiler.compile_single(data, media.image_size).mode
 
@@ -205,7 +261,7 @@ def _representative(data, shots, single):
     return modes[0] if modes else "T2VA"
 
 
-def _shared(shots):
+def _shared(shots: list[dict]) -> tuple[set[str], set[str], dict[str, str]]:
     handles, refs, labels, conflicted = set(), set(), {}, set()
     for shot in shots:
         handles |= shot["handles"]
@@ -225,7 +281,7 @@ def _shared(shots):
     return handles, refs, labels
 
 
-def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=None, on_chunk=None, node_id=""):
+def _run_skill(body: dict, name: str, mode: str, shots: list[dict], pictures: list[any], seconds: float, dropped: int, piece_text: str | None = None, on_chunk: any = None, node_id: str = "") -> dict:
     if len(shots) != 1:
         raise compiler.CompileError(
             "a skill writes one whole prompt at a time — refine cards one by one, "
@@ -324,7 +380,7 @@ def _run_skill(body, name, mode, shots, pictures, seconds, dropped, piece_text=N
     }
 
 
-def _run(body):
+def _run(body: dict) -> dict:
     kind = body.get("kind")
     node_id = str(body.get("node_id", ""))
     derived, shots, pictures, piece_text, single, pool = _plan(body)
@@ -344,7 +400,7 @@ def _run(body):
             })
 
     skill = str(body.get("skill") or "").strip()
-    if skill:
+    if skill and derived != "IMAGE":
         dropped, pictures = refine._number([shot["slots"] for shot in shots],
                                            pictures, MAX_IMAGES)
         res = _run_skill(body, skill, derived, shots, pictures, seconds, dropped, piece_text, on_stream_chunk, node_id)
@@ -357,10 +413,14 @@ def _run(body):
         MAX_IMAGES,
         shared=pool["handles"] if pool else frozenset())
 
-    mode, forced = refine.choose_template(body.get("template"), derived)
-    if forced:
-        for shot in shots:
-            shot["mode"] = mode
+    if derived == "IMAGE":
+        mode = "IMAGE"
+        forced = False
+    else:
+        mode, forced = refine.choose_template(body.get("template"), derived)
+        if forced:
+            for shot in shots:
+                shot["mode"] = mode
 
     cuts = refine.shot_limit(seconds) if kind == "creator" else 0
 
@@ -438,7 +498,7 @@ def _run(body):
                 max_tokens=body.get("max_tokens"),
                 api_key=api_key,
                 node_id=node_id,
-                on_chunk=on_stream_chunk,
+                on_chunk=on_chunk if not on_stream_chunk else on_stream_chunk,
             )
         else:
             content = refine_local.chat(
@@ -461,6 +521,22 @@ def _run(body):
         piece=ask_piece,
         ref_shots=ref_shots,
     )
+
+    if mode == "IMAGE":
+        return {
+            "mode": "IMAGE",
+            "template": "IMAGE",
+            "derived": "IMAGE",
+            "forced": False,
+            "shots": [{"body": parsed["shots"][0]["body"]}],
+            "soundscape": "",
+            "music": "",
+            "sections": None,
+            "piece": None,
+            "scope": "image",
+            "seen": parsed.get("seen") or "",
+            "problems": [],
+        }
 
     if "cuts" in parsed:
         parsed["shots"] = [refine.join_shots(parsed["shots"], parsed["cuts"], seconds)]
@@ -522,7 +598,7 @@ def _run(body):
 
     handles, refs, labels = _shared(shots)
 
-    def normalized(text, field):
+    def normalized(text: str, field: str) -> str:
         text = refine.normalize_handles(text, labels)
         for problem in refine.check(text, handles, labels):
             problems.append(f"The {field} {problem}")
@@ -592,7 +668,7 @@ def _run(body):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/refine/models")
-async def refine_models(request):
+async def refine_models(request: web.Request) -> web.Response:
     provider = request.query.get("provider", "comfy")
     url = request.query.get("url", "")
     api_key = request.query.get("api_key", "")
@@ -621,12 +697,12 @@ async def refine_models(request):
 
 
 @PromptServer.instance.routes.get("/minimax_creator/refine/skills")
-async def refine_skills(request):
+async def refine_skills(request: web.Request) -> web.Response:
     return web.json_response({"skills": refine_skill.list_skills()})
 
 
 @PromptServer.instance.routes.post("/minimax_creator/refine/cancel")
-async def cancel_refinement(request):
+async def cancel_refinement(request: web.Request) -> web.Response:
     try:
         body = await request.json()
         node_id = str(body.get("node_id", ""))
@@ -637,7 +713,7 @@ async def cancel_refinement(request):
 
 
 @PromptServer.instance.routes.post("/minimax_creator/refine")
-async def refine_prompt(request):
+async def refine_prompt(request: web.Request) -> web.Response:
     try:
         body = await request.json()
     except ValueError:

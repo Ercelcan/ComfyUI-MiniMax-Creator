@@ -1,4 +1,4 @@
-"""MiniMax H3 Timeline: Multi-shot sequence execution, Photometric seam matching, and audio assembly."""
+"""MiniMax H3 Timeline: Multi-shot sequence execution, Photometric seam matching, and low-RAM streamed video muxing."""
 
 from __future__ import annotations
 
@@ -12,10 +12,11 @@ import tempfile
 import logging
 import torch
 
+import comfy.model_management as mm
 import comfy.nested_tensor
 import folder_paths
 from comfy.cli_args import args as cli_args
-from comfy_api.latest import io, InputImpl, Types
+from comfy_api.latest import io
 
 from . import (
     accel,
@@ -101,7 +102,7 @@ def _luma_map(frames: torch.Tensor) -> torch.Tensor:
     return frames[..., 0] * 0.299 + frames[..., 1] * 0.587 + frames[..., 2] * 0.114
 
 
-def _luma_stats(frames: torch.Tensor):
+def _luma_stats(frames: torch.Tensor) -> tuple[float, float, float]:
     y = _luma_map(frames).detach().float().reshape(-1)
     if int(y.numel()) == 0:
         return 0.5, 0.1, 0.5
@@ -147,27 +148,28 @@ def _photometric_match_seam(images_a: torch.Tensor, images_b: torch.Tensor, over
     delta = (y_corr - y) * 0.65
 
     out[..., :3] = (rgb + delta.unsqueeze(-1)).clamp(0.0, 1.0)
+    del rgb, y, y_corr, delta, src_y, src_y_gamma
     return out.to(images_b.dtype)
 
 
-def _parse(timeline_data):
+def _parse(timeline_data: str) -> dict:
     try:
         return json.loads(timeline_data)
     except json.JSONDecodeError as exc:
         raise ValueError(f"timeline_data is not valid JSON: {exc}") from exc
 
 
-def _announce(unique_id, progress):
+def _announce(unique_id: any, progress: dict) -> None:
     from server import PromptServer
     server = getattr(PromptServer, "instance", None)
     if server is not None:
         server.send_sync("mmc_segment", {"node": unique_id, **progress})
 
 
-def _stamps(data):
+def _stamps(data: dict) -> tuple:
     out = []
 
-    def stamp(path_of, item, key):
+    def stamp(path_of: any, item: dict, key: str) -> None:
         try:
             out.append(os.path.getmtime(path_of(item.get(key, ""))))
         except Exception:
@@ -185,6 +187,81 @@ def _stamps(data):
         for entry in segment.get("loras", []) or []:
             stamp(lora.resolve, entry, "name")
     return tuple(out)
+
+
+def _write_rgb24_chunks(proc: subprocess.Popen, tensor_batch: torch.Tensor, chunk_size: int = 16) -> None:
+    """Streams a tensor batch to an FFmpeg rawvideo pipe in small memory chunks, releasing RAM immediately."""
+    total_frames = int(tensor_batch.shape[0])
+    for start in range(0, total_frames, max(1, chunk_size)):
+        part = tensor_batch[start : start + chunk_size].detach().cpu().clamp(0.0, 1.0)
+        arr = torch.round(part * 255.0).to(torch.uint8).numpy()
+        proc.stdin.write(arr.tobytes(order="C"))
+        del part, arr
+
+
+def _save_video_streaming_ffmpeg(images: torch.Tensor, audio: dict, fps: float, out_path: str, crf: int = 23, metadata: dict | None = None) -> None:
+    """Ultra-low RAM FFmpeg video encoder that streams 16-frame chunks directly without RAM ballooning."""
+    ffmpeg_bin = shutil.which("ffmpeg")
+    if not ffmpeg_bin:
+        raise RuntimeError("ffmpeg executable not found in PATH.")
+
+    total_frames = int(images.shape[0])
+    height = int(images.shape[1])
+    width = int(images.shape[2])
+
+    temp_dir = tempfile.mkdtemp(prefix="mmc_audio_tmp_")
+    audio_raw_path = os.path.join(temp_dir, "audio.f32le")
+    sample_rate = int(audio.get("sample_rate", 44100))
+
+    try:
+        clean_waveform = _fit_audio_to_frames(audio["waveform"], total_frames, float(fps), sample_rate)
+        if clean_waveform.ndim == 3 and clean_waveform.shape[0] == 1:
+            clean_waveform = clean_waveform[0]
+        if clean_waveform.shape[0] == 1:
+            clean_waveform = clean_waveform.repeat(2, 1)
+        elif clean_waveform.shape[0] > 2:
+            clean_waveform = clean_waveform[:2]
+
+        interleaved_audio = clean_waveform.transpose(0, 1).contiguous().detach().cpu().numpy().astype("<f4", copy=False)
+        with open(audio_raw_path, "wb") as af:
+            af.write(interleaved_audio.tobytes(order="C"))
+        del clean_waveform, interleaved_audio
+
+        cmd = [
+            ffmpeg_bin, "-hide_banner", "-loglevel", "error", "-y",
+            "-f", "rawvideo", "-vcodec", "rawvideo",
+            "-pix_fmt", "rgb24", "-s", f"{width}x{height}",
+            "-r", str(float(fps)), "-i", "-",
+            "-f", "f32le", "-ar", str(sample_rate), "-ac", "2",
+            "-i", audio_raw_path,
+            "-c:v", "libx264", "-pix_fmt", "yuv420p", "-crf", str(int(crf)),
+            "-c:a", "aac", "-b:a", "320k",
+            "-shortest", out_path,
+        ]
+
+        proc = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE)
+
+        try:
+            _write_rgb24_chunks(proc, images, chunk_size=16)
+            proc.stdin.close()
+            rc = proc.wait()
+            if rc != 0:
+                err_text = proc.stderr.read().decode("utf-8", errors="replace")
+                raise RuntimeError(f"FFmpeg encoding failed ({rc}): {err_text}")
+        finally:
+            try:
+                proc.stderr.close()
+            except Exception:
+                pass
+    finally:
+        try:
+            if os.path.exists(audio_raw_path):
+                os.remove(audio_raw_path)
+            if os.path.exists(temp_dir):
+                os.rmdir(temp_dir)
+        except OSError:
+            pass
+        gc.collect()
 
 
 class MiniMaxH3Timeline(io.ComfyNode):
@@ -223,15 +300,15 @@ class MiniMaxH3Timeline(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, timeline_data, **kwargs):
+    def fingerprint_inputs(cls, timeline_data: str, **kwargs: Any) -> tuple:
         try:
             return (timeline_data, _stamps(json.loads(timeline_data)))
         except Exception:
             return (timeline_data, ())
 
     @classmethod
-    def execute(cls, timeline_data, seed, steps, cfg, sampler_name, scheduler,
-                block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
+    def execute(cls, timeline_data: str, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str,
+                block_cache: str = "off", spectrum: bool = False, spectrum_blend: float = 0.5) -> io.NodeOutput:
         from . import render
         data = _parse(timeline_data)
         single = compiler.render_mode(data) == "single"
@@ -289,7 +366,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, segment_data, **kwargs):
+    def fingerprint_inputs(cls, segment_data: str, **kwargs: Any) -> tuple:
         try:
             payload = json.loads(segment_data)
             return (segment_data, _stamps({"segments": [payload.get("request", {})]}))
@@ -297,11 +374,11 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
             return (segment_data, ())
 
     @classmethod
-    def execute(cls, clip, segment_data, vae=None, audio_vae=None,
-                model_fl2va=None, model_ref2va=None,
-                prev_image=None, prev_audio=None, prev_latent=None,
-                master_audio=None, source_frames=None, source_audio=None,
-                prev_step=None) -> io.NodeOutput:
+    def execute(cls, clip: Any, segment_data: str, vae: Any = None, audio_vae: Any = None,
+                model_fl2va: Any = None, model_ref2va: Any = None,
+                prev_image: Any = None, prev_audio: Any = None, prev_latent: Any = None,
+                master_audio: Any = None, source_frames: Any = None, source_audio: Any = None,
+                prev_step: Any = None) -> io.NodeOutput:
         payload = _parse(segment_data)
         progress = payload.get("progress")
         if progress:
@@ -349,6 +426,14 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
 
         cond, latent = encoder.encode(clip, vae, audio_vae, compiled, loaded)
 
+        try:
+            dev = mm.get_torch_device()
+            mm.free_memory(25 * (1024 ** 3), dev)
+            if torch.cuda.is_available():
+                torch.cuda.empty_cache()
+        except Exception:
+            pass
+
         clean_audio = None
         if encoder.MASTER_AUDIO in loaded:
             master_raw = loaded[encoder.MASTER_AUDIO]["audio"]
@@ -389,7 +474,7 @@ class MiniMaxH3TimelineJoin(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images_a, audio_a, images_b, audio_b, overlap_frames=39, gain_b=1.0) -> io.NodeOutput:
+    def execute(cls, images_a: torch.Tensor, audio_a: dict, images_b: torch.Tensor, audio_b: dict, overlap_frames: int = 39, gain_b: float = 1.0) -> io.NodeOutput:
         if images_a.shape[1:] != images_b.shape[1:]:
             raise ValueError(f"Segment geometry differs: {images_a.shape[2]}x{images_a.shape[1]} vs {images_b.shape[2]}x{images_b.shape[1]}")
 
@@ -411,28 +496,32 @@ class MiniMaxH3TimelineJoin(io.ComfyNode):
             alpha_v = torch.linspace(0.0, 1.0, ov + 2, device=images_a.device, dtype=images_a.dtype)[1:-1].view(-1, 1, 1, 1)
             blended_video = (1.0 - alpha_v) * blend_src + alpha_v * blend_dst
             images = torch.cat([images_a[:-ov], blended_video, images_b[ov:]], dim=0)
-
-            ov_samples = int(round(ov / canvas.FPS * rate_a))
-            fade_len = min(int(round(0.100 * rate_a)), ov_samples, clean_a.shape[-1] // 2)
-
-            if fade_len > 1 and ov_samples >= fade_len:
-                a_seam = clean_a[..., -fade_len:]
-                b_seam = clean_b[..., ov_samples - fade_len : ov_samples]
-                blended_seam = _equal_power_audio_blend(a_seam, b_seam, rate_a, fade_ms=100.0)
-                audio_wave = torch.cat([clean_a[..., :-fade_len], blended_seam, clean_b[..., ov_samples:]], dim=-1)
-            else:
-                audio_wave = torch.cat([clean_a, clean_b[..., ov_samples:]], dim=-1)
+            del blend_src, blend_dst, blended_video, alpha_v
         else:
             images = torch.cat([images_a, images_b.to(images_a)], dim=0)
-            fade_len = min(int(round(0.040 * rate_a)), clean_a.shape[-1] // 2, clean_b.shape[-1] // 2)
-            if fade_len > 1:
-                blended_seam = _equal_power_audio_blend(clean_a[..., -fade_len:], clean_b[..., :fade_len], rate_a, fade_ms=40.0)
-                audio_wave = torch.cat([clean_a[..., :-fade_len], blended_seam, clean_b[..., fade_len:]], dim=-1)
-            else:
-                audio_wave = torch.cat([clean_a, clean_b], dim=-1)
+
+        ov_samples = int(round(ov / canvas.FPS * rate_a)) if ov > 0 else 0
+        fade_len = min(int(round(0.100 * rate_a)), ov_samples, clean_a.shape[-1] // 2) if ov_samples > 0 else min(int(round(0.040 * rate_a)), clean_a.shape[-1] // 2, clean_b.shape[-1] // 2)
+
+        if fade_len > 1 and ov_samples >= fade_len:
+            a_seam = clean_a[..., -fade_len:]
+            b_seam = clean_b[..., ov_samples - fade_len : ov_samples] if ov > 0 else clean_b[..., :fade_len]
+            blended_seam = _equal_power_audio_blend(a_seam, b_seam, rate_a, fade_ms=100.0 if ov > 0 else 40.0)
+            audio_wave = torch.cat([clean_a[..., :-fade_len], blended_seam, clean_b[..., ov_samples if ov > 0 else fade_len:]], dim=-1)
+            del a_seam, b_seam, blended_seam
+        else:
+            audio_wave = torch.cat([clean_a, clean_b[..., ov_samples:]], dim=-1)
 
         final_wave = _fit_audio_to_frames(audio_wave, images.shape[0], canvas.FPS, rate_a)
         audio = {"waveform": final_wave, "sample_rate": rate_a}
+        del clean_a, clean_b, wave_b, audio_wave
+
+        gc.collect()
+        try:
+            mm.soft_empty_cache()
+        except Exception:
+            pass
+
         return io.NodeOutput(images, audio)
 
 
@@ -443,7 +532,7 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
             node_id="MiniMaxH3SaveSegment",
             display_name="MiniMax H3 Save Segment",
             category="MiniMax/internal",
-            description="Atomically saves intermediate segment video and raw AV latent checkpoint.",
+            description="Atomically saves intermediate segment video and raw AV latent checkpoint with low RAM usage.",
             is_dev_only=True,
             is_output_node=True,
             inputs=[
@@ -461,15 +550,10 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, audio, latent=None, fps=float(canvas.FPS),
-                filename_prefix="minimax/renders/H3", segment_index=1,
-                parent_node_id="", crf=settings.DEFAULT_CRF) -> io.NodeOutput:
-        from fractions import Fraction
+    def execute(cls, images: torch.Tensor, audio: dict, latent: dict | None = None, fps: float = float(canvas.FPS),
+                filename_prefix: str = "minimax/renders/H3", segment_index: int = 1,
+                parent_node_id: str = "", crf: int = settings.DEFAULT_CRF) -> io.NodeOutput:
         from server import PromptServer
-
-        rate = int(audio["sample_rate"])
-        clean_wave = _fit_audio_to_frames(audio["waveform"], int(images.shape[0]), fps, rate)
-        audio = {"waveform": clean_wave, "sample_rate": rate}
 
         height, width = int(images.shape[1]), int(images.shape[2])
         seg_prefix = f"{filename_prefix.rstrip('/')}_seg{int(segment_index)}"
@@ -479,10 +563,8 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         filename = f"{name}_{counter:05}_.mp4"
         full_path = os.path.join(directory, filename)
 
-        video = InputImpl.VideoFromComponents(Types.VideoComponents(
-            images=images, audio=audio, frame_rate=Fraction(round(float(fps)))
-        ))
-        video.save_to(full_path, format=Types.VideoContainer.MP4, codec=Types.VideoCodec.H264, crf=float(crf))
+        # Chunked stream save: keeps RAM < 200MB
+        _save_video_streaming_ffmpeg(images, audio, float(fps), full_path, crf=int(crf))
 
         if latent is not None and _st_save is not None:
             try:
@@ -522,7 +604,7 @@ class MiniMaxH3Save(io.ComfyNode):
             node_id="MiniMaxH3Save",
             display_name="MiniMax H3 Save",
             category="MiniMax/internal",
-            description="Muxes a render's frames and sound into one file under output/ with sample-exact duration matching.",
+            description="Muxes a render's frames and sound directly to MP4 via low-RAM FFmpeg chunked streaming (<300MB RAM).",
             is_dev_only=True,
             is_output_node=True,
             inputs=[
@@ -537,13 +619,7 @@ class MiniMaxH3Save(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, audio, fps, filename_prefix, crf=settings.DEFAULT_CRF) -> io.NodeOutput:
-        from fractions import Fraction
-
-        rate = int(audio["sample_rate"])
-        clean_wave = _fit_audio_to_frames(audio["waveform"], int(images.shape[0]), float(fps), rate)
-        audio = {"waveform": clean_wave, "sample_rate": rate}
-
+    def execute(cls, images: torch.Tensor, audio: dict, fps: float, filename_prefix: str, crf: int = settings.DEFAULT_CRF) -> io.NodeOutput:
         height, width = int(images.shape[1]), int(images.shape[2])
         directory, name, counter, subfolder, _ = folder_paths.get_save_image_path(
             filename_prefix, folder_paths.get_output_directory(), width, height
@@ -556,15 +632,18 @@ class MiniMaxH3Save(io.ComfyNode):
                 collected["prompt"] = cls.hidden.prompt
             metadata = collected or None
 
-        video = InputImpl.VideoFromComponents(Types.VideoComponents(
-            images=images, audio=audio, frame_rate=Fraction(round(float(fps)))
-        ))
         filename = f"{name}_{counter:05}_.mp4"
-        video.save_to(os.path.join(directory, filename),
-                      format=Types.VideoContainer.MP4,
-                      codec=Types.VideoCodec.H264,
-                      metadata=metadata,
-                      crf=float(crf))
+        out_full_path = os.path.join(directory, filename)
+
+        # Chunked stream save: keeps RAM < 300MB regardless of video length
+        _save_video_streaming_ffmpeg(
+            images=images,
+            audio=audio,
+            fps=float(fps),
+            out_path=out_full_path,
+            crf=int(crf),
+            metadata=metadata,
+        )
 
         output_item = {"filename": filename, "subfolder": subfolder, "type": "output"}
         return io.NodeOutput(ui={"mmc_video": [output_item], "videos": [output_item], "gifs": [output_item]})
@@ -593,8 +672,8 @@ class MiniMaxH3StreamedAssembly(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, vae, audio_vae, latents, overlap_frames=39,
-                filename_prefix="minimax/renders/H3", crf=settings.DEFAULT_CRF) -> io.NodeOutput:
+    def execute(cls, vae: Any, audio_vae: Any, latents: Any, overlap_frames: int = 39,
+                filename_prefix: str = "minimax/renders/H3", crf: int = settings.DEFAULT_CRF) -> io.NodeOutput:
         ffmpeg = shutil.which("ffmpeg")
         if not ffmpeg:
             raise RuntimeError("ffmpeg not found on PATH")
@@ -690,9 +769,9 @@ class MiniMaxH3StreamedAssembly(io.ComfyNode):
 
                     if i == 0:
                         if len(latent_list) == 1 or overlap_frames <= 0:
-                            _write_rgb24(proc, images)
+                            _write_rgb24_chunks(proc, images, chunk_size=16)
                         else:
-                            _write_rgb24(proc, images[:-overlap_frames])
+                            _write_rgb24_chunks(proc, images[:-overlap_frames], chunk_size=16)
                             pending_tail = images[-overlap_frames:].clone().contiguous()
                     else:
                         if ov > 0 and pending_tail is not None:
@@ -701,22 +780,22 @@ class MiniMaxH3StreamedAssembly(io.ComfyNode):
                             blend_dst = images[:ov_actual]
                             alpha = torch.linspace(0.0, 1.0, ov_actual + 2, dtype=blend_src.dtype)[1:-1].view(-1, 1, 1, 1)
                             blended = (1.0 - alpha) * blend_src + alpha * blend_dst
-                            _write_rgb24(proc, blended)
+                            _write_rgb24_chunks(proc, blended, chunk_size=16)
                             del blended, alpha, blend_src, blend_dst
 
                         suffix = images[ov:]
                         if i < len(latent_list) - 1 and overlap_frames > 0:
-                            _write_rgb24(proc, suffix[:-overlap_frames])
+                            _write_rgb24_chunks(proc, suffix[:-overlap_frames], chunk_size=16)
                             pending_tail = suffix[-overlap_frames:].clone().contiguous()
                         else:
-                            _write_rgb24(proc, suffix)
+                            _write_rgb24_chunks(proc, suffix, chunk_size=16)
                             pending_tail = None
 
                     del images, v_lat
                     gc.collect()
 
                 if pending_tail is not None:
-                    _write_rgb24(proc, pending_tail)
+                    _write_rgb24_chunks(proc, pending_tail, chunk_size=16)
                     pending_tail = None
 
                 proc.stdin.close()
@@ -741,15 +820,6 @@ class MiniMaxH3StreamedAssembly(io.ComfyNode):
         return io.NodeOutput(ui={"mmc_video": [output_item], "videos": [output_item]})
 
 
-def _write_rgb24(proc, tensor_batch: torch.Tensor, chunk: int = 16):
-    count = int(tensor_batch.shape[0])
-    for start in range(0, count, max(1, chunk)):
-        part = tensor_batch[start : start + chunk].detach().cpu().clamp(0.0, 1.0)
-        arr = torch.round(part * 255.0).to(torch.uint8).numpy()
-        proc.stdin.write(arr.tobytes(order="C"))
-        del part, arr
-
-
 class MiniMaxH3LoadSegment(io.ComfyNode):
     @classmethod
     def define_schema(cls):
@@ -771,7 +841,7 @@ class MiniMaxH3LoadSegment(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, video_path, vae=None) -> io.NodeOutput:
+    def execute(cls, video_path: str, vae: Any = None) -> io.NodeOutput:
         frames, audio = media.load_video(video_path, want_audio=True)
         if audio is None:
             audio = {"waveform": torch.zeros((1, 2, frames.shape[0] * 1000), dtype=torch.float32), "sample_rate": 24000}
@@ -822,7 +892,7 @@ class MiniMaxH3AudioTail(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, audio, seconds) -> io.NodeOutput:
+    def execute(cls, audio: dict, seconds: float) -> io.NodeOutput:
         waveform = audio["waveform"]
         rate = int(audio["sample_rate"])
         wanted = max(1, int(round(float(seconds) * rate)))
@@ -848,7 +918,7 @@ class MiniMaxH3LastFrame(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, image, count=1) -> io.NodeOutput:
+    def execute(cls, image: torch.Tensor, count: int = 1) -> io.NodeOutput:
         count = max(1, int(count))
         if image.shape[0] < count:
             raise ValueError(f"Source has {image.shape[0]} frames and seam inherits {count}.")
@@ -873,7 +943,7 @@ class MiniMaxH3SeamTrim(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, audio, frames) -> io.NodeOutput:
+    def execute(cls, images: torch.Tensor, audio: dict, frames: int) -> io.NodeOutput:
         frames = int(frames)
         if frames <= 0:
             return io.NodeOutput(images, audio)

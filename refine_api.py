@@ -13,12 +13,12 @@ from typing import Callable, Optional
 
 from . import refine
 
-_ACTIVE_SOCKETS = {}
-_CANCEL_EVENTS = {}
-_ACTIVE_MODELS = set()  # Track (provider, url, model) to unload when Generate is clicked
+_ACTIVE_SOCKETS: dict[str, any] = {}
+_CANCEL_EVENTS: dict[str, threading.Event] = {}
+_ACTIVE_MODELS: set[tuple[str, str, str]] = set()
 
 
-def cancel_stream(node_id: str):
+def cancel_stream(node_id: str) -> bool:
     """Immediately aborts in-flight LLM generation across thread and socket layers."""
     nid = str(node_id)
     ev = _CANCEL_EVENTS.get(nid)
@@ -40,7 +40,7 @@ def cancel_stream(node_id: str):
     return False
 
 
-def _unload_local_model(provider: str, url: str, model: str):
+def _unload_local_model(provider: str, url: str, model: str) -> None:
     """Unloads Ollama or LM Studio models from VRAM."""
     try:
         if provider == "ollama" and model:
@@ -70,8 +70,8 @@ def _unload_local_model(provider: str, url: str, model: str):
         pass
 
 
-def unload_all_active_refiners():
-    """Triggered ONLY when user clicks Generate: evicts all refine LLMs from VRAM for H3 sampling."""
+def unload_all_active_refiners() -> None:
+    """Triggered when user clicks Generate: evicts all refine LLMs from VRAM for H3 sampling."""
     global _ACTIVE_MODELS
     for provider, url, model in list(_ACTIVE_MODELS):
         _unload_local_model(provider, url, model)
@@ -92,13 +92,13 @@ def unload_all_active_refiners():
         pass
 
 
-def pil_to_base64(img, fmt="JPEG"):
+def pil_to_base64(img: any, fmt: str = "JPEG") -> str:
     buffer = BytesIO()
     img.convert("RGB").save(buffer, format=fmt, quality=80)
     return base64.b64encode(buffer.getvalue()).decode("utf-8")
 
 
-def fetch_models_ollama(url):
+def fetch_models_ollama(url: str) -> list[str]:
     base = (url or "http://localhost:11434").rstrip("/")
     endpoint = f"{base}/tags" if base.endswith("/api") else f"{base}/api/tags"
     req = urllib.request.Request(endpoint, headers={"User-Agent": "MiniMaxCreator"})
@@ -110,7 +110,7 @@ def fetch_models_ollama(url):
         raise RuntimeError(f"Could not connect to Ollama at {url}: {exc}") from exc
 
 
-def fetch_models_openai(url):
+def fetch_models_openai(url: str) -> list[str]:
     base = (url or "http://localhost:1234/v1").rstrip("/")
     endpoint = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
     req = urllib.request.Request(endpoint, headers={"User-Agent": "MiniMaxCreator"})
@@ -122,7 +122,7 @@ def fetch_models_openai(url):
         raise RuntimeError(f"Could not connect to LM Studio/OpenAI at {url}: {exc}") from exc
 
 
-def fetch_models_openrouter(url, api_key=""):
+def fetch_models_openrouter(url: str, api_key: str = "") -> list[str]:
     base = (url or "https://openrouter.ai/api/v1").rstrip("/")
     endpoint = f"{base}/models" if base.endswith("/v1") else f"{base}/v1/models"
 
@@ -189,19 +189,19 @@ class _StreamTracker:
 
 
 def _raw_chat_ollama(
-    url,
-    model,
-    system,
-    message,
-    images=(),
-    temperature=0.3,
-    seed=-1,
-    max_tokens=None,
-    node_id="",
+    url: str,
+    model: str,
+    system: str,
+    message: str,
+    images: tuple = (),
+    temperature: float = 0.3,
+    seed: int = -1,
+    max_tokens: int | None = None,
+    node_id: str = "",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
-    is_json=True,
-):
+    is_json: bool = True,
+) -> str:
     global _ACTIVE_MODELS
     base = (url or "http://localhost:11434").rstrip("/")
     endpoint = f"{base}/chat" if base.endswith("/api") else f"{base}/api/chat"
@@ -219,7 +219,7 @@ def _raw_chat_ollama(
             user_msg,
         ]
 
-    ctx_size = max(8192, int(max_tokens)) if max_tokens else 16000
+    ctx_size = max(8192, int(max_tokens)) if max_tokens else 16384
     options = {
         "temperature": max(float(temperature), 0.01),
         "repeat_penalty": 1.1,
@@ -235,7 +235,7 @@ def _raw_chat_ollama(
         "model": model,
         "messages": messages,
         "stream": True,
-        "keep_alive": "15m",  # Stays alive across chat/refine iterations
+        "keep_alive": "15m",
         "options": options,
     }
     if is_json and not raw_messages:
@@ -293,19 +293,19 @@ def _raw_chat_ollama(
 
 
 def _raw_chat_openai(
-    url,
-    model,
-    system,
-    message,
-    images=(),
-    temperature=0.3,
-    seed=-1,
-    max_tokens=None,
-    node_id="",
+    url: str,
+    model: str,
+    system: str,
+    message: str,
+    images: tuple = (),
+    temperature: float = 0.3,
+    seed: int = -1,
+    max_tokens: int | None = None,
+    node_id: str = "",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
-    is_json=True,
-):
+    is_json: bool = True,
+) -> str:
     global _ACTIVE_MODELS
     base = (url or "http://localhost:1234/v1").rstrip("/")
     endpoint = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
@@ -395,20 +395,20 @@ def _raw_chat_openai(
 
 
 def _raw_chat_openrouter(
-    url,
-    model,
-    system,
-    message,
-    images=(),
-    temperature=0.3,
-    seed=-1,
-    max_tokens=None,
-    api_key="",
-    node_id="",
+    url: str,
+    model: str,
+    system: str,
+    message: str,
+    images: tuple = (),
+    temperature: float = 0.3,
+    seed: int = -1,
+    max_tokens: int | None = None,
+    api_key: str = "",
+    node_id: str = "",
     on_chunk: Optional[Callable] = None,
     raw_messages: Optional[list] = None,
-    is_json=True,
-):
+    is_json: bool = True,
+) -> str:
     base = (url or "https://openrouter.ai/api/v1").rstrip("/")
     endpoint = f"{base}/chat/completions" if base.endswith("/v1") else f"{base}/v1/chat/completions"
 
@@ -479,7 +479,7 @@ def _raw_chat_openrouter(
                 choices = chunk_obj.get("choices", [])
                 if choices:
                     delta_obj = choices[0].get("delta", {})
-                    delta_text = delta_obj.get("content", "") or delta_obj.get("reasoning", "")
+                    delta_text = delta_obj.get("content", "") or delta_obj.get("reasoning_content", "") or delta_obj.get("reasoning", "")
                     tracker.process(delta_text)
             except Exception:
                 continue
@@ -501,7 +501,7 @@ def _raw_chat_openrouter(
             _CANCEL_EVENTS.pop(str(node_id), None)
 
 
-def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None, is_json=True):
+def chat_ollama(url: str, model: str, system: str, message: str, images: tuple = (), temperature: float = 0.3, seed: int = -1, max_tokens: int | None = None, node_id: str = "", on_chunk: Optional[Callable] = None, raw_messages: Optional[list] = None, is_json: bool = True) -> str:
     if images and not raw_messages:
         try:
             return _raw_chat_ollama(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
@@ -513,7 +513,7 @@ def chat_ollama(url, model, system, message, images=(), temperature=0.3, seed=-1
     return _raw_chat_ollama(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages, is_json=is_json)
 
 
-def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, node_id="", on_chunk=None, raw_messages=None, is_json=True):
+def chat_openai(url: str, model: str, system: str, message: str, images: tuple = (), temperature: float = 0.3, seed: int = -1, max_tokens: int | None = None, node_id: str = "", on_chunk: Optional[Callable] = None, raw_messages: Optional[list] = None, is_json: bool = True) -> str:
     if images and not raw_messages:
         try:
             return _raw_chat_openai(url, model, system, message, images, temperature, seed, max_tokens, node_id, on_chunk, is_json=is_json)
@@ -525,7 +525,7 @@ def chat_openai(url, model, system, message, images=(), temperature=0.3, seed=-1
     return _raw_chat_openai(url, model, system, message, (), temperature, seed, max_tokens, node_id, on_chunk, raw_messages=raw_messages, is_json=is_json)
 
 
-def chat_openrouter(url, model, system, message, images=(), temperature=0.3, seed=-1, max_tokens=None, api_key="", node_id="", on_chunk=None, raw_messages=None, is_json=True):
+def chat_openrouter(url: str, model: str, system: str, message: str, images: tuple = (), temperature: float = 0.3, seed: int = -1, max_tokens: int | None = None, api_key: str = "", node_id: str = "", on_chunk: Optional[Callable] = None, raw_messages: Optional[list] = None, is_json: bool = True) -> str:
     if images and not raw_messages:
         try:
             return _raw_chat_openrouter(url, model, system, message, images, temperature, seed, max_tokens, api_key, node_id, on_chunk, is_json=is_json)

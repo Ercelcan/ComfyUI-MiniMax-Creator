@@ -1,7 +1,7 @@
 import { el, icon, dismissable, placeNear } from "./dom.js";
 import { t } from "./i18n.js";
 import { openChoicePopover } from "./pills.js";
-import { listModels } from "./api.js";
+import { listModels, invalidateModelsCache } from "./api.js";
 import * as S from "./state.js";
 import { turboRow, loadLoraNames } from "./turbo.js";
 
@@ -16,9 +16,20 @@ export const ROUTE_LABEL = {
 
 let catalog = null;
 
-export function loadCatalog(onReady) {
-  if (catalog) return catalog;
-  listModels().then((body) => {
+export function invalidateCatalog() {
+  catalog = null;
+  invalidateModelsCache();
+}
+
+export function loadCatalog(onReady, force = false) {
+  if (!force && catalog) {
+    onReady?.(catalog);
+    return catalog;
+  }
+  if (force) {
+    invalidateCatalog();
+  }
+  listModels({ force }).then((body) => {
     catalog = body;
     onReady?.(body);
   }).catch(() => {
@@ -188,12 +199,26 @@ export function openWeightsPopover(anchor, { models, checkpoints, onChange, turb
     body.replaceChildren(routeRow, ...rows);
   };
 
-  pop.append(el("div", { class: "mmc-pop-title", text: t("Weights") }), body);
+  const head = el("div", {
+    style: { display: "flex", alignItems: "center", justifyContent: "space-between", padding: "4px 8px 8px" },
+  }, [
+    el("span", { class: "mmc-pop-title", style: { padding: 0 }, text: t("Weights") }),
+    el("button", {
+      class: "mmc-ghost",
+      style: { fontSize: "11px", display: "inline-flex", alignItems: "center", gap: "4px", padding: "2px 6px" },
+      title: t("Rescan models directory to find newly added weights without restarting ComfyUI"),
+      onclick: () => {
+        loadCatalog(() => { if (pop.isConnected) render(); }, true);
+      },
+    }, [icon("loop", 12), el("span", { text: t("Rescan") })]),
+  ]);
+
+  pop.append(head, body);
   render();
   document.body.appendChild(pop);
   placeNear(pop, anchor);
   dismissable(pop);
 
-  if (!catalog) loadCatalog(() => pop.isConnected && render());
-  if (turbo) loadLoraNames(() => pop.isConnected && render());
+  loadCatalog(() => { if (pop.isConnected) render(); }, false);
+  if (turbo) loadLoraNames(() => { if (pop.isConnected) render(); });
 }

@@ -7,6 +7,7 @@ import { DirectorBody } from "./minimax_creator/director.js";
 import { Satellite } from "./minimax_creator/satellite.js";
 import { SAMPLING_WIDGETS } from "./minimax_creator/sampling.js";
 import { handleMediaFiles } from "./minimax_creator/media_drop.js";
+import { invalidateCatalog } from "./minimax_creator/models.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
@@ -34,6 +35,11 @@ function installInputGuard() {
     const isMmc = isMmcInput(active);
     const inStudio = isTimelineStudioActive(active) || Boolean(document.querySelector(".mmc-nle-studio:hover"));
     const key = e.key?.toLowerCase();
+
+    // Hotkey "r" or "f5" refresh detection to invalidate models cache
+    if ((e.ctrlKey || e.metaKey) && key === "r") {
+      invalidateCatalog();
+    }
 
     if (inStudio && !active?.classList?.contains("mmc-prompt") && active?.tagName !== "INPUT" && active?.tagName !== "TEXTAREA") {
       if ([" ", "j", "k", "l", "s", "i", "o", "[", "]", "arrowleft", "arrowright", "delete", "backspace"].includes(key)) {
@@ -435,17 +441,21 @@ function createCreatorBody(node) {
     editor = new CreatorEditor({
       state,
       onCommit: () => {
-        widget.value = S.serializeState(state);
+        widget.value = S.serializeState(editor?.state ?? state);
         node.graph?.setDirtyCanvas(true, true);
       },
       refineTarget: () => ({
         kind: "creator",
-        data: JSON.parse(S.serializeState(editor.state)),
+        data: JSON.parse(S.serializeState(editor?.state ?? state)),
       }),
       samplingWidgets: collectSampling(node),
       onWidgetChange: () => node.graph?.setDirtyCanvas(true, true),
       nodeId: () => node.id,
-      setRoute: (route) => { editor.state.models.route = route; editor.commit(); },
+      setRoute: (route) => {
+        const s = editor?.state ?? state;
+        s.models.route = route;
+        editor?.commit();
+      },
       preStage: preStageControls(node),
     });
     return editor;
@@ -476,7 +486,7 @@ function createPrestageBody(node) {
     body = new PreStageBody({
       state,
       onCommit: () => {
-        widget.value = S.serializePreStage(body.state);
+        widget.value = S.serializePreStage(body?.state ?? state);
         node.graph?.setDirtyCanvas(true, true);
       },
       samplingWidgets: collectSampling(node),
@@ -549,7 +559,7 @@ app.registerExtension({
       if (widget) {
         const state = S.parseState(widget.value);
         body.onCommit = () => {
-          widget.value = S.serializeState(state);
+          widget.value = S.serializeState(body?.state ?? state);
           node.graph?.setDirtyCanvas(true, true);
         };
         body.samplingWidgets = collectSampling(node);
@@ -560,7 +570,7 @@ app.registerExtension({
       if (widget) {
         const state = S.parsePreStage(widget.value);
         body.onCommit = () => {
-          widget.value = S.serializePreStage(body.state);
+          widget.value = S.serializePreStage(body?.state ?? state);
           node.graph?.setDirtyCanvas(true, true);
         };
         body.samplingWidgets = collectSampling(node);

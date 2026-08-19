@@ -7,7 +7,7 @@ import { openTrim, trimLabel } from "./trim.js";
 import { PromptBox } from "./prompt.js";
 import { RefinePanel, refineButton, refine } from "./refine.js";
 import { openAspectPopover, openResolutionPopover, aspectGlyph, PILL_GLYPH } from "./pills.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, handlePreGenerateSeed } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { weightsPill, loadCatalog, catalogFiles } from "./models.js";
 import * as Turbo from "./turbo.js";
@@ -396,7 +396,7 @@ export class CreatorEditor {
 
   syncPrompt() {
     const refined = this.state.refined;
-    this.prompt.setSuperseded(!!refined?.body?.trim() && refined.enabled !== false);
+    this.prompt.setSuperseded(Boolean(refined?.body?.trim() && refined.enabled !== false));
   }
 
   renderNotices() {
@@ -407,7 +407,7 @@ export class CreatorEditor {
   }
 
   renderRail() {
-    const disabled = !!S.blockedReason(this.state, "reference");
+    const disabled = Boolean(S.blockedReason(this.state, "reference"));
 
     if (this.compact) {
       const microBtn = (kind, label, iconName) => el("button", {
@@ -456,6 +456,7 @@ export class CreatorEditor {
           class: "mmc-tool mmc-tool-primary",
           title: t("Queue prompt in ComfyUI to generate video"),
           onclick: () => {
+            handlePreGenerateSeed(this.widgetIO().value, this.widgetIO().set);
             try { app.queuePrompt(0); } catch {}
           },
         }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
@@ -742,7 +743,7 @@ export class CreatorEditor {
     const routed = forced ? route : S.checkpoint(state);
     const pinned = !forced && S.checkpointPinned(state);
     const impossible = forced && route === "fl2va" && S.hasReferences(state);
-    const canCycle = !!this.setRoute;
+    const canCycle = Boolean(this.setRoute);
 
     const badge = el(canCycle ? "button" : "span", {
       class: `mmc-mode${forced || pinned ? " pinned" : ""}${impossible ? " bad" : ""}`,

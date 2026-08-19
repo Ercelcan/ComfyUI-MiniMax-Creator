@@ -4,11 +4,13 @@ import { openLoras } from "./loras.js";
 import { openFrameGrab } from "./framegrab.js";
 import { openChoicePopover, stepperPill, aspectGlyph, edgeSlider, PILL_GLYPH } from "./pills.js";
 import { CreatorEditor } from "./editor.js";
-import { samplingBar } from "./sampling.js";
+import { samplingBar, handlePreGenerateSeed } from "./sampling.js";
 import { Stage } from "./stage.js";
 import { loadCatalog, catalogByFolder } from "./models.js";
 import { viewUrl } from "./api.js";
 import { t } from "./i18n.js";
+import { PromptBox } from "./prompt.js";
+import { RefinePanel, refineButton, refine } from "./refine.js";
 import * as S from "./state.js";
 import { setupDragAndDrop } from "./media_drop.js";
 import { app } from "../../../scripts/app.js";
@@ -27,11 +29,14 @@ const TURBO_TITLE = {
 };
 
 /**
- * Queues execution strictly for the specified node and its upstream dependencies,
- * preventing other output nodes on the canvas (e.g. Creator / Timeline) from running.
+ * Randomizes seed if configured and queues execution strictly for the PreStage node
+ * and its upstream dependencies without triggering other video output nodes on canvas.
  */
-async function queuePreStageOnly(nodeId) {
+async function queuePreStageOnly(nodeId, widgetIO) {
   const idStr = String(typeof nodeId === "function" ? nodeId() : nodeId);
+  if (widgetIO && typeof widgetIO.value === "function" && typeof widgetIO.set === "function") {
+    handlePreGenerateSeed(widgetIO.value, widgetIO.set);
+  }
   try {
     const p = await app.graphToPrompt();
     if (!p || !p.output || !p.output[idStr]) {
@@ -86,19 +91,29 @@ export class PreStageEditor {
     this.archPill = archPill;
     this.sizes = new Map();
 
-    this.promptBox = el("textarea", {
-      class: "mmc-prestage-prompt",
-      placeholder: t("Describe the image. Both models were trained on long, detailed natural-language prompts."),
-      oninput: () => {
-        this.state.prompt = this.promptBox.value;
+    this.prompt = new PromptBox({
+      getState: () => this.state,
+      onInput: (text) => {
+        this.state.prompt = text;
         this.onCommit?.();
       },
-      onkeydown: (event) => event.stopPropagation(),
-      onkeyup: (event) => event.stopPropagation(),
-      onpaste: (event) => event.stopPropagation(),
-      oncopy: (event) => event.stopPropagation(),
-      oncut: (event) => event.stopPropagation(),
-      onpointerdown: (event) => event.stopPropagation(),
+      onAttach: (row) => this.attachFromMention(row),
+      attachBlocked: () => null,
+      getPool: () => [],
+    });
+
+    this.refinePanel = new RefinePanel({
+      getState: () => this.state,
+      getNodeId: () => this.nodeId,
+      onCommit: () => {
+        this.onCommit?.();
+        this.syncPrompt();
+      },
+      audioFields: false,
+      onRevert: () => {
+        this.syncPrompt();
+        this.commit();
+      },
     });
 
     this.railHost = el("div");
@@ -108,7 +123,11 @@ export class PreStageEditor {
     this.noticeHost = el("div");
     this.samplingHost = el("div");
 
-    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [this.promptBox]);
+    this.promptScroll = el("div", { class: "mmc-prompt-scroll" }, [
+      this.prompt.chipsBar,
+      this.prompt.root,
+      this.refinePanel.root,
+    ]);
 
     this.root = el("div", { class: `mmc-root mmc-prestage` }, [
       this.railHost,
@@ -120,17 +139,23 @@ export class PreStageEditor {
     ]);
     setupDragAndDrop(this.root, this);
 
-    loadCatalog(() => this.adoptWeights());
-    this.promptBox.value = this.state.prompt ?? "";
+    this.prompt.setValue(this.state.prompt ?? "");
     this.render();
     this.probeInit();
+
+    loadCatalog(() => this.adoptWeights());
   }
 
-  destroy() {}
+  destroy() {
+    this.refinePanel?.destroy?.();
+  }
 
   adoptWeights() {
-    if (S.guessPreStageModels(this.state.models, catalogByFolder())) this.commit();
-    else this.render();
+    if (S.guessPreStageModels(this.state.models, catalogByFolder())) {
+      this.commit();
+    } else {
+      this.render();
+    }
   }
 
   widgetIO() {
@@ -142,6 +167,7 @@ export class PreStageEditor {
         widget.value = value;
         widget.callback?.(value);
         this.onWidgetChange?.();
+        this.render(); // Re-render to update the seed readout immediately in DOM
       },
     };
   }
@@ -154,9 +180,46 @@ export class PreStageEditor {
   setState(state) {
     this.state = state;
     this.sizes.clear();
-    this.promptBox.value = this.state.prompt ?? "";
+    this.prompt.setValue(this.state.prompt ?? "");
+    this.refinePanel.problems = [];
     this.render();
     this.probeInit();
+  }
+
+  syncPrompt() {
+    const refined = this.state.refined;
+    this.prompt.setSuperseded(Boolean(refined?.body?.trim() && refined.enabled !== false));
+  }
+
+  async refineImagePrompt() {
+    try {
+      const result = await refine({
+        kind: "prestage",
+        data: JSON.parse(S.serializePreStage(this.state)),
+        node_id: typeof this.nodeId === "function" ? this.nodeId() : this.nodeId,
+      });
+      const shot = result.shots?.[0];
+      if (!shot?.body) throw new Error(t("the refiner returned no prompt text"));
+      this.refinePanel.apply(result, shot);
+      this.commit();
+    } catch (error) {
+      this.refinePanel.fail(String(error.message || error));
+    }
+  }
+
+  attachFromMention(row) {
+    if (row.kind === "image") {
+      const room = S.PRESTAGE_MAX_REFS - this.state.refs.length;
+      if (room <= 0) {
+        this.flash(t("At most {max} style references.", { max: S.PRESTAGE_MAX_REFS }));
+        return null;
+      }
+      const handle = S.nextPreStageHandle(this.state);
+      this.state.refs.push({ handle, filename: row.path || row.filename });
+      this.commit();
+      return handle;
+    }
+    return null;
   }
 
   async setInit(fromVideo = false) {
@@ -256,12 +319,21 @@ export class PreStageEditor {
       turbo: state.arch === "krea2" ? this.renderTurbo() : [],
       trailing: [this.renderWeightsPill()],
     }));
+    this.prompt.refresh();
+    this.syncPrompt();
+    this.refinePanel.render();
   }
 
   renderRail() {
     const tool = (label, iconName, title, onclick) => el("button", {
       class: "mmc-tool", title, onclick,
     }, [el("span", { class: "mmc-tool-icon" }, [icon(iconName)]), el("span", { text: label })]);
+
+    const refineBtn = refineButton({
+      run: () => this.refineImagePrompt(),
+      label: t("Refine"),
+      mode: "rail",
+    });
 
     return el("div", { class: "mmc-rail" }, [
       el("div", { class: "mmc-rail-group" }, [
@@ -279,12 +351,13 @@ export class PreStageEditor {
         tool(t("Add LoRA"), "effect",
              t("Manage the LoRAs patched onto the image model."),
              () => this.manageLoras()),
+        refineBtn,
       ]),
       el("div", { class: "mmc-rail-group" }, [
         el("button", {
           class: "mmc-tool mmc-tool-primary",
           title: t("Generate only this still image (without triggering video generation)"),
-          onclick: () => queuePreStageOnly(this.nodeId),
+          onclick: () => queuePreStageOnly(this.nodeId, this.widgetIO()),
         }, [el("span", { class: "mmc-tool-icon" }, [icon("play")]), el("span", { text: t("Generate") })]),
         el("button", {
           class: `mmc-tool${this.stage?.showing() ? " active" : ""}`,
@@ -688,7 +761,30 @@ export class PreStageBody {
       durationPill: false,
       settingsTool: false,
       extraPills: () => [this.renderArchPill(), ...this.renderStillPills()],
-      extraTools: () => [this.renderFrameGrabTool()],
+      extraTools: () => [
+        this.renderFrameGrabTool(),
+        refineButton({
+          run: async () => {
+            try {
+              const result = await refine({
+                kind: "prestage",
+                data: JSON.parse(S.serializePreStage(this.state)),
+                node_id: typeof this.nodeId === "function" ? this.nodeId() : this.nodeId,
+              });
+              const shot = result.shots?.[0];
+              if (shot?.body) {
+                still.request.prompt = shot.body;
+                editor.prompt?.setValue(shot.body);
+                this.commit();
+              }
+            } catch (err) {
+              editor.flash?.(err.message || String(err));
+            }
+          },
+          label: t("Refine"),
+          mode: "rail",
+        }),
+      ],
       setRoute: (route) => {
         still.request.models.route = route;
         this.commit();
@@ -706,6 +802,7 @@ export class PreStageBody {
         widget.value = value;
         widget.callback?.(value);
         this.onWidgetChange?.();
+        this.editor?.render();
       },
     };
   }

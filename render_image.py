@@ -1,8 +1,11 @@
-"""One image generation, as a graph. The PreStage's half of `render.py`."""
+"""One image generation, as a graph. The PreStage's half of `render.py` with full LoRA patching, Tiled VAE decode, and live preview support."""
+
+from __future__ import annotations
 
 from dataclasses import dataclass, field
+from typing import Any
 
-from . import outputs
+from . import models, outputs, settings
 from .compile import CompileError
 from .compile_image import IDEOGRAM_CFG_LATE
 from .models import is_gguf, loader_for
@@ -44,7 +47,7 @@ class ImageWeights:
     dtype: str = "default"
 
     @classmethod
-    def from_blob(cls, data):
+    def from_blob(cls, data: dict | None) -> ImageWeights:
         arch = (data or {}).get("arch", "krea2")
         block = (data or {}).get("models")
         if not isinstance(block, dict):
@@ -58,15 +61,17 @@ class ImageWeights:
             if isinstance(value, str) and value.strip():
                 files[name] = value.strip()
         dtype = block.get("dtype")
-        return cls(arch=arch,
-                   files=files,
-                   dtype=dtype if isinstance(dtype, str) and dtype else "default")
+        return cls(
+            arch=arch,
+            files=files,
+            dtype=dtype if isinstance(dtype, str) and dtype else "default",
+        )
 
-    def get(self, name):
+    def get(self, name: str) -> str | None:
         return self.files.get(name)
 
 
-def check(weights, payload):
+def check(weights: ImageWeights, payload: any) -> None:
     for name in ("clip", "vae", payload.checkpoint_field):
         if weights.get(name):
             continue
@@ -78,7 +83,7 @@ def check(weights, payload):
         )
 
 
-def _require_arch(arch):
+def _require_arch(arch: str) -> None:
     import nodes
 
     if arch == "ideogram4" and "Ideogram4Scheduler" not in nodes.NODE_CLASS_MAPPINGS:
@@ -96,14 +101,14 @@ def _require_arch(arch):
             )
 
 
-def _unet(graph, weights, name):
+def _unet(graph: Any, weights: ImageWeights, name: str) -> Any:
     filename = weights.get(name)
     node_id, _ = loader_for("UNETLoader", None, filename)
     dtype = {} if is_gguf(filename) else {"weight_dtype": weights.dtype}
     return graph.node(node_id, unet_name=filename, **dtype).out(0)
 
 
-def emit(payload, weights, sampling, unique_id, filename_prefix=FILENAME_PREFIX):
+def emit(payload: any, weights: ImageWeights, sampling: any, unique_id: any, filename_prefix: str = FILENAME_PREFIX) -> tuple[Any, tuple]:
     from comfy_execution.graph_utils import GraphBuilder
 
     if payload.arch != weights.arch:
@@ -119,20 +124,33 @@ def emit(payload, weights, sampling, unique_id, filename_prefix=FILENAME_PREFIX)
     vae = graph.node("VAELoader", vae_name=weights.get("vae")).out(0)
     model = _unet(graph, weights, payload.checkpoint_field)
 
+    # Patch both Model and CLIP with LoRAs for full text-encoder and UNet styling support
     for entry in payload.loras:
-        model = graph.node("LoraLoaderModelOnly", model=model,
-                           lora_name=entry["name"],
-                           strength_model=entry["strength"]).out(0)
+        lora_node = graph.node(
+            "LoraLoader",
+            model=model,
+            clip=clip,
+            lora_name=entry["name"],
+            strength_model=float(entry.get("strength", 1.0)),
+            strength_clip=float(entry.get("strength", 1.0)),
+        )
+        model = lora_node.out(0)
+        clip = lora_node.out(1)
+
+    model = models.graph_preview(graph, model, None)
+
+    use_tiled = settings.tiled_vae() or (payload.width > 1024 or payload.height > 1024)
+    tile_size = settings.vae_tile_size()
 
     if payload.arch == "krea2":
-        image = _emit_krea2(graph, payload, sampling, clip, vae, model, unique_id, filename_prefix)
+        image = _emit_krea2(graph, payload, sampling, clip, vae, model, unique_id, filename_prefix, tiled=use_tiled, tile_size=tile_size)
     else:
         image = _emit_ideogram4(graph, payload, sampling, weights, clip, vae, model, unique_id,
-                                filename_prefix)
+                                filename_prefix, tiled=use_tiled, tile_size=tile_size)
     return graph, (image,)
 
 
-def _latent(graph, payload, vae, empty_node):
+def _latent(graph: Any, payload: any, vae: Any, empty_node: str) -> tuple[Any, float]:
     if payload.init is None:
         empty = graph.node(empty_node, width=payload.width, height=payload.height,
                            batch_size=1)
@@ -145,7 +163,7 @@ def _latent(graph, payload, vae, empty_node):
     return encoded, payload.init["denoise"]
 
 
-def _emit_krea2(graph, payload, sampling, clip, vae, model, unique_id, filename_prefix):
+def _emit_krea2(graph: Any, payload: any, sampling: any, clip: Any, vae: Any, model: Any, unique_id: any, filename_prefix: str, tiled: bool = False, tile_size: int = 512) -> Any:
     if payload.refs:
         images = {f"image{i + 1}": graph.node("LoadImage", image=name).out(0)
                   for i, name in enumerate(payload.refs)}
@@ -169,11 +187,11 @@ def _emit_krea2(graph, payload, sampling, clip, vae, model, unique_id, filename_
         cfg=sampling.cfg, sampler_name=sampling.sampler_name,
         scheduler=sampling.scheduler, denoise=denoise,
     )
-    return _emit_tail(graph, sampled.out(0), vae, unique_id, filename_prefix)
+    return _emit_tail(graph, sampled.out(0), vae, unique_id, filename_prefix, tiled=tiled, tile_size=tile_size)
 
 
-def _emit_ideogram4(graph, payload, sampling, weights, clip, vae, model, unique_id,
-                    filename_prefix):
+def _emit_ideogram4(graph: Any, payload: any, sampling: any, weights: ImageWeights, clip: Any, vae: Any, model: Any, unique_id: any,
+                    filename_prefix: str, tiled: bool = False, tile_size: int = 512) -> Any:
     positive = graph.node("CLIPTextEncode", clip=clip, text=payload.prompt).out(0)
     negative = graph.node("ConditioningZeroOut", conditioning=positive).out(0)
 
@@ -200,11 +218,11 @@ def _emit_ideogram4(graph, payload, sampling, weights, clip, vae, model, unique_
         sampler=graph.node("KSamplerSelect", sampler_name=sampling.sampler_name).out(0),
         sigmas=sigmas, latent_image=latent,
     )
-    return _emit_tail(graph, sampled.out(0), vae, unique_id, filename_prefix)
+    return _emit_tail(graph, sampled.out(0), vae, unique_id, filename_prefix, tiled=tiled, tile_size=tile_size)
 
 
-def _emit_tail(graph, samples, vae, unique_id, filename_prefix):
-    image = graph.node("VAEDecode", samples=samples, vae=vae).out(0)
+def _emit_tail(graph: Any, samples: Any, vae: Any, unique_id: any, filename_prefix: str, tiled: bool = False, tile_size: int = 512) -> Any:
+    image = models.decode_vae_node(graph, samples=samples, vae=vae, tiled=tiled, tile_size=tile_size)
     save = graph.node(SAVE_NODE, images=image, filename_prefix=filename_prefix)
     save.set_override_display_id(unique_id)
     return image

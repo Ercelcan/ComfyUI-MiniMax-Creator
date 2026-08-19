@@ -23,9 +23,24 @@ export class Satellite {
     }
   }
 
+  get sideKey() {
+    const type = this.node?.comfyClass || this.node?.type || (this.defaultSide === "left" ? "MiniMaxH3PreStage" : "MiniMaxH3Creator");
+    return `mmc-satellite-side-${type}`;
+  }
+
+  get sizeKeyW() {
+    const type = this.node?.comfyClass || this.node?.type || (this.defaultSide === "left" ? "MiniMaxH3PreStage" : "MiniMaxH3Creator");
+    return `mmc-satellite-w-${type}`;
+  }
+
+  get sizeKeyH() {
+    const type = this.node?.comfyClass || this.node?.type || (this.defaultSide === "left" ? "MiniMaxH3PreStage" : "MiniMaxH3Creator");
+    return `mmc-satellite-h-${type}`;
+  }
+
   get side() {
     try {
-      return localStorage.getItem("mmc-satellite-side") || this.defaultSide;
+      return localStorage.getItem(this.sideKey) || this.defaultSide;
     } catch {
       return this.defaultSide;
     }
@@ -33,8 +48,8 @@ export class Satellite {
 
   get customSize() {
     try {
-      const w = Number(localStorage.getItem("mmc-satellite-w"));
-      const h = Number(localStorage.getItem("mmc-satellite-h"));
+      const w = Number(localStorage.getItem(this.sizeKeyW));
+      const h = Number(localStorage.getItem(this.sizeKeyH));
       return {
         w: Number.isFinite(w) && w >= 200 ? w : null,
         h: Number.isFinite(h) && h >= 150 ? h : null,
@@ -71,8 +86,8 @@ export class Satellite {
         newW = Math.max(200, Math.round(newW));
         newH = Math.max(150, Math.round(newH));
         try {
-          localStorage.setItem("mmc-satellite-w", String(newW));
-          localStorage.setItem("mmc-satellite-h", String(newH));
+          localStorage.setItem(this.sizeKeyW, String(newW));
+          localStorage.setItem(this.sizeKeyH, String(newH));
         } catch {}
         this.follow();
       };
@@ -105,8 +120,8 @@ export class Satellite {
       e.preventDefault();
       e.stopPropagation();
       try {
-        localStorage.removeItem("mmc-satellite-w");
-        localStorage.removeItem("mmc-satellite-h");
+        localStorage.removeItem(this.sizeKeyW);
+        localStorage.removeItem(this.sizeKeyH);
       } catch {}
       this.follow();
     });
@@ -116,7 +131,9 @@ export class Satellite {
     const order = ["right", "bottom", "left", "top"];
     const current = this.side;
     const next = order[(order.indexOf(current) + 1) % order.length];
-    try { localStorage.setItem("mmc-satellite-side", next); } catch {}
+    try {
+      localStorage.setItem(this.sideKey, next);
+    } catch {}
     this.follow();
   }
 

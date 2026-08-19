@@ -141,7 +141,7 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
 }
 
 export function openResolutionPopover(anchor, target, geometry, commit) {
-  loadCatalog(() => { if (pop.isConnected) renderSection(); });
+  const pop = el("div", { class: "mmc-pop mmc-slider" });
   const section = el("div");
 
   const BASE_PRESETS = [
@@ -153,10 +153,19 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     { edge: 768, label: "768p" },
   ];
 
+  let body = null;
+
+  const getGeometry = () => {
+    const geom = typeof geometry === "function" ? geometry() : geometry;
+    const width = geom?.width ?? (Array.isArray(geom) ? geom[0] : 1344);
+    const height = geom?.height ?? (Array.isArray(geom) ? geom[1] : 768);
+    return { width, height };
+  };
+
   const renderSection = () => {
-    const { width, height } = geometry();
-    const over = target.short_edge > NATIVE_SHORT_EDGE;
-    const cap = Math.min(NATIVE_SHORT_EDGE, target.short_edge);
+    const { width, height } = getGeometry();
+    const over = (target.short_edge || NATIVE_SHORT_EDGE) > NATIVE_SHORT_EDGE;
+    const cap = Math.min(NATIVE_SHORT_EDGE, target.short_edge || NATIVE_SHORT_EDGE);
     const curSampleEdge = sampleEdge(target);
     const upscalerModels = catalogLatentUpscalers();
 
@@ -166,7 +175,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
       onclick: () => {
         target.upscale = mode;
         target.rtx_upscale = (mode === "rtx_vsr");
-        body.repaint();
+        body?.repaint();
         commit();
       },
     }, [
@@ -193,7 +202,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
 
     // Base sampling resolution selector & quick presets
     if (!over || target.upscale !== "direct") {
-      const presetChips = BASE_PRESETS.filter((p) => p.edge <= target.short_edge).map((p) => el("button", {
+      const presetChips = BASE_PRESETS.filter((p) => p.edge <= (target.short_edge || NATIVE_SHORT_EDGE)).map((p) => el("button", {
         class: `mmc-chip${curSampleEdge === p.edge ? " on" : ""}`,
         style: { fontSize: "11px", padding: "2px 8px" },
         text: p.label,
@@ -203,7 +212,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           if (p.edge < target.short_edge && target.upscale === "direct") {
             target.upscale = "two_pass";
           }
-          body.repaint();
+          body?.repaint();
           commit();
         },
       }));
@@ -221,7 +230,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
               if (next < target.short_edge && target.upscale === "direct") {
                 target.upscale = "two_pass";
               }
-              body.repaint();
+              body?.repaint();
               commit();
             },
           }),
@@ -244,7 +253,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
             value: curQuality,
             onPick: (picked) => {
               target.rtx_quality = picked;
-              body.repaint();
+              body?.repaint();
               commit();
             },
           }),
@@ -280,7 +289,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
             padding: "0 8px",
             display: "inline-flex",
             alignItems: "center",
-            overflow: "hidden"
+            overflow: "hidden",
           },
           title: t("Model: {name}\nPick a neural latent upscaler (2D or 3D) from models/latent_upscale_models/", { name: curUpscaler }),
           onclick: (e) => openChoicePopover(e.currentTarget, {
@@ -289,7 +298,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
             value: curUpscaler,
             onPick: (picked) => {
               target.upscale_model = picked.startsWith("bicubic") ? "" : picked;
-              body.repaint();
+              body?.repaint();
               commit();
             },
           }),
@@ -303,7 +312,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
               maxWidth: "100%",
             },
             text: formatModelLabel(curUpscaler),
-          })
+          }),
         ]),
       ]));
 
@@ -314,7 +323,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           min: 1, max: 20, step: 1, width: "40px",
           title: t("How many diffusion steps to run on Pass 2 at target resolution."),
           format: (n) => t("{n} step{s}", { n, s: n > 1 ? "s" : "" }),
-          onChange: (next) => { target.refine_steps = next; body.repaint(); commit(); },
+          onChange: (next) => { target.refine_steps = next; body?.repaint(); commit(); },
         }),
       ]));
 
@@ -325,7 +334,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           min: MIN_REFINE_DENOISE, max: MAX_REFINE_DENOISE, step: 0.05, width: "40px",
           title: t("Denoise strength for Pass 2. 0.25 is the optimal sweet spot."),
           format: (n) => n.toFixed(2),
-          onChange: (next) => { target.refine_denoise = next; body.repaint(); commit(); },
+          onChange: (next) => { target.refine_denoise = next; body?.repaint(); commit(); },
         }),
       ]));
 
@@ -338,7 +347,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
             title: t("Apply Turbo LoRA specifically to Pass 2 so 1-step refinement runs ultra fast."),
             onclick: () => {
               target.refine_turbo_only = !target.refine_turbo_only;
-              body.repaint();
+              body?.repaint();
               commit();
             },
           }, [icon("bolt", 13), el("span", { text: target.refine_turbo_only ? t("on (1-step)") : t("off") })]),
@@ -352,7 +361,7 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           title: t("Flush PyTorch CUDA cache and run garbage collection right before upscaling to prevent Out of Memory (OOM) errors."),
           onclick: () => {
             target.clean_vram = target.clean_vram === false;
-            body.repaint();
+            body?.repaint();
             commit();
           },
         }, [icon("broom", 13), el("span", { text: target.clean_vram !== false ? t("auto-flush") : t("off") })]),
@@ -365,10 +374,40 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
           title: t("Also save the original non-upscaled Pass 1 base video alongside the final upscaled video (saved with _base suffix)."),
           onclick: () => {
             target.save_pass1 = !target.save_pass1;
-            body.repaint();
+            body?.repaint();
             commit();
           },
         }, [el("span", { text: target.save_pass1 ? t("on (save both)") : t("off") })]),
+      ]));
+    }
+
+    // Tiled VAE Decoder Control
+    const isTiled = target.tiled_vae === true;
+    const curTileSize = Number(target.vae_tile_size || 512);
+
+    rows.push(el("div", { class: "mmc-refine-row", style: { borderTop: "1px solid var(--mmc-line)", paddingTop: "8px", marginTop: "4px" } }, [
+      el("span", { class: "mmc-refine-label", text: t("tiled vae decoder") }),
+      el("button", {
+        class: `mmc-pill${isTiled ? " on" : ""}`,
+        title: t("Decodes latents in small spatial tiles to prevent high VRAM spikes and out-of-memory errors on high-resolution outputs."),
+        onclick: () => {
+          target.tiled_vae = !isTiled;
+          body?.repaint();
+          commit();
+        },
+      }, [icon("res", 13), el("span", { text: isTiled ? t("on (tiled)") : t("off") })]),
+    ]));
+
+    if (isTiled) {
+      rows.push(el("div", { class: "mmc-refine-row" }, [
+        el("span", { class: "mmc-refine-label", text: t("vae tile size") }),
+        stepperPill({
+          value: curTileSize,
+          min: 256, max: 2048, step: 64, width: "52px",
+          title: t("Spatial tile size for VAE decoding. 512 is recommended."),
+          format: (n) => `${n}px`,
+          onChange: (next) => { target.vae_tile_size = next; body?.repaint(); commit(); },
+        }),
       ]));
     }
 
@@ -376,14 +415,14 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     section.replaceChildren(...rows);
   };
 
-  const body = edgeSlider({
+  body = edgeSlider({
     min: MIN_SHORT_EDGE, max: MAX_SHORT_EDGE, step: CANVAS_MULTIPLE,
     value: target.short_edge, mark: NATIVE_SHORT_EDGE, markLabel: "native",
     apply: (edge) => { target.short_edge = edge; },
     describe: () => {
       renderSection();
-      const { width, height } = geometry();
-      const over = target.short_edge > NATIVE_SHORT_EDGE;
+      const { width, height } = getGeometry();
+      const over = (target.short_edge || NATIVE_SHORT_EDGE) > NATIVE_SHORT_EDGE;
       if (rtxVsr(target)) {
         return {
           size: `${width} × ${height}`,
@@ -414,8 +453,10 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     commit,
   });
 
-  const pop = el("div", { class: "mmc-pop mmc-slider" }, [body, section]);
+  pop.replaceChildren(body, section);
   document.body.appendChild(pop);
   placeNear(pop, anchor);
   dismissable(pop);
+
+  loadCatalog(() => { if (pop.isConnected) renderSection(); }, false);
 }

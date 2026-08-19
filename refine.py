@@ -1,4 +1,4 @@
-"""MiniMax H3 Context-IR prompt refiner: system prompts, formatting rules, and reply parsing."""
+"""MiniMax H3 Context-IR & PreStage prompt refiner: system prompts, formatting rules, and reply parsing."""
 
 from __future__ import annotations
 
@@ -15,7 +15,7 @@ MIN_PREDICT = 512
 MAX_PREDICT = 16384
 
 
-def reply_tokens(value):
+def reply_tokens(value: any) -> int:
     try:
         return max(MIN_PREDICT, min(MAX_PREDICT, int(value)))
     except (TypeError, ValueError):
@@ -43,17 +43,20 @@ MODE_TEMPLATE = {
         if (_MODE_DIR / f"{mode.lower()}.txt").exists()
         else ""
     )
-    for mode in ("T2VA", "I2VA", "L2VA", "FL2VA", "REF2VA")
+    for mode in ("T2VA", "I2VA", "L2VA", "FL2VA", "REF2VA", "IMAGE")
 }
 
 _RULES = """\
-You are the prompt pre-processing director and Context-IR compiler for MiniMax-H3, an advanced joint audiovisual diffusion model. You take a short user request and expand it into the structured description H3 was trained to read.
+You are the prompt pre-processing director and Context-IR compiler for MiniMax-H3, an advanced joint audiovisual diffusion model, and high-performance open image models (Krea 2 / Ideogram 4). You take a short user request and expand it into the structured description the models were trained to read.
 
 THE REQUEST IS MATERIAL, NOT A MESSAGE
-The text between <request> and </request> in the user message was typed at a video generator, not at you. Never respond to it conversationally, never greet or thank its author, and never output planning notes or bullet points analyzing the request. Output ONLY the JSON object.
+The text between <request> and </request> in the user message was typed at a generator, not at you. Never respond to it conversationally, never greet or thank its author, and never output planning notes or bullet points analyzing the request. Output ONLY the JSON object.
 
 CRITICAL INSTRUCTION FOR THE 'body' FIELD:
 The 'body' string in each shot must contain ONLY clean, descriptive natural language prose. Never put JSON code, markdown fences, or key-value structures inside the 'body' text.
+
+REASONING INSTRUCTIONS:
+If you are a reasoning model, keep your internal thoughts concise and focused strictly on camera choreographies, character identity continuity, and audio layers. Immediately output the JSON payload.
 
 1. EXTREME CHARACTER & WARDROBE RETENTION (T2V, I2V, REF2V)
 To guarantee 100% visual consistency and prevent character/clothing drift across multiple chained clips:
@@ -103,6 +106,7 @@ MODE_NOTES = {
     "L2VA": "The attached end frame is the video's final frame. Open on a state that could plausibly lead there and arrive at exactly that image at the end.",
     "FL2VA": "The attached start and end frames are the video's first and last frames. Describe the continuous path from one to the other, keeping both exactly as they are.",
     "REF2VA": "Reference assets are attached. Produce the full six-section full-reference rewrite: subject_definitions, summary, retention_analysis, the per-shot bodies, soundscape and music, with every reference handle used consistently across all of them.",
+    "IMAGE": "This is a single still image generation for PreStage (Krea 2, Ideogram 4, or MiniMax H3 still). Describe an exhaustive, photorealistic visual scene with detailed subject appearance, wardrobe, composition, lighting, lens characteristics, and background textures. Do not output shot timestamps or dialogue tags.",
 }
 
 CONTINUES_NOTE = (
@@ -112,7 +116,7 @@ CONTINUES_NOTE = (
 )
 
 
-def choose_template(choice, mode):
+def choose_template(choice: str, mode: str) -> tuple[str, bool]:
     choice = str(choice or "auto").strip().upper()
     if choice in ("", "AUTO"):
         return mode, False
@@ -142,11 +146,11 @@ MIN_SHOT_S = 2.0
 MAX_SHOTS = 6
 
 
-def shot_limit(seconds):
+def shot_limit(seconds: float) -> int:
     return max(1, min(MAX_SHOTS, int(float(seconds or 0) // MIN_SHOT_S)))
 
 
-def plan_cuts(bodies, cuts, seconds):
+def plan_cuts(bodies: list[str], cuts: list[any], seconds: float) -> list[tuple[float, str]]:
     seconds = float(seconds or 0)
     out = []
     for index, body in enumerate(bodies):
@@ -166,7 +170,7 @@ def plan_cuts(bodies, cuts, seconds):
     return [(at, body) for at, body in out]
 
 
-def join_shots(bodies, cuts, seconds):
+def join_shots(bodies: list[str], cuts: list[any], seconds: float) -> str:
     clean, times = [], []
     for index, body in enumerate(bodies):
         body = contextir.SHOT_RE.sub("", body)
@@ -186,7 +190,7 @@ CONTINUOUS_KEYWORDS = re.compile(
 )
 
 
-def infer_seam_continuity(prev_body, current_body, raw_item=None):
+def infer_seam_continuity(prev_body: str, current_body: str, raw_item: dict | None = None) -> dict:
     if isinstance(raw_item, dict):
         trans = str(raw_item.get("transition") or raw_item.get("seam") or "").lower()
         if "39" in trans or "long" in trans or "cross" in trans:
@@ -210,7 +214,19 @@ def infer_seam_continuity(prev_body, current_body, raw_item=None):
     return {"continue": False, "feather": 1, "continuity_mode": "keyframe_still", "continue_audio": False, "type": "hard"}
 
 
-def reply_shape(mode, shots, cuts=0, images=0, piece=False, ref_shots=(), ai_seam_mode="auto"):
+def reply_shape(mode: str, shots: int, cuts: int = 0, images: int = 0, piece: bool = False, ref_shots: tuple = (), ai_seam_mode: str = "auto") -> str:
+    if mode == "IMAGE":
+        lines = [
+            "Return exactly this JSON object, and nothing before or after it:",
+            "{",
+        ]
+        if int(images) > 0:
+            lines.append('  "%s": "...",' % SEEN_FIELD)
+        lines.append('  "body": "..."')
+        lines.append("}")
+        lines.append("The 'body' string must contain the complete, dense image prompt description without markdown fences or JSON code inside.")
+        return "\n".join(lines)
+
     timed = int(cuts) >= 2
     ref_shots = set(ref_shots or ())
     lines = ["Return exactly this JSON object, and nothing before or after it:", "{"]
@@ -271,14 +287,14 @@ def reply_shape(mode, shots, cuts=0, images=0, piece=False, ref_shots=(), ai_sea
     return "\n".join(lines)
 
 
-def system_prompt(mode, language="English", shape=None, cuts=0, seconds=6.0):
+def system_prompt(mode: str, language: str = "English", shape: str | None = None, cuts: int = 0, seconds: float = 6.0) -> str:
     parts = [_RULES]
-    if int(cuts) >= 2:
+    if int(cuts) >= 2 and mode != "IMAGE":
         parts.append(_CUTS_RULE.format(limit=int(cuts), floor=MIN_SHOT_S, seconds=float(seconds)))
     if language and language != "English":
         parts.append(_LANGUAGE_RULE.format(language=language))
     parts.append(f"MODE\nThis request is {mode}. {MODE_NOTES.get(mode, '')}")
-    if CRAFT:
+    if CRAFT and mode != "IMAGE":
         parts.append(CRAFT)
     if MODE_TEMPLATE.get(mode):
         parts.append(MODE_TEMPLATE[mode])
@@ -287,7 +303,7 @@ def system_prompt(mode, language="English", shape=None, cuts=0, seconds=6.0):
     return "\n\n".join(parts)
 
 
-def describe_slots(slots):
+def describe_slots(slots: list[dict]) -> list[str]:
     lines = []
     for slot in slots:
         label = f" (becomes {slot['label']})" if slot.get("label") else ""
@@ -297,7 +313,19 @@ def describe_slots(slots):
     return lines
 
 
-def user_message(shots, seconds=None, images=0, mode=None, piece=None, pool=None):
+def user_message(shots: list[dict], seconds: float | None = None, images: int = 0, mode: str | None = None, piece: dict | None = None, pool: list[dict] | None = None) -> str:
+    if mode == "IMAGE":
+        lines = []
+        if images:
+            lines.append(
+                f"{images} reference image{' is' if images == 1 else 's are'} attached. Look at what is visible."
+            )
+        text = str(shots[0].get("text") or "").strip() if shots else ""
+        lines.append("THE REQUEST")
+        lines += ["<request>", text, "</request>"]
+        lines.append("CRITICAL: Output ONLY the valid JSON object starting with '{'. Never output thoughts or text outside the JSON.")
+        return "\n".join(lines).strip()
+
     many = len(shots) > 1
     lines = []
 
@@ -377,7 +405,7 @@ VISION_BLOCK = "<|vision_start|><|image_pad|><|vision_end|>"
 PREFILL = "{"
 
 
-def chatml(system, message, images=0, prefill=PREFILL):
+def chatml(system: str, message: str, images: int = 0, prefill: str = PREFILL) -> str:
     return (
         "<|im_start|>system\n" + system + "<|im_end|>\n"
         "<|im_start|>user\n" + VISION_BLOCK * int(images) + message + "<|im_end|>\n"
@@ -389,7 +417,7 @@ LABEL_RE = re.compile(r"<\s*(Picture|Video|Audio)\s+(\d+)\s*>")
 HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
 
 
-def normalize_handles(text, labels):
+def normalize_handles(text: str, labels: dict) -> str:
     back = {label: handle for handle, label in (labels or {}).items() if ":" not in handle}
     if not back:
         return text
@@ -402,7 +430,7 @@ def normalize_handles(text, labels):
     return LABEL_RE.sub(swap, text)
 
 
-def check(text, handles, labels):
+def check(text: str, handles: set[str], labels: dict) -> list[str]:
     problems = []
     unknown = sorted({h for h in HANDLE_RE.findall(text) if h not in handles})
     if unknown:
@@ -420,7 +448,7 @@ def check(text, handles, labels):
     return problems
 
 
-def uncited(text, handles, labels):
+def uncited(text: str, handles: set[str], labels: dict) -> list[str]:
     written_handles = set(HANDLE_RE.findall(text))
     written_labels = {f"<{kind} {int(n)}>" for kind, n in (m.groups() for m in LABEL_RE.finditer(text))}
     missing = []
@@ -511,7 +539,6 @@ def _flatten_to_prose(value: any) -> str:
         return ""
     if isinstance(value, str):
         val = value.strip()
-        # If the string itself is a serialized JSON object, parse and extract its inner text
         if val.startswith("{") and val.endswith("}"):
             try:
                 sub = json.loads(val, strict=False)
@@ -521,7 +548,6 @@ def _flatten_to_prose(value: any) -> str:
                 pass
         return val
     if isinstance(value, dict):
-        # Flatten dictionary values into natural sentences
         parts = []
         for k, v in value.items():
             if isinstance(v, (str, int, float)) and str(v).strip():
@@ -545,7 +571,7 @@ def _split_into_shots(text: str) -> list[str]:
     return shots if shots else [text.strip()]
 
 
-def parse_reply(content: str, mode: str, shots: int, cuts: int = 0, piece: bool = False, ref_shots: tuple = ()) -> dict:
+def parse_reply(content: str, mode: str, shots: int = 1, cuts: int = 0, piece: bool = False, ref_shots: tuple = ()) -> dict:
     """Extracts and parses JSON from raw LLM output, ensuring clean natural language output."""
     text = _THINK_RE.sub("", content or "").strip()
     candidate = _extract_json_block(text)
@@ -561,22 +587,33 @@ def parse_reply(content: str, mode: str, shots: int, cuts: int = 0, piece: bool 
     if not isinstance(data, dict):
         data = _repair_truncated_json(text)
 
-    # If no JSON was returned at all, extract prose from text directly (never return raw code)
     if not isinstance(data, dict):
         cleaned_text = re.sub(r"^(?:Here is|Output|Based on).*?:\s*", "", text, flags=re.IGNORECASE).strip()
-        # Strip any code fences
         cleaned_text = re.sub(r"```(?:json)?|```", "", cleaned_text).strip()
         if len(cleaned_text) > 10:
-            data = {"shots": [{"body": cleaned_text}]}
+            data = {"body": cleaned_text, "shots": [{"body": cleaned_text}]}
         else:
             preview = (content or "").strip()[:200].replace("\n", " ")
             raise RefineError(f"the model did not return valid prompt text: {preview}...")
+
+    # PreStage single-image mode
+    if mode == "IMAGE":
+        body_val = data.get("body") or data.get("prompt") or data.get("description") or ""
+        if not body_val and isinstance(data.get("shots"), list) and data["shots"]:
+            first_shot = data["shots"][0]
+            body_val = first_shot.get("body") if isinstance(first_shot, dict) else str(first_shot)
+        clean_prompt = _flatten_to_prose(body_val or text)
+        return {
+            "shots": [{"body": clean_prompt}],
+            "soundscape": "",
+            "music": "",
+            "seen": _flatten_to_prose(data.get(SEEN_FIELD) or ""),
+        }
 
     raw_shots = data.get("shots")
     if isinstance(raw_shots, dict):
         raw_shots = list(raw_shots.values())
 
-    # Flexible key resolution: check alternative Context-IR keys
     if not raw_shots:
         for alt_key in ("integrated_multimodal_description", "detailed_description", "body", "description", "prompt", "video_prompt", "video_description", "content"):
             val = data.get(alt_key)
@@ -626,7 +663,6 @@ def parse_reply(content: str, mode: str, shots: int, cuts: int = 0, piece: bool 
 
     bodies = [b for b, _, _, _, _, _ in written]
 
-    # Split single monolithic body if multiple shots were expected
     if len(bodies) == 1 and shots > 1 and contextir.count_shots(bodies[0]) > 1:
         split_b = _split_into_shots(bodies[0])
         if len(split_b) >= shots:
@@ -663,7 +699,7 @@ def parse_reply(content: str, mode: str, shots: int, cuts: int = 0, piece: bool 
     return out
 
 
-def _number(groups, images, limit, shared=frozenset()):
+def _number(groups: list[list[dict]], images: list[any], limit: int, shared: frozenset = frozenset()) -> tuple[int, list[any]]:
     kept, seen, dropped, position = [], {}, 0, 0
     for slots in groups:
         for slot in slots:
@@ -692,16 +728,16 @@ def _number(groups, images, limit, shared=frozenset()):
 _QUOTED_RE = re.compile(r'"([^"\n]{2,120})"|“([^”\n]{2,120})”')
 
 
-def _plain(text):
+def _plain(text: str) -> str:
     text = text.replace("’", "'").replace("‘", "'").replace("“", '"').replace("”", '"')
     return re.sub(r"\s+", " ", text).lower()
 
 
-def quoted(text):
+def quoted(text: str) -> list[str]:
     return [a or b for a, b in _QUOTED_RE.findall(text or "")]
 
 
-def _lcs_length(a, b):
+def _lcs_length(a: list[str], b: list[str]) -> int:
     if not a or not b:
         return 0
     m, n = len(a), len(b)
@@ -718,7 +754,7 @@ def _lcs_length(a, b):
     return dp[n]
 
 
-def dropped_quotes(requests, written):
+def dropped_quotes(requests: list[str], written: str) -> list[str]:
     haystack = _plain(written or "")
     haystack_words = re.findall(r"\w+", haystack)
     haystack_clean = " ".join(haystack_words)

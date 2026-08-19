@@ -10,6 +10,9 @@ import {
 } from "./canvas.js";
 import { t } from "./i18n.js";
 
+// ==============================================================================
+// Reference Capacity & Handles
+// ==============================================================================
 export const MAX_REF_IMAGES = 9;
 export const MAX_REF_VIDEOS = 3;
 export const MAX_REF_AUDIOS = 3;
@@ -28,6 +31,9 @@ export const TAKES = ["full", "person", "object", "scene", "style"];
 export const takes = (asset) => (TAKES.includes(asset.takes) ? asset.takes : "full");
 export const takeable = (asset) => asset.kind === "image" && asset.role === "reference";
 
+// ==============================================================================
+// Models & Checkpoints
+// ==============================================================================
 export const MODEL_FIELDS = ["fl2va", "ref2va", "clip", "vae", "audio_vae", "preview"];
 export const MODEL_LABEL = {
   fl2va: "FL2VA checkpoint",
@@ -134,6 +140,9 @@ export function missingModels(models, required) {
     .sort((a, b) => MODEL_FIELDS.indexOf(a) - MODEL_FIELDS.indexOf(b));
 }
 
+// ==============================================================================
+// Turbo LoRA Accelerators
+// ==============================================================================
 export const TURBO_QUALITIES = ["draft", "medium", "good"];
 export const TURBO_STEPS = { draft: 4, medium: 6, good: 8 };
 export const TURBO_SAMPLER = "euler";
@@ -183,6 +192,9 @@ export function serializeTurbo(turbo) {
   return { turbo: out };
 }
 
+// ==============================================================================
+// LoRA & Upscale Settings
+// ==============================================================================
 export const CHECKPOINTS = ["fl2va", "ref2va"];
 export const CHECKPOINT_LABEL = { fl2va: "FL2VA", ref2va: "Ref2VA" };
 export const CHECKPOINT_CHOICES = ["auto", ...CHECKPOINTS];
@@ -239,6 +251,9 @@ export function parseLoras(raw) {
   }).filter(Boolean);
 }
 
+// ==============================================================================
+// State Factory & Parser for Single Node (Creator)
+// ==============================================================================
 export function emptyState() {
   return {
     version: 1,
@@ -260,6 +275,8 @@ export function emptyState() {
     refine_turbo_only: false,
     save_pass1: false,
     clean_vram: true,
+    tiled_vae: false,
+    vae_tile_size: 512,
     rtx_upscale: false,
     rtx_scale: DEFAULT_UPSCALE_SCALE,
     rtx_quality: DEFAULT_RTX_QUALITY,
@@ -292,6 +309,8 @@ export function parseState(raw) {
       state.refine_turbo_only = state.refine_turbo_only === true;
       state.save_pass1 = state.save_pass1 === true;
       state.clean_vram = state.clean_vram !== false;
+      state.tiled_vae = state.tiled_vae === true;
+      state.vae_tile_size = Number(state.vae_tile_size || 512);
       state.rtx_upscale = state.rtx_upscale === true || state.upscale === "rtx_vsr";
       state.rtx_scale = Number(state.rtx_scale || DEFAULT_UPSCALE_SCALE);
       state.rtx_quality = RTX_QUALITIES.includes(state.rtx_quality) ? state.rtx_quality : DEFAULT_RTX_QUALITY;
@@ -330,7 +349,7 @@ function serializeRefined(refined) {
   return {
     refined: {
       ...(body ? { body } : {}),
-      ...(refined.scope === "shot" ? { scope: "shot" } : {}),
+      ...(refined.scope ? { scope: refined.scope } : {}),
       ...(sections ? { sections: { ...sections } } : {}),
       source: refined.source ?? "",
       ...(refined.model ? { model: refined.model } : {}),
@@ -392,6 +411,8 @@ export function serializeState(state) {
     ...(state.refine_turbo_only ? { refine_turbo_only: true } : {}),
     ...(state.save_pass1 ? { save_pass1: true } : {}),
     ...(state.clean_vram === false ? { clean_vram: false } : {}),
+    ...(state.tiled_vae ? { tiled_vae: true } : {}),
+    ...(state.vae_tile_size && state.vae_tile_size !== 512 ? { vae_tile_size: state.vae_tile_size } : {}),
     ...(state.rtx_upscale ? { rtx_upscale: true } : {}),
     ...(state.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: state.rtx_scale } : {}),
     ...(state.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: state.rtx_quality } : {}),
@@ -400,6 +421,9 @@ export function serializeState(state) {
   }, null, 2);
 }
 
+// ==============================================================================
+// Timeline Settings, Tracks, Segments & Parser
+// ==============================================================================
 export const MAX_SEGMENTS = 24;
 export const RENDER_MODES = ["chained", "single"];
 export const isSingle = (timeline) => timeline?.render === "single";
@@ -456,6 +480,8 @@ export function emptyTimeline() {
     refine_turbo_only: false,
     save_pass1: false,
     clean_vram: true,
+    tiled_vae: false,
+    vae_tile_size: 512,
     rtx_upscale: false,
     rtx_scale: DEFAULT_UPSCALE_SCALE,
     rtx_quality: DEFAULT_RTX_QUALITY,
@@ -483,6 +509,8 @@ export function syncTimeline(timeline) {
     segment.refine_turbo_only = timeline.refine_turbo_only;
     segment.save_pass1 = timeline.save_pass1;
     segment.clean_vram = timeline.clean_vram;
+    segment.tiled_vae = timeline.tiled_vae;
+    segment.vae_tile_size = timeline.vae_tile_size;
     segment.rtx_upscale = timeline.rtx_upscale;
     segment.rtx_scale = timeline.rtx_scale;
     segment.rtx_quality = timeline.rtx_quality;
@@ -536,6 +564,8 @@ export function parseTimeline(raw) {
       timeline.refine_turbo_only = timeline.refine_turbo_only === true;
       timeline.save_pass1 = timeline.save_pass1 === true;
       timeline.clean_vram = timeline.clean_vram !== false;
+      timeline.tiled_vae = timeline.tiled_vae === true;
+      timeline.vae_tile_size = Number(timeline.vae_tile_size || 512);
       timeline.rtx_upscale = timeline.rtx_upscale === true || timeline.upscale === "rtx_vsr";
       timeline.rtx_scale = Number(timeline.rtx_scale || DEFAULT_UPSCALE_SCALE);
       timeline.rtx_quality = RTX_QUALITIES.includes(timeline.rtx_quality) ? timeline.rtx_quality : DEFAULT_RTX_QUALITY;
@@ -592,6 +622,8 @@ export function serializeTimeline(timeline) {
     ...(timeline.refine_turbo_only ? { refine_turbo_only: true } : {}),
     ...(timeline.save_pass1 ? { save_pass1: true } : {}),
     ...(timeline.clean_vram === false ? { clean_vram: false } : {}),
+    ...(timeline.tiled_vae ? { tiled_vae: true } : {}),
+    ...(timeline.vae_tile_size && timeline.vae_tile_size !== 512 ? { vae_tile_size: timeline.vae_tile_size } : {}),
     ...(timeline.rtx_upscale ? { rtx_upscale: true } : {}),
     ...(timeline.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: timeline.rtx_scale } : {}),
     ...(timeline.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: timeline.rtx_quality } : {}),
@@ -825,7 +857,7 @@ export function hasReferences(state) {
 }
 
 export function frameFile(state) {
-  return !!(frameAsset(state, "first_frame") || frameAsset(state, "last_frame"));
+  return Boolean(frameAsset(state, "first_frame") || frameAsset(state, "last_frame"));
 }
 
 export function mode(state) {
@@ -892,7 +924,6 @@ export function blockedReason(state, action) {
 // ==============================================================================
 // PreStage Image Model & Still Constants & Helpers
 // ==============================================================================
-
 export const PRESTAGE_ARCHES = ["krea2", "ideogram4", "minimax"];
 export const PRESTAGE_ARCH_LABEL = {
   krea2: "Krea 2",
@@ -947,7 +978,7 @@ export const PRESTAGE_FIELD_HINT = {
   krea2: {
     model: "Krea 2 RAW — the full 12.9B base DiT. Used when Turbo is off.",
     turbo_model: "Krea 2 Turbo — the 8-step distilled checkpoint. Used when Turbo is on.",
-    clip: "Qwen3-VL-4B or 8B. Loaded as CLIPLoader type 'krea2'.",
+    clip: "Qwen2.5-VL-7B (hidden size 2560). Loaded as CLIPLoader type 'krea2'.",
     vae: "Qwen Image VAE — decodes the 16-channel latent into pixels.",
   },
   ideogram4: {
@@ -1042,8 +1073,23 @@ export function guessPreStageModels(models, byFolder) {
       if (hit) { side.turbo_model = hit; changed = true; }
     }
     if (!side.clip) {
-      const hit = clips.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes(arch));
-      if (hit) { side.clip = hit; changed = true; }
+      if (arch === "krea2") {
+        const hit = clips.find((n) =>
+          !n.toLowerCase().includes("minimax") &&
+          (n.toLowerCase().includes("krea") ||
+           n.toLowerCase().includes("qwen2.5_vl_7b") ||
+           n.toLowerCase().includes("qwen2.5-vl-7b") ||
+           n.toLowerCase().includes("qwen2-vl-7b") ||
+           (n.toLowerCase().includes("qwen") && n.toLowerCase().includes("7b"))));
+        if (hit) { side.clip = hit; changed = true; }
+        else {
+          const fallback = clips.find((n) => !n.toLowerCase().includes("minimax") && n.toLowerCase().includes("qwen"));
+          if (fallback) { side.clip = fallback; changed = true; }
+        }
+      } else {
+        const hit = clips.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes(arch));
+        if (hit) { side.clip = hit; changed = true; }
+      }
     }
     if (!side.vae) {
       const hit = vaes.find((n) => n.toLowerCase().includes("qwen") || n.toLowerCase().includes("flux") || n.toLowerCase().includes("sd3"));

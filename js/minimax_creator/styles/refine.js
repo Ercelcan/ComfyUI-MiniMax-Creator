@@ -1,4 +1,8 @@
 export const css = `
+/* ==========================================================================
+   MINIMAX H3 PROMPT REFINER & AI STREAMING STYLING
+   ========================================================================== */
+
 /* Micro-Toolbar Refine Button Group (Inside Shot Inspector) */
 .mmc-micro-refine-group {
   display: inline-flex;
@@ -143,37 +147,42 @@ export const css = `
   display: block;
 }
 
-/* Active Running & Spinner Animations */
+/* Busy Active State Animations */
+.mmc-nle-deck-refine-btn.busy,
+.mmc-micro-tool.busy,
 .mmc-tool.busy .mmc-tool-icon,
-.mmc-refine-split.pill button.busy,
-.mmc-micro-tool.busy {
+.mmc-refine-split.pill.busy .mmc-nle-deck-refine-btn,
+.mmc-micro-refine-group.busy .mmc-micro-tool {
+  background: var(--mmc-accent, #f0a63c) !important;
+  color: #141414 !important;
   border-color: var(--mmc-accent) !important;
-  color: var(--mmc-accent) !important;
   cursor: progress !important;
-  animation: mmc-shimmer 1.5s infinite linear;
+  animation: mmc-pulse-glow 1.2s infinite ease-in-out;
 }
 
 .mmc-refine-spinner {
   display: inline-block;
   width: 12px;
   height: 12px;
-  border: 2px solid rgba(240, 166, 60, 0.3);
-  border-top-color: var(--mmc-accent);
+  border: 2px solid rgba(0, 0, 0, 0.25);
+  border-top-color: #000;
   border-radius: 50%;
-  animation: mmc-spin 0.8s infinite linear;
-  margin-right: 2px;
+  animation: mmc-spin 0.75s infinite linear;
+  margin-right: 4px;
+  flex-shrink: 0;
 }
 
 @keyframes mmc-spin {
   to { transform: rotate(360deg); }
 }
 
-@keyframes mmc-shimmer {
-  0% { box-shadow: 0 0 0 0 rgba(240, 166, 60, 0.4); }
-  50% { box-shadow: 0 0 10px 2px rgba(240, 166, 60, 0.6); }
-  100% { box-shadow: 0 0 0 0 rgba(240, 166, 60, 0.4); }
+@keyframes mmc-pulse-glow {
+  0% { box-shadow: 0 0 0 0 rgba(240, 166, 60, 0.6); }
+  50% { box-shadow: 0 0 12px 2px rgba(240, 166, 60, 0.9); }
+  100% { box-shadow: 0 0 0 0 rgba(240, 166, 60, 0.6); }
 }
 
+/* Refiner Settings Popover */
 .mmc-refine-pop {
   width: 360px;
   max-width: 94vw;
@@ -271,6 +280,86 @@ export const css = `
   font-weight: 500;
 }
 
+/* Live Streaming UI Component */
+.mmc-stream-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 4px 2px 8px;
+  font-size: 12px;
+  color: var(--mmc-accent, #f0a63c);
+  font-weight: 600;
+}
+.mmc-stream-label {
+  font-size: 12px;
+  color: var(--mmc-accent, #f0a63c);
+}
+.mmc-stream-meter {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 10.5px;
+  background: rgba(0, 0, 0, 0.45);
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  padding: 2px 6px;
+  border-radius: 6px;
+  color: var(--mmc-dim, #8b8b8b);
+}
+.mmc-stream-cancel-btn {
+  font-size: 11px;
+  color: #f87171 !important;
+  padding: 2px 6px;
+}
+.mmc-stream-cancel-btn:hover {
+  background: rgba(239, 68, 68, 0.2) !important;
+  color: #fff !important;
+}
+
+.mmc-stream-thought-fold {
+  background: rgba(0, 0, 0, 0.5) !important;
+  border: 1px solid rgba(255, 255, 255, 0.08) !important;
+  margin-bottom: 6px;
+}
+.mmc-stream-thought-text {
+  padding: 6px 4px;
+  color: var(--mmc-dim, #8b8b8b);
+  font-size: 11px;
+  line-height: 1.45;
+  max-height: 120px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.mmc-stream-live-box {
+  width: 100%;
+  box-sizing: border-box;
+  min-height: 80px;
+  max-height: 280px;
+  background: var(--mmc-surface, #1c1c1c);
+  border: 1px solid rgba(240, 166, 60, 0.4);
+  border-radius: 12px;
+  color: var(--mmc-text, #ededed);
+  font-family: inherit;
+  font-size: 13px;
+  line-height: 1.55;
+  padding: 10px 12px;
+  overflow-y: auto;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.mmc-stream-cursor {
+  display: inline-block;
+  color: var(--mmc-accent, #f0a63c);
+  animation: mmc-blink 0.8s infinite;
+  margin-left: 2px;
+}
+
+@keyframes mmc-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
+}
+
+/* Refined Result Display Container */
 .mmc-refined {
   display: flex;
   flex-direction: column;

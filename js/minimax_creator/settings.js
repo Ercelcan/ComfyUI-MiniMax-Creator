@@ -25,6 +25,7 @@ export function openSettings() {
 const TABS = [
   { key: "quality", label: "Quality" },
   { key: "folders", label: "Folders" },
+  { key: "performance", label: "VAE & Performance" },
   { key: "editor", label: "Editor" },
   { key: "preview", label: "Preview" },
 ];
@@ -114,6 +115,7 @@ class SettingsPage {
       ...(this.problem ? [el("div", { class: "mmc-set-problem", text: this.problem })] : []),
       ...(this.tab === "quality" ? [this.renderQuality()]
          : this.tab === "folders" ? this.renderFolders()
+         : this.tab === "performance" ? [this.renderPerformance()]
          : this.tab === "editor" ? [this.renderEditor()]
          : [this.renderPreview()]),
     );
@@ -152,6 +154,53 @@ class SettingsPage {
           }),
         ]),
       ]);
+  }
+
+  renderPerformance() {
+    const isTiled = this.settings.tiled_vae === true;
+    const tileSize = Number(this.settings.vae_tile_size || 512);
+
+    const tiledOptions = [
+      { enabled: true, label: "Enabled (Tiled VAE)",
+        note: "Decodes latents in spatial tiles (e.g. 512x512) to drastically reduce peak VRAM usage during VAE decoding of high-res video and stills." },
+      { enabled: false, label: "Disabled (Full VAE)",
+        note: "Decodes full frame tensors in one single pass. Faster on high-VRAM GPUs (24GB+), but may OOM on large resolutions." },
+    ];
+
+    const tileSizes = [256, 384, 512, 768, 1024];
+
+    return el("div", {}, [
+      this.section("Memory Optimization", "Tiled VAE Decoder",
+        "Enable spatial tiled VAE decoding across Creator, Timeline, and PreStage nodes.",
+        [
+          el("div", { class: "mmc-set-choices" }, tiledOptions.map((opt) => el("button", {
+            class: "mmc-opt mmc-set-opt",
+            "aria-checked": opt.enabled === isTiled,
+            onclick: () => {
+              if (opt.enabled !== isTiled) {
+                this.set({ tiled_vae: opt.enabled });
+              }
+            },
+          }, [
+            el("span", { class: "mmc-radio" }),
+            el("span", { class: "mmc-set-opt-text" }, [
+              el("span", { class: "mmc-set-opt-label", text: t(opt.label) }),
+              el("span", { class: "mmc-set-opt-note", text: t(opt.note) }),
+            ]),
+            el("span", { class: "mmc-set-value", text: opt.enabled ? t("on") : t("off") }),
+          ]))),
+        ]),
+      this.section("Performance", "VAE Tile Size",
+        "Set spatial tile dimension. 512px is the recommended default.",
+        [
+          el("div", { class: "mmc-chips", style: { marginTop: "8px" } }, tileSizes.map((sz) => el("button", {
+            class: "mmc-chip",
+            "aria-checked": sz === tileSize,
+            text: `${sz}px`,
+            onclick: () => this.set({ vae_tile_size: sz }),
+          }))),
+        ]),
+    ]);
   }
 
   renderEditor() {

@@ -1,69 +1,137 @@
-// Pre-stage and the frame grab.
-// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
 /* ---- pre-stage --------------------------------------------------------------
    The image node wears the Creator's clothes: same tokens, same pills, same
-   chip vocabulary. Only what it does not share is styled here. */
+   chip vocabulary with unified PromptBox styling and parity. */
 
-/* A plain textarea, not the contenteditable PromptBox: an image prompt has no
-   @-handles to chip. Dressed exactly like the timeline's prompt box. */
-.mmc-prestage-prompt {
-  width: 100%; box-sizing: border-box; min-height: 96px; resize: vertical;
-  background: var(--mmc-surface); border: 1px solid var(--mmc-line); border-radius: 14px;
-  color: var(--mmc-text); font-family: inherit; font-size: 14px; line-height: 1.5;
-  padding: 14px 16px; outline: none;
+.mmc-prestage .mmc-panel {
+  min-height: 160px;
 }
-.mmc-prestage-prompt:focus { border-color: rgba(255,255,255,.2); }
-.mmc-prestage-prompt::placeholder { color: var(--mmc-off); }
 
-/* The spawn pill. On, it wears the accent the continue pill wears — the
-   pre-stage is part of this shot now, which is a stronger statement than the
-   accelerators' blue "not native". */
-.mmc-prestage-toggle.on { border-color: rgba(240,166,60,.5); color: var(--mmc-accent); }
-.mmc-prestage-toggle.on:hover:not(:disabled) { border-color: rgba(240,166,60,.8); }
+/* The spawn pill. On, it wears the accent the continue pill wears */
+.mmc-prestage-toggle.on { 
+  border-color: rgba(240,166,60,.5); 
+  color: var(--mmc-accent); 
+}
+.mmc-prestage-toggle.on:hover:not(:disabled) { 
+  border-color: rgba(240,166,60,.8); 
+}
 
-/* The left-hand satellite anchors on its right edge (satellite.js sets the
-   transform); nothing else about the card changes side. */
-.mmc-satellite-left { transform-origin: 100% 0; }
+/* The left-hand satellite anchors on its right edge */
+.mmc-satellite-left { 
+  transform-origin: 100% 0; 
+}
 
-/* The hand-off chips on a finished still — real buttons in the readout row,
-   dressed like the gallery chip so the overlay stays one vocabulary. The
-   readout swallows the pointer (see above), so like the gallery chip these
-   have to opt back in or they are pictures of buttons. */
+/* Hand-off chips on a finished still */
 .mmc-stage-send {
   pointer-events: auto;
-  background: rgba(0,0,0,.55); border: 1px solid #4a4a4a; border-radius: 999px;
-  padding: 3px 10px; cursor: pointer; font-family: inherit; font-size: 12px;
+  background: rgba(0,0,0,.55); 
+  border: 1px solid #4a4a4a; 
+  border-radius: 999px;
+  padding: 3px 10px; 
+  cursor: pointer; 
+  font-family: inherit; 
+  font-size: 11.5px;
   color: #ededed;
+  transition: all .12s ease;
 }
-.mmc-stage-send:hover { border-color: var(--mmc-accent); color: var(--mmc-accent); }
+.mmc-stage-send:hover { 
+  border-color: var(--mmc-accent); 
+  color: var(--mmc-accent); 
+  background: rgba(0,0,0,.85);
+}
 
-/* ---- the frame grab ---------------------------------------------------------
-   The trim editor's scrubbing with a different ending; dressed like it too. */
+.mmc-stage-send-queue {
+  pointer-events: auto;
+  background: var(--mmc-accent, #f0a63c); 
+  border: 1px solid transparent; 
+  border-radius: 999px;
+  padding: 3px 12px; 
+  cursor: pointer; 
+  font-family: inherit; 
+  font-size: 11.5px;
+  font-weight: 600;
+  color: #111;
+  transition: all .12s ease;
+}
+.mmc-stage-send-queue:hover { 
+  background: #f5b85c;
+  color: #000;
+}
+
+/* ---- the frame grab --------------------------------------------------------- */
 .mmc-grab-card {
-  display: flex; flex-direction: column; gap: 14px;
-  width: min(720px, 92vw); padding: 20px 24px;
-  background: var(--mmc-bg); border: 1px solid var(--mmc-line); border-radius: 18px;
+  display: flex; 
+  flex-direction: column; 
+  gap: 14px;
+  width: min(720px, 92vw); 
+  padding: 20px 24px;
+  background: var(--mmc-bg); 
+  border: 1px solid var(--mmc-line); 
+  border-radius: 18px;
   box-shadow: 0 24px 64px rgba(0,0,0,.55);
   font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
-  color: var(--mmc-text); font-size: 13px;
+  color: var(--mmc-text); 
+  font-size: 13px;
 }
-.mmc-grab-title { display: flex; align-items: center; gap: 8px; font-size: 14px; }
-.mmc-grab-title svg { stroke: currentColor; fill: none; stroke-width: 1.6; }
+.mmc-grab-title { 
+  display: flex; 
+  align-items: center; 
+  gap: 8px; 
+  font-size: 14px; 
+}
+.mmc-grab-title svg { 
+  stroke: currentColor; 
+  fill: none; 
+  stroke-width: 1.6; 
+}
 .mmc-grab-stage {
-  width: 100%; max-height: 46vh; object-fit: contain;
-  background: #000; border-radius: 12px;
+  width: 100%; 
+  max-height: 46vh; 
+  object-fit: contain;
+  background: #000; 
+  border-radius: 12px;
 }
-.mmc-grab-row { display: flex; align-items: center; gap: 10px; }
-.mmc-grab-scrub { flex: 1; }
-.mmc-grab-time { min-width: 64px; text-align: right; color: var(--mmc-dim); font-variant-numeric: tabular-nums; }
-.mmc-grab-actions { display: flex; justify-content: flex-end; gap: 12px; }
+.mmc-grab-row { 
+  display: flex; 
+  align-items: center; 
+  gap: 10px; 
+}
+.mmc-grab-scrub { 
+  flex: 1; 
+}
+.mmc-grab-time { 
+  min-width: 64px; 
+  text-align: right; 
+  color: var(--mmc-dim); 
+  font-variant-numeric: tabular-nums; 
+}
+.mmc-grab-actions { 
+  display: flex; 
+  justify-content: flex-end; 
+  gap: 12px; 
+}
 .mmc-grab-actions .mmc-btn {
-  padding: 8px 18px; border-radius: 999px; cursor: pointer; font-family: inherit;
-  font-size: 13px; background: var(--mmc-surface-2); color: var(--mmc-text);
+  padding: 8px 18px; 
+  border-radius: 999px; 
+  cursor: pointer; 
+  font-family: inherit;
+  font-size: 13px; 
+  background: var(--mmc-surface-2); 
+  color: var(--mmc-text);
   border: 1px solid var(--mmc-line);
+  transition: all .12s ease;
 }
-.mmc-grab-actions .mmc-btn:hover:not(:disabled) { border-color: rgba(255,255,255,.25); }
-.mmc-grab-actions .mmc-btn-primary { background: var(--mmc-accent); color: #141414; border-color: transparent; }
-.mmc-grab-actions .mmc-btn:disabled { opacity: .5; cursor: progress; }
+.mmc-grab-actions .mmc-btn:hover:not(:disabled) { 
+  border-color: rgba(255,255,255,.25); 
+}
+.mmc-grab-actions .mmc-btn-primary { 
+  background: var(--mmc-accent); 
+  color: #141414; 
+  border-color: transparent; 
+  font-weight: 600;
+}
+.mmc-grab-actions .mmc-btn:disabled { 
+  opacity: .5; 
+  cursor: progress; 
+}
 `;

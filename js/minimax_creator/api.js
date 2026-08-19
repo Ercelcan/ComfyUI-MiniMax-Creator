@@ -116,12 +116,19 @@ let modelsAt = 0;
 let modelsCache = null;
 let modelsInFlight = null;
 
+export function invalidateModelsCache() {
+  modelsCache = null;
+  modelsAt = 0;
+}
+
 export async function listModels({ force = false } = {}) {
+  if (force) invalidateModelsCache();
   if (!force && modelsCache && Date.now() - modelsAt < 60000) return modelsCache;
   if (!force && modelsInFlight) return modelsInFlight;
   modelsInFlight = (async () => {
     try {
-      const response = await api.fetchApi("/minimax_creator/models");
+      const url = force ? "/minimax_creator/models?refresh=1" : "/minimax_creator/models";
+      const response = await api.fetchApi(url);
       if (!response.ok) throw new Error(t("model listing failed ({status})", { status: response.status }));
       modelsCache = await response.json();
       modelsAt = Date.now();
@@ -210,7 +217,6 @@ export function viewUrl(path, { preview = false } = {}) {
   const clean = annotated ? annotated[1] : str;
   const at = clean.lastIndexOf("/");
 
-  // Videos must NEVER be requested with /view?preview=webp because Pillow crashes on video files!
   const isVideo = /\.(mp4|webm|mov|mkv|avi)$/i.test(clean);
   if (isVideo && preview) {
     return thumbUrl(path);

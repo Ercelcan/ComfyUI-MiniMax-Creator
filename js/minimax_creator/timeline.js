@@ -1315,51 +1315,50 @@ export class TimelineBody {
   }
 
   async refineAll() {
-    confirmIfOpenRouter({
-      actionLabel: t("Refine entire timeline ({count} shots)", { count: this.timeline.segments.length }),
-      onConfirm: async () => {
-        try {
-          this.pushUndoSnapshot("Refine Entire Timeline");
-          const payloadData = JSON.parse(S.serializeTimeline(this.timeline));
-          payloadData.ai_seam_mode = this.aiSeamMode;
+    try {
+      this.pushUndoSnapshot("Refine Entire Timeline");
+      const payloadData = JSON.parse(S.serializeTimeline(this.timeline));
+      payloadData.ai_seam_mode = this.aiSeamMode;
 
-          const result = await refine({ kind: "timeline", data: payloadData });
+      const result = await refine({
+        kind: "timeline",
+        data: payloadData,
+        node_id: typeof this.nodeId === "function" ? this.nodeId() : this.nodeId,
+      });
 
-          if (result.shots) {
-            for (const shot of result.shots) {
-              const seg = this.timeline.segments[shot.index];
-              if (seg && shot.body) {
-                seg.refined = {
-                  body: shot.body,
-                  scope: "shot",
-                  source: seg.prompt || "",
-                  model: refineModel(),
-                  enabled: true,
-                };
-                if (shot.soundscape) seg.soundscape = shot.soundscape;
-                if (shot.music) seg.music = shot.music;
-                if (this.aiSeamMode === "auto" && shot.auto_seam) {
-                  seg.continue = shot.auto_seam.continue === true;
-                  seg.continue_audio = shot.auto_seam.continue_audio === true;
-                  seg.continuity_mode = shot.auto_seam.continuity_mode || "latent_mask";
-                  if (shot.auto_seam.feather) seg.feather = shot.auto_seam.feather;
-                }
-              }
+      if (result.shots) {
+        for (const shot of result.shots) {
+          const seg = this.timeline.segments[shot.index];
+          if (seg && shot.body) {
+            seg.refined = {
+              body: shot.body,
+              scope: "shot",
+              source: seg.prompt || "",
+              model: refineModel(),
+              enabled: true,
+            };
+            if (shot.soundscape) seg.soundscape = shot.soundscape;
+            if (shot.music) seg.music = shot.music;
+            if (this.aiSeamMode === "auto" && shot.auto_seam) {
+              seg.continue = shot.auto_seam.continue === true;
+              seg.continue_audio = shot.auto_seam.continue_audio === true;
+              seg.continuity_mode = shot.auto_seam.continuity_mode || "latent_mask";
+              if (shot.auto_seam.feather) seg.feather = shot.auto_seam.feather;
             }
           }
-
-          if (result.piece) {
-            this.timeline.prompt = result.piece;
-            this.promptBox.setValue(result.piece);
-          }
-
-          this.commit();
-        } catch (e) {
-          console.error(e);
-          alert(t("Refine failed: {error}", { error: e.message || e }));
         }
-      },
-    });
+      }
+
+      if (result.piece) {
+        this.timeline.prompt = result.piece;
+        this.promptBox.setValue(result.piece);
+      }
+
+      this.commit();
+    } catch (e) {
+      console.error(e);
+      alert(t("Refine failed: {error}", { error: e.message || e }));
+    }
   }
 
   renderCinemaMonitor() {

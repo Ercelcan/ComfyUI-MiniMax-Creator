@@ -58,10 +58,6 @@ function diffWords(oldText, newText) {
   return result;
 }
 
-/**
- * Recursively extracts plain text from contenteditable DOM while strictly
- * converting <div>, <p>, <br> blocks into clean \n line breaks.
- */
 function extractStructuredText(elNode) {
   let text = "";
   for (const node of elNode.childNodes) {
@@ -101,7 +97,7 @@ export class PromptBox {
       autocomplete: "off",
       role: "textbox",
       "aria-multiline": "true",
-      "data-placeholder": t("Describe your video with structured lines...\n• Subject:\n• Environment:\n• Camera & Action:"),
+      "data-placeholder": t("Describe your video or still image with structured details...\n• Subject & Wardrobe:\n• Environment & Lighting:\n• Camera & Action:"),
     });
 
     this.wordCountEl = el("span", { class: "mmc-prompt-wordcount", text: "0 words" });

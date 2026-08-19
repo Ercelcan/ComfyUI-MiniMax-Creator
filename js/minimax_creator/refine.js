@@ -142,35 +142,41 @@ export async function cancelRefine(nodeId) {
 export function confirmIfOpenRouter({ actionLabel = "Refine prompt", onConfirm }) {
   const current = settings();
   if (current.provider !== "openrouter") {
-    onConfirm();
-    return;
+    return Promise.resolve(onConfirm());
   }
 
-  const modelName = current.model || "selected model";
-  let unmount;
-  const modal = el("div", { class: "mmc-modal mmc-confirm-modal" }, [
-    el("div", { class: "mmc-modal-head" }, [
-      el("span", { class: "mmc-tab", "aria-selected": "true", text: t("OpenRouter API Confirmation") }),
-    ]),
-    el("div", { class: "mmc-confirm-body" }, [
-      el("div", { class: "mmc-confirm-msg", text: t("Send request to OpenRouter using {model}?", { model: modelName }) }),
-      el("div", { class: "mmc-confirm-sub", style: { color: "var(--mmc-accent)" }, text: t("This action will consume your OpenRouter API credits for: {action}", { action: actionLabel }) }),
-    ]),
-    el("div", { class: "mmc-modal-foot" }, [
-      el("button", { class: "mmc-ghost", text: t("Cancel"), onclick: () => unmount?.() }),
-      el("button", { class: "mmc-add", text: t("Confirm & Run"), onclick: () => {
-        unmount?.();
-        onConfirm();
-      }}),
-    ]),
-  ]);
+  return new Promise((resolve, reject) => {
+    const modelName = current.model || "selected model";
+    let unmount;
+    const modal = el("div", { class: "mmc-modal mmc-confirm-modal" }, [
+      el("div", { class: "mmc-modal-head" }, [
+        el("span", { class: "mmc-tab", "aria-selected": "true", text: t("OpenRouter API Confirmation") }),
+      ]),
+      el("div", { class: "mmc-confirm-body" }, [
+        el("div", { class: "mmc-confirm-msg", text: t("Send request to OpenRouter using {model}?", { model: modelName }) }),
+        el("div", { class: "mmc-confirm-sub", style: { color: "var(--mmc-accent)" }, text: t("This action will consume your OpenRouter API credits for: {action}", { action: actionLabel }) }),
+      ]),
+      el("div", { class: "mmc-modal-foot" }, [
+        el("button", { class: "mmc-ghost", text: t("Cancel"), onclick: () => { unmount?.(); resolve(false); } }),
+        el("button", { class: "mmc-add", text: t("Confirm & Run"), onclick: async () => {
+          unmount?.();
+          try {
+            const res = await onConfirm();
+            resolve(res);
+          } catch (err) {
+            reject(err);
+          }
+        }}),
+      ]),
+    ]);
 
-  const overlay = el("div", {
-    class: "mmc-overlay",
-    onpointerdown: (e) => { if (e.target === overlay) unmount?.(); },
-  }, [modal]);
+    const overlay = el("div", {
+      class: "mmc-overlay",
+      onpointerdown: (e) => { if (e.target === overlay) { unmount?.(); resolve(false); } },
+    }, [modal]);
 
-  unmount = mountOverlay(overlay, () => unmount?.());
+    unmount = mountOverlay(overlay, () => { unmount?.(); resolve(false); });
+  });
 }
 
 export function openSettings(anchor, onChange) {
@@ -292,6 +298,7 @@ export function openSettings(anchor, onChange) {
     ["L2VA", "last frame — the rewrite converges on the attached image at the end."],
     ["FL2VA", "first and last frame — the rewrite is the motion path between the two."],
     ["REF2VA", "@ references — the six-section form that defines and tracks them. Follows references automatically; it cannot be pinned without them."],
+    ["IMAGE", "single still image description for PreStage (Krea 2 / Ideogram 4 / H3 stills)."],
   ];
 
   function drawTemplate() {
@@ -624,7 +631,7 @@ export class RefinePanel {
 
     state.refined = {
       body: shot.body,
-      scope: "shot",
+      scope: result.scope || "shot",
       ...(result.sections ? { sections: result.sections } : {}),
       ...(result.skill ? { skill: result.skill } : {}),
       ...(result.template ? { template: result.template, forced: !result.forced } : {}),
@@ -692,7 +699,7 @@ export class RefinePanel {
     if (refined.body && refined.body.trim()) {
       const isRef = Boolean(refined.sections);
       const header = isRef ? "detailed_description:" : "integrated_multimodal_description:";
-      parts.push(`${header}\n${refined.body.trim()}`);
+      parts.push(refined.scope === "image" ? refined.body.trim() : `${header}\n${refined.body.trim()}`);
     }
     if (state.soundscape && state.soundscape.trim()) {
       parts.push(`overall_soundscape:\n${state.soundscape.trim()}`);
@@ -744,7 +751,7 @@ export class RefinePanel {
         class: "mmc-ghost mmc-copy-btn",
         style: { fontSize: "11px" },
         text: t("📋 Copy all"),
-        title: t("Copy full Context-IR formatted prompt"),
+        title: t("Copy full formatted prompt"),
         onclick: async () => {
           const full = this.getFullPromptText();
           if (full) {
@@ -890,10 +897,13 @@ export function refineButton({ run, label = "Refine", title, mode = "auto", clas
     btnClass = `mmc-nle-deck-refine-btn ${className}`.trim();
   }
 
+  let wrapperContainer = null;
+
   const executeRun = async () => {
     if (busy) return;
     busy = true;
     button.classList.add("busy");
+    if (wrapperContainer) wrapperContainer.classList.add("busy");
     spinner.style.display = "inline-block";
     brainIcon.style.display = "none";
     text.textContent = t("Refining…");
@@ -902,6 +912,7 @@ export function refineButton({ run, label = "Refine", title, mode = "auto", clas
     } finally {
       busy = false;
       button.classList.remove("busy");
+      if (wrapperContainer) wrapperContainer.classList.remove("busy");
       spinner.style.display = "none";
       brainIcon.style.display = "";
       text.textContent = t(label);
@@ -910,7 +921,7 @@ export function refineButton({ run, label = "Refine", title, mode = "auto", clas
 
   const button = el("button", {
     class: btnClass,
-    title: title || t("Rewrite prompt with Context-IR AI refiner"),
+    title: title || t("Rewrite prompt with AI refiner"),
     onclick: (e) => {
       e.stopPropagation();
       confirmIfOpenRouter({
@@ -942,12 +953,15 @@ export function refineButton({ run, label = "Refine", title, mode = "auto", clas
   }, [icon("chevron", effectiveMode === "micro" ? 9 : 10)]);
 
   if (effectiveMode === "micro") {
-    return el("div", { class: "mmc-micro-refine-group" }, [button, more]);
+    wrapperContainer = el("div", { class: "mmc-micro-refine-group" }, [button, more]);
+    return wrapperContainer;
   }
 
   if (effectiveMode === "pill") {
-    return el("div", { class: "mmc-refine-split pill" }, [button, more]);
+    wrapperContainer = el("div", { class: "mmc-refine-split pill" }, [button, more]);
+    return wrapperContainer;
   }
 
-  return el("div", { class: "mmc-tool mmc-refine-split" }, [button, more]);
+  wrapperContainer = el("div", { class: "mmc-tool mmc-refine-split" }, [button, more]);
+  return wrapperContainer;
 }

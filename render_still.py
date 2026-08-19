@@ -1,8 +1,11 @@
-"""One still from the video model, as a graph. The PreStage's H3 branch."""
+"""One still from the video model, as a graph. The PreStage's H3 branch with Tiled VAE decode support."""
+
+from __future__ import annotations
 
 import json
+from typing import Any
 
-from . import models, outputs, render
+from . import models, outputs, render, settings
 
 SEGMENT_NODE = "MiniMaxH3TimelineSegment"
 STILL_NODE = "MiniMaxH3StillLatent"
@@ -11,11 +14,11 @@ SAVE_NODE = "MiniMaxH3SaveImage"
 FILENAME_PREFIX = outputs.IMAGE_PREFIX
 
 
-def weights_from_blob(data):
+def weights_from_blob(data: dict | None) -> models.Weights:
     return models.Weights.from_blob(data)
 
 
-def emit(plan, weights, sampling, unique_id, filename_prefix=FILENAME_PREFIX):
+def emit(plan: any, weights: models.Weights, sampling: render.Sampling, unique_id: any, filename_prefix: str = FILENAME_PREFIX) -> tuple[Any, tuple]:
     from comfy_execution.graph_utils import GraphBuilder
 
     labels = ["This still"]
@@ -54,7 +57,11 @@ def emit(plan, weights, sampling, unique_id, filename_prefix=FILENAME_PREFIX):
     )
 
     still = graph.node(STILL_NODE, samples=sampled.out(0), index=plan.index).out(0)
-    image = graph.node("VAEDecode", samples=still, vae=links.vae).out(0)
+
+    use_tiled = settings.tiled_vae() or (compiled[0].height > 768 or compiled[0].width > 1344)
+    tile_size = settings.vae_tile_size()
+
+    image = models.decode_vae_node(graph, samples=still, vae=links.vae, tiled=use_tiled, tile_size=tile_size)
     save = graph.node(SAVE_NODE, images=image, filename_prefix=filename_prefix)
     save.set_override_display_id(unique_id)
 

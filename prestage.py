@@ -1,11 +1,21 @@
 """The MiniMax H3 PreStage node: stills for the pipeline, made on the left."""
 
-import json
+from __future__ import annotations
 
+import json
 from comfy_api.latest import io
 
-from . import (canvas, compile_image, compile_still, media, outputs, render,
-               render_image, render_still, settings)
+from . import (
+    canvas,
+    compile_image,
+    compile_still,
+    media,
+    outputs,
+    render,
+    render_image,
+    render_still,
+    settings,
+)
 
 DEFAULT_DATA = json.dumps({
     "version": 1,
@@ -65,9 +75,8 @@ class MiniMaxH3PreStage(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, prestage_data, **kwargs):
+    def fingerprint_inputs(cls, prestage_data: str, **kwargs) -> tuple:
         import os
-
         from . import lora
 
         stamps = []
@@ -96,7 +105,7 @@ class MiniMaxH3PreStage(io.ComfyNode):
         return (prestage_data, tuple(stamps))
 
     @classmethod
-    def execute(cls, prestage_data, seed, steps, cfg, sampler_name, scheduler) -> io.NodeOutput:
+    def execute(cls, prestage_data: str, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str) -> io.NodeOutput:
         try:
             data = json.loads(prestage_data)
         except json.JSONDecodeError as exc:
@@ -139,7 +148,7 @@ class MiniMaxH3SaveImage(io.ComfyNode):
             node_id="MiniMaxH3SaveImage",
             display_name="MiniMax H3 Save Image",
             category="MiniMax/internal",
-            description="Writes a pre-stage render under output/ and reports it to the stage card.",
+            description="Writes a pre-stage render under output/ and reports it exclusively to the satellite card.",
             is_dev_only=True,
             is_output_node=True,
             inputs=[
@@ -151,13 +160,11 @@ class MiniMaxH3SaveImage(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, images, filename_prefix) -> io.NodeOutput:
+    def execute(cls, images, filename_prefix: str) -> io.NodeOutput:
         import os
-
         import numpy as np
         from PIL import Image
         from PIL.PngImagePlugin import PngInfo
-
         import folder_paths
         from comfy.cli_args import args
 
@@ -182,9 +189,9 @@ class MiniMaxH3SaveImage(io.ComfyNode):
             results.append({"filename": filename, "subfolder": subfolder, "type": "output"})
             counter += 1
 
+        # Return ui={"mmc_image": results} without "images" to prevent duplicate widget inside node body
         return io.NodeOutput(ui={
             "mmc_image": results,
-            "images": results,
         })
 
 
@@ -200,13 +207,13 @@ class MiniMaxH3StillLatent(io.ComfyNode):
             inputs=[
                 io.Latent.Input("samples"),
                 io.Int.Input("index", default=0, min=-4096, max=4096,
-                             tooltip="Which latent frame becomes the picture. 0 is the causal first frame — the slice the image VAE was trained on. Negative counts from the end."),
+                             tooltip="Which latent frame becomes the picture. 0 is the causal first frame. Negative counts from the end."),
             ],
             outputs=[io.Latent.Output()],
         )
 
     @classmethod
-    def execute(cls, samples, index) -> io.NodeOutput:
+    def execute(cls, samples, index: int) -> io.NodeOutput:
         latent = samples["samples"]
         video = latent.unbind()[0] if getattr(latent, "is_nested", False) else latent
         if video.ndim != 5:
