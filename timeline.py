@@ -283,9 +283,21 @@ class MiniMaxH3Timeline(io.ComfyNode):
                 io.Float.Input("cfg", default=1.0, min=0.0, max=100.0, step=0.1, round=0.01),
                 io.Combo.Input("sampler_name", options=comfy.samplers.KSampler.SAMPLERS, default="res_multistep"),
                 io.Combo.Input("scheduler", options=comfy.samplers.KSampler.SCHEDULERS, default="simple"),
-                io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off"),
-                io.Boolean.Input("spectrum", default=False),
-                io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01),
+                io.Combo.Input("speed_preset", options=accel.SPEED_PRESETS, default="off", optional=True,
+                               tooltip="SPEED progressive-resolution sampler: denoises initial layout at lower resolution for +40% speedup. Auto-bypasses on I2V keyframes."),
+                io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off", optional=True),
+                io.Boolean.Input("spectrum", default=False, optional=True),
+                io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01, optional=True),
+                io.Boolean.Input("low_vram_attn", default=False, optional=True,
+                                 tooltip="MiniMax Low VRAM Attention: chunks multi-head attention to prevent VRAM spikes during high-res generation."),
+                io.Int.Input("head_chunks", default=4, min=1, max=16, step=1, optional=True,
+                             tooltip="Number of attention head chunks (4 is recommended for 12GB/16GB VRAM GPUs)."),
+                io.Boolean.Input("chunk_ffn", default=False, optional=True,
+                                 tooltip="MiniMax Chunk FeedForward: chunks FFN (SwiGLU/MLP) layer evaluations along sequence length to stop peak memory crashes."),
+                io.Int.Input("ffn_chunks", default=2, min=1, max=8, step=1, optional=True,
+                             tooltip="Number of sequential chunks for FFN layers."),
+                io.Int.Input("ffn_seq_threshold", default=4096, min=256, max=65536, step=256, optional=True,
+                             tooltip="Sequence token threshold above which FFN chunking activates."),
             ],
             outputs=[
                 io.Image.Output("images", display_name="images"),
@@ -308,7 +320,9 @@ class MiniMaxH3Timeline(io.ComfyNode):
 
     @classmethod
     def execute(cls, timeline_data: str, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str,
-                block_cache: str = "off", spectrum: bool = False, spectrum_blend: float = 0.5) -> io.NodeOutput:
+                speed_preset: str = "off", block_cache: str = "off", spectrum: bool = False, spectrum_blend: float = 0.5,
+                low_vram_attn: bool = False, head_chunks: int = 4,
+                chunk_ffn: bool = False, ffn_chunks: int = 2, ffn_seq_threshold: int = 4096) -> io.NodeOutput:
         from . import render
         data = _parse(timeline_data)
         single = compiler.render_mode(data) == "single"
@@ -319,13 +333,29 @@ class MiniMaxH3Timeline(io.ComfyNode):
         )
         labels = ["This one-pass render"] if single else [f"Segment {i + 1}" for i in range(len(payloads))]
 
+        try:
+            blend_val = float(spectrum_blend) if spectrum_blend not in (None, "") else 0.5
+        except (ValueError, TypeError):
+            blend_val = 0.5
+
+        acceleration = accel.Settings(
+            block_cache=str(block_cache or "off"),
+            spectrum=bool(spectrum),
+            spectrum_blend=blend_val,
+            speed_preset=str(speed_preset or "off"),
+            low_vram_attn=bool(low_vram_attn),
+            head_chunks=int(head_chunks or 4),
+            chunk_ffn=bool(chunk_ffn),
+            ffn_chunks=int(ffn_chunks or 2),
+            ffn_seq_threshold=int(ffn_seq_threshold or 4096),
+        )
+
         graph, result_links = render.emit(
             payloads, labels,
             models.Weights.from_blob(data),
             render.Sampling(seed=seed, steps=steps, cfg=cfg,
                             sampler_name=sampler_name, scheduler=scheduler),
-            accel.Settings(block_cache=block_cache, spectrum=spectrum,
-                           spectrum_blend=spectrum_blend),
+            acceleration,
             cls.hidden.unique_id,
             filename_prefix=outputs.video(data, settings.video_prefix()),
         )
@@ -563,7 +593,6 @@ class MiniMaxH3SaveSegment(io.ComfyNode):
         filename = f"{name}_{counter:05}_.mp4"
         full_path = os.path.join(directory, filename)
 
-        # Chunked stream save: keeps RAM < 200MB
         _save_video_streaming_ffmpeg(images, audio, float(fps), full_path, crf=int(crf))
 
         if latent is not None and _st_save is not None:
@@ -635,7 +664,6 @@ class MiniMaxH3Save(io.ComfyNode):
         filename = f"{name}_{counter:05}_.mp4"
         out_full_path = os.path.join(directory, filename)
 
-        # Chunked stream save: keeps RAM < 300MB regardless of video length
         _save_video_streaming_ffmpeg(
             images=images,
             audio=audio,
@@ -645,8 +673,18 @@ class MiniMaxH3Save(io.ComfyNode):
             metadata=metadata,
         )
 
-        output_item = {"filename": filename, "subfolder": subfolder, "type": "output"}
-        return io.NodeOutput(ui={"mmc_video": [output_item], "videos": [output_item], "gifs": [output_item]})
+        output_item = {
+            "filename": filename,
+            "subfolder": subfolder,
+            "type": "output",
+            "format": "video/mp4",
+        }
+        return io.NodeOutput(ui={
+            "mmc_video": [output_item],
+            "videos": [output_item],
+            "gifs": [output_item],
+            "images": [output_item],
+        })
 
 
 class MiniMaxH3StreamedAssembly(io.ComfyNode):

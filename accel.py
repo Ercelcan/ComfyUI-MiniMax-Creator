@@ -1,105 +1,89 @@
-"""Optional sampling accelerators, wired in rather than reimplemented.
+"""Optional sampling accelerators and VRAM protection modifiers for MiniMax H3.
 
-Two community packs make H3 substantially faster and neither is ours:
-
-- **FirstBlockCache** (`ComfyUI-MiniMaxH3-FirstBlockCache`) skips the rest of the
-  DiT when the first block's residual barely moved between steps.
-- **Spectrum** (`ComfyUI-Spectrum-MiniMax-H3`) forecasts features across steps
-  instead of evaluating every one of them.
-
-Both are MODEL patchers: model in, patched model out, everything else unchanged.
-That is the whole reason this module can be twenty lines of wiring — there is no
-sampling logic here and there must never be any. Copying their maths in would
-mean owning their bugs and freezing their tuning at whatever it was the day it
-was copied, so this only ever *calls* them, and says so plainly when they are
-not installed.
-
-**Why the parameters are read rather than written.** Every required input of a
-node has to be supplied explicitly when it is built into a graph, and both packs
-have a dozen. Hardcoding that many defaults here means they go stale silently the
-first time either pack retunes one — the node would keep running, just no longer
-at the settings its author recommends. So `node_defaults` reads them back off the
-installed class's own `INPUT_TYPES`, and this module only names the handful it
-actually overrides. A pack that gains a knob gets its own default for it.
-
-**Order is `block cache -> spectrum -> sampler`**, which is both packs' own
-advice: FirstBlockCache refuses to sit downstream of another DiT block
-replacement, and Spectrum documents itself as the last patch before the guider.
-They compose — the caches are wrappers and block patches respectively, and
-neither trips the other's conflict check.
-
-Nothing here is Timeline-specific. `graph_apply` is for the nodes that build a
-subgraph and `direct_apply` for the ones holding a real MODEL, so the Creator
-node can take the same settings later without this module changing.
+Supports:
+1. FirstBlockCache (ComfyUI-MiniMaxH3-FirstBlockCache)
+2. Spectrum Forecasting (ComfyUI-Spectrum-MiniMax-H3)
+3. MiniMax Low VRAM Attention (Head chunking)
+4. MiniMax Chunk FeedForward (FFN sequence chunking)
+5. MiniMax H3 SPEED Sampler (Progressive resolution DCT sampling)
 """
 
+from __future__ import annotations
+
 from dataclasses import dataclass
+from typing import Any
 
 BLOCK_CACHE_NODE = "ApplyMiniMaxH3FirstBlockCache"
 SPECTRUM_NODE = "SpectrumApplyMiniMaxH3"
+LOW_VRAM_ATTN_NODE = "MiniMaxLowVRAMAttention"
+CHUNK_FFN_NODE = "MiniMaxChunkFeedForward"
+SPEED_SAMPLER_NODE = "MiniMaxH3SPEEDSampler"
 
-# Where to get each pack, named in the error rather than in a README nobody is
-# reading at the moment the node fails.
 SOURCES = {
     BLOCK_CACHE_NODE: "https://github.com/duckyshell/ComfyUI-MiniMaxH3-FirstBlockCache",
     SPECTRUM_NODE: "https://github.com/xmarre/ComfyUI-Spectrum-MiniMax-H3",
+    LOW_VRAM_ATTN_NODE: "https://github.com/kijai/ComfyUI-KJNodes",
+    CHUNK_FFN_NODE: "https://github.com/kijai/ComfyUI-KJNodes",
+    SPEED_SAMPLER_NODE: "https://github.com/StanLukuvka/ComfyUI-MiniMax-H3-SPEED",
 }
 
-# What the node's `block_cache` widget offers. The values are matched against the
-# *installed* pack's mode list by prefix, because its labels carry the threshold
-# in them ("H3 Fast — 0.10 / max 2") and would break this the first time one is
-# retuned. "off" is not a mode: it means the node is never built.
 BLOCK_CACHE_MODES = ["off", "safe", "fast", "aggressive"]
+
+SPEED_PRESETS = [
+    "off",
+    "Half -> Full (0.5x -> 1.0x) [Balanced / Recommended]",
+    "Three-Quarter -> Full (0.75x -> 1.0x) [Fastest]",
+    "Quarter -> Half -> Full (3-Stage) [High Detail]",
+]
 
 
 @dataclass(frozen=True)
 class Settings:
-    """What the user asked for. Both accelerators off is the default everywhere."""
+    """User preferences for sampling acceleration and VRAM protection."""
 
     block_cache: str = "off"
     spectrum: bool = False
     spectrum_blend: float = 0.5
+    low_vram_attn: bool = False
+    head_chunks: int = 4
+    chunk_ffn: bool = False
+    ffn_chunks: int = 2
+    ffn_seq_threshold: int = 4096
+    speed_preset: str = "off"
+    speed_coarse_steps: int = 0
+    speed_noise_policy: str = "direct_coarse"
 
     @property
-    def any(self):
-        return self.block_cache != "off" or self.spectrum
+    def any(self) -> bool:
+        return (
+            self.block_cache != "off"
+            or self.spectrum
+            or self.low_vram_attn
+            or self.chunk_ffn
+            or self.is_speed_enabled
+        )
+
+    @property
+    def is_speed_enabled(self) -> bool:
+        return self.speed_preset != "off"
 
 
-def _node_class(node_id):
-    """The installed class for `node_id`, or None. Looked up per call.
-
-    Not cached and not imported at module load: a pack installed while ComfyUI is
-    running should not need this one to be reloaded too, and importing either of
-    them here would turn an optional accelerator into a hard dependency.
-    """
+def _node_class(node_id: str) -> Any:
     import nodes
-
     return nodes.NODE_CLASS_MAPPINGS.get(node_id)
 
 
-def _require(node_id):
+def _require(node_id: str) -> Any:
     node = _node_class(node_id)
     if node is None:
         raise ValueError(
-            f"This needs the '{node_id}' node, which is not installed. "
-            f"Get it from {SOURCES[node_id]}, restart ComfyUI, or switch the "
-            f"accelerator off."
+            f"This requires the '{node_id}' node. "
+            f"Get it from {SOURCES.get(node_id, 'ComfyUI Manager')}, restart ComfyUI, or disable the accelerator."
         )
     return node
 
 
-def node_defaults(node, skip=("model",)):
-    """`{input: default}` for every required input the class declares but `skip`.
-
-    Required inputs have to be passed explicitly into a built graph, and reading
-    them back off the class is what keeps this module from carrying a stale copy
-    of somebody else's tuning. An input with no declared default is left out
-    rather than guessed at — ComfyUI will say which one is missing, which is a
-    better error than a number this module invented.
-
-    Public because `models.py` wires up KJNodes' preview override on exactly the
-    same terms, and two copies of this would be two copies of the argument for it.
-    """
+def node_defaults(node: Any, skip: tuple[str, ...] = ("model",)) -> dict[str, Any]:
     spec = node.INPUT_TYPES().get("required", {})
     out = {}
     for name, declared in spec.items():
@@ -111,34 +95,32 @@ def node_defaults(node, skip=("model",)):
     return out
 
 
-def _block_cache_kwargs(node, mode):
-    """The pack's own arguments for one of our three preset names."""
+def _block_cache_kwargs(node: Any, mode: str) -> dict[str, Any]:
     kwargs = node_defaults(node)
     options = node.INPUT_TYPES()["required"]["mode"][0]
     wanted = f"h3 {mode}"
     match = next((o for o in options if str(o).lower().startswith(wanted)), None)
     if match is None:
         raise ValueError(
-            f"'{node.__name__}' has no '{mode}' preset — it offers {list(options)}. "
-            f"The pack has renamed its modes; use its own node directly."
+            f"'{node.__name__}' has no '{mode}' preset — offers {list(options)}."
         )
     kwargs["mode"] = match
     return kwargs
 
 
-def _spectrum_kwargs(node, blend):
+def _spectrum_kwargs(node: Any, blend: float) -> dict[str, Any]:
     kwargs = node_defaults(node)
     kwargs["enabled"] = True
     kwargs["blend_weight"] = float(blend)
     return kwargs
 
 
-def plan(settings):
-    """`[(node_id, kwargs), ...]` in the order they must be applied.
-
-    Shared by both entry points so the graph path and the direct path cannot
-    drift apart on ordering or arguments — the difference between them is only
-    how a node gets run, never which nodes or with what.
+def plan(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
+    """Builds [(node_id, kwargs), ...] in strict pipeline order:
+    1. FirstBlockCache
+    2. Spectrum
+    3. Low VRAM Attention (Head chunking)
+    4. Chunk FeedForward (FFN chunking)
     """
     steps = []
     if settings.block_cache != "off":
@@ -147,29 +129,29 @@ def plan(settings):
     if settings.spectrum:
         node = _require(SPECTRUM_NODE)
         steps.append((SPECTRUM_NODE, _spectrum_kwargs(node, settings.spectrum_blend)))
+    if settings.low_vram_attn:
+        node = _require(LOW_VRAM_ATTN_NODE)
+        kwargs = node_defaults(node)
+        kwargs["head_chunks"] = int(settings.head_chunks)
+        steps.append((LOW_VRAM_ATTN_NODE, kwargs))
+    if settings.chunk_ffn:
+        node = _require(CHUNK_FFN_NODE)
+        kwargs = node_defaults(node)
+        kwargs["chunks"] = int(settings.ffn_chunks)
+        kwargs["seq_threshold"] = int(settings.ffn_seq_threshold)
+        steps.append((CHUNK_FFN_NODE, kwargs))
     return steps
 
 
-def graph_apply(graph, model, settings):
-    """Patch a MODEL *link* inside a `GraphBuilder` subgraph. Returns the new link.
-
-    For the nodes that return an expanded graph rather than tensors. With both
-    accelerators off this returns `model` untouched and adds nothing to the
-    graph — an unused node is still a node ComfyUI has to cache and schedule.
-    """
+def graph_apply(graph: Any, model: Any, settings: Settings) -> Any:
+    """Applies accelerators and VRAM protection patches inside a GraphBuilder subgraph."""
     for node_id, kwargs in plan(settings):
         model = graph.node(node_id, model=model, **kwargs).out(0)
     return model
 
 
-def direct_apply(model, settings):
-    """Patch a real MODEL object. Returns the patched model.
-
-    The Creator node's half of the same contract: it holds a loaded model rather
-    than a link, so it calls the packs the way ComfyUI would. Unused today and
-    kept beside `graph_apply` deliberately — the two are one decision, and
-    splitting them across a later commit is how they stop agreeing.
-    """
+def direct_apply(model: Any, settings: Settings) -> Any:
+    """Directly applies patches to a live MODEL object."""
     for node_id, kwargs in plan(settings):
         node = _require(node_id)
         model = getattr(node(), node.FUNCTION)(model=model, **kwargs)[0]

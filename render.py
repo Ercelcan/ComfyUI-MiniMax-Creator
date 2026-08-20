@@ -1,4 +1,4 @@
-"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining, Tiled VAE Decoding, 2-Pass Refine Upscaling, and NVIDIA RTX VSR."""
+"""Complete Graph Builder for MiniMax H3: Linear Overlap Seam Blending, Latent Chaining, Tiled VAE Decoding, 2-Pass Refine Upscaling, SPEED Progressive Sampling, and NVIDIA RTX VSR."""
 
 from __future__ import annotations
 
@@ -150,27 +150,63 @@ def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampl
             segment = graph.node(SEGMENT_NODE, **inputs)
             against = graph.node("ConditioningZeroOut", conditioning=segment.out(1)).out(0)
 
+            # Apply FirstBlockCache, Spectrum, Low VRAM Attention, and Chunk FeedForward
             model = accel.graph_apply(graph, segment.out(0), acceleration)
             model = models.graph_preview(graph, model, weights)
 
-            # ==========================================
-            # PASS 1: Base Generation (Full Audio + Video)
-            # ==========================================
-            sampled = graph.node(
-                "KSampler",
-                model=model, positive=segment.out(1), negative=against,
-                latent_image=segment.out(2),
-                seed=sampling.seed + index, steps=sampling.steps, cfg=sampling.cfg,
-                sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
-                denoise=1.0,
-            )
-            base_latent = sampled.out(0)
+            # ==================================================================
+            # PASS 1: Base Generation (SPEED Sampler or KSampler)
+            # ==================================================================
+            if acceleration.is_speed_enabled:
+                sigmas_node = graph.node(
+                    "BasicScheduler",
+                    scheduler=sampling.scheduler,
+                    steps=sampling.steps,
+                    denoise=1.0,
+                    model=model,
+                ).out(0)
+
+                guider_node = graph.node(
+                    "BasicGuider",
+                    model=model,
+                    conditioning=segment.out(1),
+                ).out(0)
+
+                noise_node = graph.node(
+                    "RandomNoise",
+                    noise_seed=sampling.seed + index,
+                ).out(0)
+
+                speed_sampled = graph.node(
+                    accel.SPEED_SAMPLER_NODE,
+                    noise=noise_node,
+                    guider=guider_node,
+                    sigmas=sigmas_node,
+                    latent_image=segment.out(2),
+                    preset=acceleration.speed_preset,
+                    coarse_steps_override=acceleration.speed_coarse_steps,
+                    sampling_mode="Auto",
+                    noise_policy=acceleration.speed_noise_policy,
+                    seed_offset=10000,
+                )
+                base_latent = speed_sampled.out(0)
+            else:
+                sampled = graph.node(
+                    "KSampler",
+                    model=model, positive=segment.out(1), negative=against,
+                    latent_image=segment.out(2),
+                    seed=sampling.seed + index, steps=sampling.steps, cfg=sampling.cfg,
+                    sampler_name=sampling.sampler_name, scheduler=sampling.scheduler,
+                    denoise=1.0,
+                )
+                base_latent = sampled.out(0)
+
             current_video_latent = base_latent
             last_latent = base_latent
 
-            # ==========================================
+            # ==================================================================
             # PASS 2: Latent Upscaling & Refine Pass
-            # ==========================================
+            # ==================================================================
             if one.refine:
                 spec = {
                     "width": one.refine.width, "height": one.refine.height,
@@ -232,9 +268,9 @@ def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampl
                 tile_size=vae_tile_size,
             )
 
-            # ==========================================
+            # ==================================================================
             # PASS 3: NVIDIA RTX Video Super Resolution (Pixel Level)
-            # ==========================================
+            # ==================================================================
             if getattr(one, "rtx_upscale", False):
                 rtx_run = graph.node(
                     RTX_NODE,

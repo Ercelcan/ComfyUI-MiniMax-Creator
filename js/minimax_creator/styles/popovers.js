@@ -1,20 +1,17 @@
-// Popovers: output prefix, chips, short-edge slider.
-// No backticks or ${} anywhere in the CSS: each chunk is one template literal.
 export const css = `
 /* --- popovers ------------------------------------------------------------- */
 .mmc-pop {
   position: fixed; z-index: 1300; background: #141414; border: 1px solid var(--mmc-line);
   border-radius: 16px; padding: 8px; min-width: 190px;
   box-shadow: 0 18px 48px rgba(0,0,0,.6);
-  /* Never taller than the screen: on a 1080p display the refine popover's
-     stacked sections can outgrow the viewport, and placeNear can only clamp
-     the top edge. The popover scrolls instead of the bottom clipping off. */
   max-height: calc(100vh - 16px); overflow-y: auto;
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, sans-serif;
+  color: var(--mmc-text);
+  box-sizing: border-box;
 }
 .mmc-pop-title { color: var(--mmc-dim); font-size: 12px; padding: 6px 10px 8px; }
 
-/* The output-prefix field and its live reading — Settings → Folders is the only
-   place these appear now that the per-node popover is gone. */
+/* The output-prefix field and its live reading */
 .mmc-out-field {
   width: 100%; box-sizing: border-box; padding: 8px 10px;
   background: var(--mmc-surface); border: 1px solid var(--mmc-line);
@@ -24,36 +21,29 @@ export const css = `
 .mmc-out-field:focus { outline: none; border-color: var(--mmc-blue); }
 .mmc-out-field.bad { border-color: #e0743c; }
 .mmc-out-problem { color: #e0743c; font-size: 11.5px; line-height: 1.45; padding: 6px 2px 0; }
-/* One line, two colours: the folder half dim, the filename bright. The colour
-   break carries what two labelled rows used to — that the last path part names
-   the files, not a folder. */
 .mmc-out-example {
   padding: 8px 2px 2px; font-size: 11.5px; line-height: 1.6;
   font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
   color: var(--mmc-text);
-  /* A dated folder name is long, and the card must not scroll sideways for it. */
   overflow-wrap: anywhere;
 }
 .mmc-out-dim { color: var(--mmc-off); }
 .mmc-out-tokens { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 8px 2px 2px; }
-/* Says what the chips do, in the same voice the note-keys use — a bare row of
-   single words reads as filters until something names the action. */
 .mmc-out-tokens-key {
   color: var(--mmc-off); font-size: 10px; letter-spacing: .06em;
   text-transform: uppercase; padding-right: 4px;
 }
 .mmc-out-token {
   padding: 3px 7px; background: var(--mmc-surface-2); border: 0; border-radius: 7px;
-  color: var(--mmc-dim); font-size: 11px; font-family: ui-monospace, Menlo, monospace;
+  color: var(--mmc-dim); font-family: ui-monospace, Menlo, monospace; font-size: 11px;
   cursor: pointer;
 }
 .mmc-out-token:hover { background: var(--mmc-surface-3); color: var(--mmc-text); }
+
 .mmc-opt {
   display: flex; align-items: center; justify-content: space-between; width: 100%;
   padding: 9px 10px; background: none; border: 0; border-radius: 10px;
-  color: var(--mmc-text); font-size: 14px; font-family: inherit; cursor: pointer;
-  /* A button centres its text by default, which nothing notices while every
-     option is one short word and looks broken the moment one wraps. */
+  color: var(--mmc-text); font-size: 13.5px; font-family: inherit; cursor: pointer;
   text-align: left;
 }
 .mmc-opt:hover { background: var(--mmc-surface-2); }
@@ -64,10 +54,8 @@ export const css = `
 }
 .mmc-aspect-glyph > span { box-sizing: border-box; border: 1.5px solid #6a6a6a; border-radius: 2px; }
 .mmc-opt[aria-checked="true"] .mmc-aspect-glyph > span { border-color: var(--mmc-blue); }
-/* On a pill it is a glyph beside a label rather than a swatch in a list, so it
-   takes the pill's own colour — and greys out with it when the ratio is coming
-   from a keyframe and the pill is disabled. */
 .mmc-pill .mmc-aspect-glyph > span { border-color: currentColor; border-width: 1.25px; }
+
 .mmc-radio {
   width: 18px; height: 18px; border-radius: 50%; border: 1.5px solid #4a4a4a; flex: none;
 }
@@ -79,56 +67,185 @@ export const css = `
   content: ""; width: 5px; height: 9px; border: solid #fff;
   border-width: 0 2px 2px 0; transform: rotate(45deg) translate(-1px,-1px);
 }
-/* The short-edge popover. Every measurement here is fixed on purpose: a range
-   input reads the pointer against the width of its own track, so a popover that
-   grows by a digit — or reflows a note onto a second line — slides the track out
-   from under the thumb and the value jumps. Fixed width, tabular digits, and a
-   note that always occupies two lines. Nothing in it may size to its text. */
+
+/* ==========================================================================
+   REDESIGNED RESOLUTION & UPSCALE POPOVER
+   ========================================================================== */
+.mmc-res-popover {
+  width: 350px;
+  max-width: 95vw;
+  padding: 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.mmc-res-header {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.mmc-res-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.mmc-res-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 13.5px;
+  font-weight: 600;
+  color: #fff;
+}
+.mmc-res-dim-badge {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  color: var(--mmc-accent, #f0a63c);
+  background: rgba(240, 166, 60, 0.12);
+  border: 1px solid rgba(240, 166, 60, 0.35);
+  border-radius: 6px;
+  padding: 1px 6px;
+}
+
+.mmc-res-presets-row {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+.mmc-res-chip {
+  font-size: 11px !important;
+  padding: 3px 8px !important;
+}
+.mmc-res-chip.native {
+  border-color: rgba(240, 166, 60, 0.4);
+}
+
+/* The 3-Tab Strategy Selector */
+.mmc-res-tabs {
+  display: flex;
+  background: var(--mmc-surface-2, #262626);
+  border: 1px solid var(--mmc-line, rgba(255,255,255,0.1));
+  border-radius: 10px;
+  padding: 2px;
+  gap: 2px;
+}
+.mmc-res-tab {
+  flex: 1;
+  background: none;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 4px;
+  color: var(--mmc-dim, #8b8b8b);
+  font-size: 11.5px;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: center;
+  white-space: nowrap;
+  transition: all .12s ease;
+}
+.mmc-res-tab:hover { color: #fff; background: rgba(255,255,255,0.06); }
+.mmc-res-tab.active {
+  background: var(--mmc-accent, #f0a63c);
+  color: #141414;
+  font-weight: 600;
+}
+
+/* Contextual Card */
+.mmc-res-card {
+  display: flex;
+  flex-direction: column;
+  gap: 7px;
+  background: rgba(0,0,0,0.38);
+  border: 1px solid var(--mmc-line, rgba(255,255,255,0.08));
+  border-radius: 10px;
+  padding: 10px;
+}
+.mmc-res-card.direct-card {
+  padding: 8px 10px;
+  background: rgba(255,255,255,0.02);
+}
+
+.mmc-res-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  font-size: 12px;
+}
+.mmc-res-hint-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding-top: 4px;
+}
+.mmc-res-badge-nvidia {
+  font-size: 9.5px;
+  font-weight: 700;
+  color: #10b981;
+  background: rgba(16, 185, 129, 0.14);
+  border: 1px solid rgba(16, 185, 129, 0.35);
+  border-radius: 4px;
+  padding: 1px 5px;
+  flex-shrink: 0;
+}
+.mmc-res-hint-text {
+  font-size: 11px;
+  color: var(--mmc-dim, #8b8b8b);
+  line-height: 1.45;
+}
+
+/* Collapsible Memory Fold */
+.mmc-res-memory-fold {
+  background: var(--mmc-surface-2, #262626) !important;
+  border: 1px solid var(--mmc-line) !important;
+  border-radius: 10px !important;
+  padding: 6px 10px !important;
+  font-size: 11.5px !important;
+}
+.mmc-res-memory-fold summary {
+  cursor: pointer;
+  color: var(--mmc-dim);
+  font-weight: 500;
+  user-select: none;
+}
+.mmc-res-memory-fold summary:hover { color: #fff; }
+.mmc-res-fold-content {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-top: 8px;
+}
+
+/* Base Slider Styles */
 .mmc-slider { width: 300px; padding: 12px; box-sizing: border-box; }
-.mmc-slider-body { display: flex; flex-direction: column; gap: 8px; }
+.mmc-slider-body { display: flex; flex-direction: column; gap: 6px; }
 .mmc-slider-read {
   display: flex; align-items: baseline; justify-content: space-between;
   font-size: 13px; font-variant-numeric: tabular-nums; line-height: 20px;
 }
-.mmc-slider-read .mmc-edge { font-size: 16px; }
+.mmc-slider-read .mmc-edge { font-size: 16px; font-weight: 600; color: #fff; }
 .mmc-slider-read .mmc-edge-unit { color: var(--mmc-dim); font-size: 11px; margin-left: 3px; }
-.mmc-slider-read > span:last-child { color: var(--mmc-dim); }
+.mmc-slider-read > span:last-child { color: var(--mmc-dim); font-size: 11px; }
 
 .mmc-slider-row { display: flex; align-items: center; gap: 2px; }
-/* The tick sits below the rail rather than over it, so it can be a real click
-   target without eating the drag it is standing next to. */
-.mmc-slider-track { position: relative; flex: 1; padding-bottom: 14px; min-width: 0; }
-.mmc-slider input[type="range"] {
-  display: block; width: 100%; margin: 0; height: 20px; accent-color: var(--mmc-blue);
+.mmc-slider-track { position: relative; flex: 1; padding-bottom: 12px; min-width: 0; }
+.mmc-slider input[type="range"], .mmc-res-popover input[type="range"] {
+  display: block; width: 100%; margin: 0; height: 18px; accent-color: var(--mmc-blue);
 }
 .mmc-slider-mark {
   position: absolute; bottom: 0; height: 14px; width: 34px; padding: 0; border: 0;
   background: none; cursor: pointer; font-family: inherit; font-size: 9px;
   letter-spacing: .04em; color: var(--mmc-off);
   display: flex; flex-direction: column; align-items: center; gap: 2px;
-  /* A range thumb is 16px, so the track it travels is inset 8px each side —
-     the tick has to land on the value, not on the box. */
   left: calc(8px + var(--p) * (100% - 16px)); margin-left: -17px;
 }
 .mmc-slider-mark::before { content: ""; width: 2px; height: 4px; border-radius: 1px; background: currentColor; }
 .mmc-slider-mark:hover { color: var(--mmc-text); }
 .mmc-slider-mark.on { color: var(--mmc-blue); }
 
-.mmc-native { color: var(--mmc-dim); font-size: 11px; line-height: 1.45; min-height: 32px; }
+.mmc-native { color: var(--mmc-dim); font-size: 11px; line-height: 1.45; min-height: 28px; }
 .mmc-native.over { color: #e0743c; }
-
-/* The two-pass section under the slider, drawn only past the native edge. Its
-   option rows are the aspect popover's; only the second line is its own. */
-.mmc-twopass {
-  border-top: 1px solid var(--mmc-line); margin-top: 10px; padding-top: 6px;
-  display: flex; flex-direction: column; gap: 2px;
-}
-.mmc-opt-col { flex-direction: column; align-items: flex-start; gap: 2px; }
-.mmc-opt-sub { color: var(--mmc-dim); font-size: 11px; }
-.mmc-refine-row {
-  display: flex; align-items: center; justify-content: space-between;
-  padding: 4px 10px 0;
-}
-.mmc-refine-label { color: var(--mmc-dim); font-size: 12px; }
-
 `;

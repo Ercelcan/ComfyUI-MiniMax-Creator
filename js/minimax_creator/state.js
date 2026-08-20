@@ -193,6 +193,23 @@ export function serializeTurbo(turbo) {
 }
 
 // ==============================================================================
+// SPEED Sampler & VRAM Protection Constants
+// ==============================================================================
+export const SPEED_PRESETS = [
+  "off",
+  "Half -> Full (0.5x -> 1.0x) [Balanced / Recommended]",
+  "Three-Quarter -> Full (0.75x -> 1.0x) [Fastest]",
+  "Quarter -> Half -> Full (3-Stage) [High Detail]",
+];
+export const DEFAULT_SPEED_PRESET = "off";
+
+export const DEFAULT_LOW_VRAM_ATTN = false;
+export const DEFAULT_HEAD_CHUNKS = 4;
+export const DEFAULT_CHUNK_FFN = false;
+export const DEFAULT_FFN_CHUNKS = 2;
+export const DEFAULT_FFN_SEQ_THRESHOLD = 4096;
+
+// ==============================================================================
 // LoRA & Upscale Settings
 // ==============================================================================
 export const CHECKPOINTS = ["fl2va", "ref2va"];
@@ -280,6 +297,12 @@ export function emptyState() {
     rtx_upscale: false,
     rtx_scale: DEFAULT_UPSCALE_SCALE,
     rtx_quality: DEFAULT_RTX_QUALITY,
+    speed_preset: DEFAULT_SPEED_PRESET,
+    low_vram_attn: DEFAULT_LOW_VRAM_ATTN,
+    head_chunks: DEFAULT_HEAD_CHUNKS,
+    chunk_ffn: DEFAULT_CHUNK_FFN,
+    ffn_chunks: DEFAULT_FFN_CHUNKS,
+    ffn_seq_threshold: DEFAULT_FFN_SEQ_THRESHOLD,
     checkpoint: "auto",
     start_mode: "t2v",
     models: emptyModels(),
@@ -314,6 +337,14 @@ export function parseState(raw) {
       state.rtx_upscale = state.rtx_upscale === true || state.upscale === "rtx_vsr";
       state.rtx_scale = Number(state.rtx_scale || DEFAULT_UPSCALE_SCALE);
       state.rtx_quality = RTX_QUALITIES.includes(state.rtx_quality) ? state.rtx_quality : DEFAULT_RTX_QUALITY;
+      
+      if (typeof state.speed_preset === "string") state.speed_preset = state.speed_preset.trim();
+      state.low_vram_attn = state.low_vram_attn === true;
+      state.head_chunks = Math.max(1, Math.min(16, Number(state.head_chunks || DEFAULT_HEAD_CHUNKS)));
+      state.chunk_ffn = state.chunk_ffn === true;
+      state.ffn_chunks = Math.max(1, Math.min(8, Number(state.ffn_chunks || DEFAULT_FFN_CHUNKS)));
+      state.ffn_seq_threshold = Math.max(256, Math.min(65536, Number(state.ffn_seq_threshold || DEFAULT_FFN_SEQ_THRESHOLD)));
+
       state.models = parseModels(state.models);
       state.turbo = parseTurbo(state.turbo);
       normalizeCheckpoint(state);
@@ -416,6 +447,9 @@ export function serializeState(state) {
     ...(state.rtx_upscale ? { rtx_upscale: true } : {}),
     ...(state.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: state.rtx_scale } : {}),
     ...(state.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: state.rtx_quality } : {}),
+    ...(state.speed_preset && state.speed_preset !== "off" ? { speed_preset: state.speed_preset } : {}),
+    ...(state.low_vram_attn ? { low_vram_attn: true, head_chunks: state.head_chunks } : {}),
+    ...(state.chunk_ffn ? { chunk_ffn: true, ffn_chunks: state.ffn_chunks, ffn_seq_threshold: state.ffn_seq_threshold } : {}),
     ...serializeModels(state.models),
     ...serializeTurbo(state.turbo),
   }, null, 2);
@@ -485,6 +519,12 @@ export function emptyTimeline() {
     rtx_upscale: false,
     rtx_scale: DEFAULT_UPSCALE_SCALE,
     rtx_quality: DEFAULT_RTX_QUALITY,
+    speed_preset: DEFAULT_SPEED_PRESET,
+    low_vram_attn: DEFAULT_LOW_VRAM_ATTN,
+    head_chunks: DEFAULT_HEAD_CHUNKS,
+    chunk_ffn: DEFAULT_CHUNK_FFN,
+    ffn_chunks: DEFAULT_FFN_CHUNKS,
+    ffn_seq_threshold: DEFAULT_FFN_SEQ_THRESHOLD,
     loras: [],
     assets: [],
     start_mode: "t2v",
@@ -514,6 +554,12 @@ export function syncTimeline(timeline) {
     segment.rtx_upscale = timeline.rtx_upscale;
     segment.rtx_scale = timeline.rtx_scale;
     segment.rtx_quality = timeline.rtx_quality;
+    segment.speed_preset = timeline.speed_preset;
+    segment.low_vram_attn = timeline.low_vram_attn;
+    segment.head_chunks = timeline.head_chunks;
+    segment.chunk_ffn = timeline.chunk_ffn;
+    segment.ffn_chunks = timeline.ffn_chunks;
+    segment.ffn_seq_threshold = timeline.ffn_seq_threshold;
     segment.pool = timeline.assets ?? [];
     segment.master_audio = timeline.master_audio ?? null;
     segment.globalTexts = {
@@ -569,6 +615,14 @@ export function parseTimeline(raw) {
       timeline.rtx_upscale = timeline.rtx_upscale === true || timeline.upscale === "rtx_vsr";
       timeline.rtx_scale = Number(timeline.rtx_scale || DEFAULT_UPSCALE_SCALE);
       timeline.rtx_quality = RTX_QUALITIES.includes(timeline.rtx_quality) ? timeline.rtx_quality : DEFAULT_RTX_QUALITY;
+      
+      if (typeof timeline.speed_preset === "string") timeline.speed_preset = timeline.speed_preset.trim();
+      timeline.low_vram_attn = timeline.low_vram_attn === true;
+      timeline.head_chunks = Math.max(1, Math.min(16, Number(timeline.head_chunks || DEFAULT_HEAD_CHUNKS)));
+      timeline.chunk_ffn = timeline.chunk_ffn === true;
+      timeline.ffn_chunks = Math.max(1, Math.min(8, Number(timeline.ffn_chunks || DEFAULT_FFN_CHUNKS)));
+      timeline.ffn_seq_threshold = Math.max(256, Math.min(65536, Number(timeline.ffn_seq_threshold || DEFAULT_FFN_SEQ_THRESHOLD)));
+
       timeline.models = parseModels(timeline.models);
       timeline.turbo = parseTurbo(timeline.turbo);
 
@@ -627,6 +681,9 @@ export function serializeTimeline(timeline) {
     ...(timeline.rtx_upscale ? { rtx_upscale: true } : {}),
     ...(timeline.rtx_scale !== DEFAULT_UPSCALE_SCALE ? { rtx_scale: timeline.rtx_scale } : {}),
     ...(timeline.rtx_quality !== DEFAULT_RTX_QUALITY ? { rtx_quality: timeline.rtx_quality } : {}),
+    ...(timeline.speed_preset && timeline.speed_preset !== "off" ? { speed_preset: timeline.speed_preset } : {}),
+    ...(timeline.low_vram_attn ? { low_vram_attn: true, head_chunks: timeline.head_chunks } : {}),
+    ...(timeline.chunk_ffn ? { chunk_ffn: true, ffn_chunks: timeline.ffn_chunks, ffn_seq_threshold: timeline.ffn_seq_threshold } : {}),
     loras: serializeLoras(timeline.loras ?? []),
     ...(timeline.assets?.length ? { assets: serializeAssets(timeline.assets) } : {}),
     audio_tail_s: clampTail(timeline.audio_tail_s),

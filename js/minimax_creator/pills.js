@@ -136,15 +136,120 @@ export function edgeSlider({ min, max, step, value, mark, markLabel, apply, desc
     note,
   ]);
   body.repaint = paint;
+  body.setValue = (newVal) => set(newVal);
   paint();
   return body;
 }
 
-export function openResolutionPopover(anchor, target, geometry, commit) {
-  const pop = el("div", { class: "mmc-pop mmc-slider" });
-  const section = el("div");
+export function openVramShieldPopover(anchor, hooks) {
+  const pop = el("div", { class: "mmc-pop mmc-weights-pop", style: { width: "320px", padding: "12px 14px" } });
 
-  const BASE_PRESETS = [
+  const render = () => {
+    const isAttnOn = hooks.getLowVram();
+    const headChunks = hooks.getHeadChunks();
+    const isFfnOn = hooks.getChunkFfn();
+    const ffnChunks = hooks.getFfnChunks();
+    const ffnThreshold = hooks.getFfnThreshold();
+
+    const title = el("div", { class: "mmc-pop-title", style: { padding: "0 0 8px 0" }, text: t("🛡️ VRAM Shield (Memory Protection)") });
+
+    const attnRow = el("div", { class: "mmc-refine-row", style: { padding: "6px 0" } }, [
+      el("span", { class: "mmc-refine-label", text: t("Low VRAM Attention") }),
+      el("button", {
+        class: `mmc-pill${isAttnOn ? " on" : ""}`,
+        title: t("Splits attention heads into smaller groups during computation to prevent VRAM spikes."),
+        onclick: () => {
+          hooks.setLowVram(!isAttnOn);
+          render();
+        },
+      }, [el("span", { text: isAttnOn ? t("on") : t("off") })]),
+    ]);
+
+    const headChunksRow = isAttnOn ? el("div", { class: "mmc-refine-row", style: { padding: "4px 0" } }, [
+      el("span", { class: "mmc-refine-label", text: t("Head Chunks") }),
+      stepperPill({
+        value: headChunks,
+        min: 1, max: 16, step: 1, width: "42px",
+        title: t("Number of head chunks. 4 chunks is recommended for 12GB/16GB VRAM GPUs."),
+        format: (n) => `${n}x`,
+        onChange: (next) => {
+          hooks.setHeadChunks(next);
+          render();
+        },
+      }),
+    ]) : null;
+
+    const ffnRow = el("div", { class: "mmc-refine-row", style: { padding: "6px 0", borderTop: "1px solid var(--mmc-line)", marginTop: "6px" } }, [
+      el("span", { class: "mmc-refine-label", text: t("Chunk FeedForward (FFN)") }),
+      el("button", {
+        class: `mmc-pill${isFfnOn ? " on" : ""}`,
+        title: t("Evaluates FFN (SwiGLU/MLP) layers in sequence chunks to prevent peak activation OOMs."),
+        onclick: () => {
+          hooks.setChunkFfn(!isFfnOn);
+          render();
+        },
+      }, [el("span", { text: isFfnOn ? t("on") : t("off") })]),
+    ]);
+
+    const ffnChunksRow = isFfnOn ? el("div", { class: "mmc-refine-row", style: { padding: "4px 0" } }, [
+      el("span", { class: "mmc-refine-label", text: t("FFN Chunks") }),
+      stepperPill({
+        value: ffnChunks,
+        min: 1, max: 8, step: 1, width: "42px",
+        title: t("Number of sequential chunks for FFN layers."),
+        format: (n) => `${n}x`,
+        onChange: (next) => {
+          hooks.setFfnChunks(next);
+          render();
+        },
+      }),
+    ]) : null;
+
+    const ffnThreshRow = isFfnOn ? el("div", { class: "mmc-refine-row", style: { padding: "4px 0" } }, [
+      el("span", { class: "mmc-refine-label", text: t("Sequence Threshold") }),
+      stepperPill({
+        value: ffnThreshold,
+        min: 1024, max: 32768, step: 1024, width: "56px",
+        title: t("Token sequence threshold above which FFN chunking activates."),
+        format: (n) => `${n}`,
+        onChange: (next) => {
+          hooks.setFfnThreshold(next);
+          render();
+        },
+      }),
+    ]) : null;
+
+    pop.replaceChildren(
+      title,
+      attnRow,
+      ...(headChunksRow ? [headChunksRow] : []),
+      ffnRow,
+      ...(ffnChunksRow ? [ffnChunksRow] : []),
+      ...(ffnThreshRow ? [ffnThreshRow] : [])
+    );
+  };
+
+  render();
+  document.body.appendChild(pop);
+  placeNear(pop, anchor);
+  dismissable(pop);
+}
+
+export function openResolutionPopover(anchor, target, geometry, commit) {
+  const pop = el("div", { class: "mmc-pop mmc-res-popover" });
+  let sliderControl = null;
+
+  const TARGET_PRESETS = [
+    { edge: 480, label: "480p" },
+    { edge: 576, label: "576p" },
+    { edge: 720, label: "720p" },
+    { edge: 768, label: "768p", native: true },
+    { edge: 1080, label: "1080p" },
+    { edge: 1440, label: "1440p (2K)" },
+    { edge: 2048, label: "4K (Max)" },
+  ];
+
+  const BASE_SAMPLE_PRESETS = [
     { edge: 352, label: "352p" },
     { edge: 384, label: "384p" },
     { edge: 480, label: "480p" },
@@ -153,8 +258,6 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     { edge: 768, label: "768p" },
   ];
 
-  let body = null;
-
   const getGeometry = () => {
     const geom = typeof geometry === "function" ? geometry() : geometry;
     const width = geom?.width ?? (Array.isArray(geom) ? geom[0] : 1344);
@@ -162,301 +265,352 @@ export function openResolutionPopover(anchor, target, geometry, commit) {
     return { width, height };
   };
 
-  const renderSection = () => {
-    const { width, height } = getGeometry();
-    const over = (target.short_edge || NATIVE_SHORT_EDGE) > NATIVE_SHORT_EDGE;
-    const cap = Math.min(NATIVE_SHORT_EDGE, target.short_edge || NATIVE_SHORT_EDGE);
-    const curSampleEdge = sampleEdge(target);
-    const upscalerModels = catalogLatentUpscalers();
+  const getActiveStrategy = () => {
+    if (target.upscale === "rtx_vsr" || target.rtx_upscale === true) return "rtx_vsr";
+    if (target.upscale === "two_pass") return "two_pass";
+    if (target.short_edge > NATIVE_SHORT_EDGE && !target.upscale) return "two_pass";
+    return target.upscale || "direct";
+  };
 
-    const option = (mode, label, sub) => el("button", {
-      class: "mmc-opt",
-      "aria-checked": target.upscale === mode,
-      onclick: () => {
-        target.upscale = mode;
-        target.rtx_upscale = (mode === "rtx_vsr");
-        body?.repaint();
-        commit();
-      },
-    }, [
-      el("span", { class: "mmc-opt-label mmc-opt-col" }, [
-        el("span", { text: label }),
-        el("span", { class: "mmc-opt-sub", text: sub }),
+  const render = () => {
+    const { width, height } = getGeometry();
+    const curEdge = target.short_edge || NATIVE_SHORT_EDGE;
+    const activeStrategy = getActiveStrategy();
+    const curSampleEdge = sampleEdge(target);
+    const cap = Math.min(NATIVE_SHORT_EDGE, curEdge);
+
+    // =========================================================================
+    // ZONE 1: TARGET OUTPUT RESOLUTION
+    // =========================================================================
+    const header = el("div", { class: "mmc-res-header" }, [
+      el("div", { class: "mmc-res-title-row" }, [
+        el("div", { class: "mmc-res-title" }, [
+          icon("res", 14),
+          el("span", { text: t("Target Output: {edge}p", { edge: curEdge }) }),
+        ]),
+        el("span", { class: "mmc-res-dim-badge", text: `${width} × ${height}` }),
       ]),
-      el("span", { class: "mmc-radio" }),
     ]);
 
-    const rows = [];
-    if (over) {
-      rows.push(
-        option("two_pass", t("two passes (latent refine)"),
-               t("{edge} px base latent, refined up to {width} × {height}",
-                 { edge: curSampleEdge, width, height })),
-        option("rtx_vsr", t("NVIDIA RTX VSR (AI pixel upscaler)"),
-               t("{edge} px base render, upscaled to {width} × {height} via RTX Tensor Cores",
-                 { edge: curSampleEdge, width, height })),
-        option("direct", t("direct"),
-               t("one pass at {width} × {height} — off-distribution", { width, height }))
-      );
-    }
+    const targetChips = el("div", { class: "mmc-res-presets-row" }, TARGET_PRESETS.map((p) => el("button", {
+      class: `mmc-chip mmc-res-chip${curEdge === p.edge ? " on" : ""}${p.native ? " native" : ""}`,
+      text: p.label,
+      title: t("Set output resolution to {edge}p", { edge: p.edge }),
+      onclick: () => {
+        target.short_edge = p.edge;
+        if (p.edge > NATIVE_SHORT_EDGE && target.upscale === "direct") {
+          target.upscale = "two_pass";
+        }
+        sliderControl?.setValue(p.edge);
+        render();
+        commit();
+      },
+    })));
 
-    // Base sampling resolution selector & quick presets
-    if (!over || target.upscale !== "direct") {
-      const presetChips = BASE_PRESETS.filter((p) => p.edge <= (target.short_edge || NATIVE_SHORT_EDGE)).map((p) => el("button", {
-        class: `mmc-chip${curSampleEdge === p.edge ? " on" : ""}`,
-        style: { fontSize: "11px", padding: "2px 8px" },
-        text: p.label,
-        title: t("Sample Pass 1 at {edge}px base resolution", { edge: p.edge }),
+    sliderControl = edgeSlider({
+      min: MIN_SHORT_EDGE, max: MAX_SHORT_EDGE, step: CANVAS_MULTIPLE,
+      value: curEdge, mark: NATIVE_SHORT_EDGE, markLabel: "native",
+      apply: (edge) => {
+        target.short_edge = edge;
+        if (edge > NATIVE_SHORT_EDGE && target.upscale === "direct") {
+          target.upscale = "two_pass";
+        }
+      },
+      describe: () => {
+        const { width: w, height: h } = getGeometry();
+        const over = target.short_edge > NATIVE_SHORT_EDGE;
+        return {
+          size: `${w} × ${h}`,
+          warn: over && activeStrategy === "direct",
+          note: activeStrategy === "two_pass"
+            ? t("Base sampled at {sample}p → Latent Refined up to {w} × {h}.", { sample: sampleEdge(target), w, h })
+            : activeStrategy === "rtx_vsr"
+              ? t("Base sampled at {sample}p → NVIDIA RTX VSR upscaled to {w} × {h}.", { sample: sampleEdge(target), w, h })
+              : over
+                ? t("⚠️ Above 768p native — direct sampling is off-distribution. Consider 2-Pass Refine or RTX VSR.")
+                : t("✓ Native single-pass generation at {w} × {h}.", { w, h }),
+        };
+      },
+      commit: () => {
+        render();
+        commit();
+      },
+    });
+
+    // =========================================================================
+    // ZONE 2: RENDERING STRATEGY SEGMENTED TABS (Always Visible)
+    // =========================================================================
+    const strategyBar = el("div", { class: "mmc-res-tabs" }, [
+      el("button", {
+        class: `mmc-res-tab${activeStrategy === "direct" ? " active" : ""}`,
+        title: t("Direct generation: Single pass without neural or AI upscaling"),
         onclick: () => {
-          target.sample_edge = p.edge;
-          if (p.edge < target.short_edge && target.upscale === "direct") {
-            target.upscale = "two_pass";
-          }
-          body?.repaint();
+          target.upscale = "direct";
+          target.rtx_upscale = false;
+          render();
           commit();
         },
-      }));
+      }, [el("span", { text: t("⚡ Direct") })]),
 
-      rows.push(el("div", { class: "mmc-refine-row", style: { flexDirection: "column", alignItems: "flex-start", gap: "6px" } }, [
-        el("div", { style: { display: "flex", width: "100%", justifyContent: "space-between", alignItems: "center" } }, [
-          el("span", { class: "mmc-refine-label", text: t("sampled at (pass 1)") }),
-          stepperPill({
-            value: curSampleEdge,
-            min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "56px",
-            title: t("The short edge Pass 1 samples at. Lower is much faster; the upscaler upscales it to target size."),
-            format: (n) => `${n} px`,
-            onChange: (next) => {
-              target.sample_edge = next;
-              if (next < target.short_edge && target.upscale === "direct") {
-                target.upscale = "two_pass";
-              }
-              body?.repaint();
-              commit();
-            },
-          }),
-        ]),
-        el("div", { class: "mmc-chips", style: { gap: "4px" } }, presetChips),
-      ]));
-    }
+      el("button", {
+        class: `mmc-res-tab${activeStrategy === "two_pass" ? " active" : ""}`,
+        title: t("2-Pass Refine: Fast low-res base latent + neural upscaler & refine diffusion pass"),
+        onclick: () => {
+          target.upscale = "two_pass";
+          target.rtx_upscale = false;
+          render();
+          commit();
+        },
+      }, [el("span", { text: t("✨ 2-Pass Refine") })]),
 
-    // NVIDIA RTX VSR Specific Settings
-    if (rtxVsr(target)) {
-      const curQuality = target.rtx_quality || DEFAULT_RTX_QUALITY;
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("rtx quality") }),
-        el("button", {
-          class: "mmc-pill",
-          title: t("NVIDIA RTX VSR AI Model Quality Level (ULTRA, HIGH, MEDIUM, LOW)"),
-          onclick: (e) => openChoicePopover(e.currentTarget, {
-            title: t("RTX VSR Quality"),
-            options: [...RTX_QUALITIES],
-            value: curQuality,
-            onPick: (picked) => {
-              target.rtx_quality = picked;
-              body?.repaint();
-              commit();
-            },
-          }),
-        }, [el("span", { text: curQuality })]),
-      ]));
+      el("button", {
+        class: `mmc-res-tab${activeStrategy === "rtx_vsr" ? " active" : ""}`,
+        title: t("NVIDIA RTX VSR: Hardware Tensor Core AI pixel upscaling (zero diffusion overhead)"),
+        onclick: () => {
+          target.upscale = "rtx_vsr";
+          target.rtx_upscale = true;
+          render();
+          commit();
+        },
+      }, [el("span", { text: t("🎮 RTX VSR") })]),
+    ]);
 
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("hardware") }),
-        el("span", {
-          class: "mmc-pill-sub",
-          style: { color: "var(--mmc-accent, #f0a63c)", fontSize: "11px" },
-          text: t("NVIDIA RTX 20/30/40/50+ Series GPU"),
-        }),
-      ]));
-    }
+    // =========================================================================
+    // ZONE 3: CONTEXTUAL STRATEGY PANEL
+    // =========================================================================
+    let contextPanel;
 
-    // Two-pass Latent Refine Specific Settings
-    if (twoPass(target)) {
+    if (activeStrategy === "two_pass") {
+      const upscalerModels = catalogLatentUpscalers();
       const curUpscaler = target.upscale_model || "bicubic (interpolated)";
       const formatModelLabel = (name) => {
         if (!name || name.startsWith("bicubic")) return "bicubic";
         const clean = name.split("/").pop().replace(/\.(safetensors|pth)$/i, "");
-        return clean.length > 20 ? `${clean.slice(0, 18)}…` : clean;
+        return clean.length > 18 ? `${clean.slice(0, 16)}…` : clean;
       };
 
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("upscaler") }),
-        el("button", {
-          class: "mmc-pill",
-          style: {
-            maxWidth: "160px",
-            minWidth: "0",
-            padding: "0 8px",
-            display: "inline-flex",
-            alignItems: "center",
-            overflow: "hidden",
+      const baseSampleChips = el("div", { class: "mmc-chips", style: { gap: "4px" } },
+        BASE_SAMPLE_PRESETS.filter((p) => p.edge <= curEdge).map((p) => el("button", {
+          class: `mmc-chip${curSampleEdge === p.edge ? " on" : ""}`,
+          style: { fontSize: "10.5px", padding: "2px 7px" },
+          text: p.label,
+          onclick: () => {
+            target.sample_edge = p.edge;
+            render();
+            commit();
           },
-          title: t("Model: {name}\nPick a neural latent upscaler (2D or 3D) from models/latent_upscale_models/", { name: curUpscaler }),
-          onclick: (e) => openChoicePopover(e.currentTarget, {
-            title: t("Latent Upscaler Model"),
-            options: ["bicubic (interpolated)", ...upscalerModels],
-            value: curUpscaler,
-            onPick: (picked) => {
-              target.upscale_model = picked.startsWith("bicubic") ? "" : picked;
-              body?.repaint();
-              commit();
-            },
-          }),
-        }, [
-          el("span", {
-            style: {
-              overflow: "hidden",
-              textOverflow: "ellipsis",
-              whiteSpace: "nowrap",
-              display: "block",
-              maxWidth: "100%",
-            },
-            text: formatModelLabel(curUpscaler),
-          }),
-        ]),
-      ]));
-
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("refine steps") }),
-        stepperPill({
-          value: Number(target.refine_steps ?? DEFAULT_REFINE_STEPS),
-          min: 1, max: 20, step: 1, width: "40px",
-          title: t("How many diffusion steps to run on Pass 2 at target resolution."),
-          format: (n) => t("{n} step{s}", { n, s: n > 1 ? "s" : "" }),
-          onChange: (next) => { target.refine_steps = next; body?.repaint(); commit(); },
-        }),
-      ]));
-
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("refine denoise") }),
-        stepperPill({
-          value: Number(target.refine_denoise ?? DEFAULT_REFINE_DENOISE),
-          min: MIN_REFINE_DENOISE, max: MAX_REFINE_DENOISE, step: 0.05, width: "40px",
-          title: t("Denoise strength for Pass 2. 0.25 is the optimal sweet spot."),
-          format: (n) => n.toFixed(2),
-          onChange: (next) => { target.refine_denoise = next; body?.repaint(); commit(); },
-        }),
-      ]));
+        }))
+      );
 
       const isGlobalTurbo = target.turbo?.on === true;
-      if (!isGlobalTurbo) {
-        rows.push(el("div", { class: "mmc-refine-row" }, [
-          el("span", { class: "mmc-refine-label", text: t("turbo on refine") }),
-          el("button", {
-            class: `mmc-pill${target.refine_turbo_only ? " on" : ""}`,
-            title: t("Apply Turbo LoRA specifically to Pass 2 so 1-step refinement runs ultra fast."),
-            onclick: () => {
-              target.refine_turbo_only = !target.refine_turbo_only;
-              body?.repaint();
+
+      contextPanel = el("div", { class: "mmc-res-card" }, [
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Base Sample (Pass 1)") }),
+          stepperPill({
+            value: curSampleEdge,
+            min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "52px",
+            title: t("Short edge Pass 1 samples at. Lower is faster; neural upscaler scales it to target resolution."),
+            format: (n) => `${n}px`,
+            onChange: (next) => {
+              target.sample_edge = next;
+              render();
               commit();
             },
-          }, [icon("bolt", 13), el("span", { text: target.refine_turbo_only ? t("on (1-step)") : t("off") })]),
-        ]));
-      }
-
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("clean vram") }),
-        el("button", {
-          class: `mmc-pill${target.clean_vram !== false ? " on" : ""}`,
-          title: t("Flush PyTorch CUDA cache and run garbage collection right before upscaling to prevent Out of Memory (OOM) errors."),
+          }),
+        ]),
+        baseSampleChips,
+        el("div", { class: "mmc-res-row", style: { borderTop: "1px solid var(--mmc-line)", paddingTop: "8px", marginTop: "4px" } }, [
+          el("span", { class: "mmc-refine-label", text: t("Latent Upscaler") }),
+          el("button", {
+            class: "mmc-pill",
+            style: { maxWidth: "160px", overflow: "hidden" },
+            title: t("Neural Latent Upscaler model from models/latent_upscale_models/"),
+            onclick: (e) => openChoicePopover(e.currentTarget, {
+              title: t("Latent Upscaler Model"),
+              options: ["bicubic (interpolated)", ...upscalerModels],
+              value: curUpscaler,
+              onPick: (picked) => {
+                target.upscale_model = picked.startsWith("bicubic") ? "" : picked;
+                render();
+                commit();
+              },
+            }),
+          }, [el("span", { text: formatModelLabel(curUpscaler) })]),
+        ]),
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Refine Denoise") }),
+          stepperPill({
+            value: Number(target.refine_denoise ?? DEFAULT_REFINE_DENOISE),
+            min: MIN_REFINE_DENOISE, max: MAX_REFINE_DENOISE, step: 0.05, width: "42px",
+            title: t("Denoise strength for Pass 2 (0.25 is optimal)"),
+            format: (n) => n.toFixed(2),
+            onChange: (next) => { target.refine_denoise = next; render(); commit(); },
+          }),
+        ]),
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Refine Steps") }),
+          stepperPill({
+            value: Number(target.refine_steps ?? DEFAULT_REFINE_STEPS),
+            min: 1, max: 20, step: 1, width: "42px",
+            title: t("Diffusion steps on Pass 2"),
+            format: (n) => `${n}`,
+            onChange: (next) => { target.refine_steps = next; render(); commit(); },
+          }),
+        ]),
+        ...(!isGlobalTurbo ? [
+          el("div", { class: "mmc-res-row" }, [
+            el("span", { class: "mmc-refine-label", text: t("Turbo Refine (1-step)") }),
+            el("button", {
+              class: `mmc-pill${target.refine_turbo_only ? " on" : ""}`,
+              title: t("Applies Turbo distillation specifically to Pass 2 so refinement takes only 1 fast step."),
+              onclick: () => {
+                target.refine_turbo_only = !target.refine_turbo_only;
+                render();
+                commit();
+              },
+            }, [icon("bolt", 13), el("span", { text: target.refine_turbo_only ? t("on") : t("off") })]),
+          ])
+        ] : []),
+      ]);
+    } else if (activeStrategy === "rtx_vsr") {
+      const curQuality = target.rtx_quality || DEFAULT_RTX_QUALITY;
+      const baseSampleChips = el("div", { class: "mmc-chips", style: { gap: "4px" } },
+        BASE_SAMPLE_PRESETS.filter((p) => p.edge <= curEdge).map((p) => el("button", {
+          class: `mmc-chip${curSampleEdge === p.edge ? " on" : ""}`,
+          style: { fontSize: "10.5px", padding: "2px 7px" },
+          text: p.label,
           onclick: () => {
-            target.clean_vram = target.clean_vram === false;
-            body?.repaint();
+            target.sample_edge = p.edge;
+            render();
             commit();
           },
-        }, [icon("broom", 13), el("span", { text: target.clean_vram !== false ? t("auto-flush") : t("off") })]),
-      ]));
+        }))
+      );
 
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("save pass 1 (base)") }),
-        el("button", {
-          class: `mmc-pill${target.save_pass1 ? " on" : ""}`,
-          title: t("Also save the original non-upscaled Pass 1 base video alongside the final upscaled video (saved with _base suffix)."),
-          onclick: () => {
-            target.save_pass1 = !target.save_pass1;
-            body?.repaint();
-            commit();
-          },
-        }, [el("span", { text: target.save_pass1 ? t("on (save both)") : t("off") })]),
-      ]));
+      contextPanel = el("div", { class: "mmc-res-card" }, [
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Base Sample (Pass 1)") }),
+          stepperPill({
+            value: curSampleEdge,
+            min: MIN_SHORT_EDGE, max: cap, step: CANVAS_MULTIPLE, width: "52px",
+            title: t("Short edge Pass 1 samples at before RTX AI upscaling."),
+            format: (n) => `${n}px`,
+            onChange: (next) => {
+              target.sample_edge = next;
+              render();
+              commit();
+            },
+          }),
+        ]),
+        baseSampleChips,
+        el("div", { class: "mmc-res-row", style: { borderTop: "1px solid var(--mmc-line)", paddingTop: "8px", marginTop: "4px" } }, [
+          el("span", { class: "mmc-refine-label", text: t("RTX AI Quality") }),
+          el("button", {
+            class: "mmc-pill",
+            title: t("NVIDIA RTX VSR AI Model Quality Level"),
+            onclick: (e) => openChoicePopover(e.currentTarget, {
+              title: t("RTX VSR Quality"),
+              options: [...RTX_QUALITIES],
+              value: curQuality,
+              onPick: (picked) => {
+                target.rtx_quality = picked;
+                render();
+                commit();
+              },
+            }),
+          }, [el("span", { text: curQuality })]),
+        ]),
+        el("div", { class: "mmc-res-hint-row" }, [
+          el("span", { class: "mmc-res-badge-nvidia", text: "NVIDIA RTX" }),
+          el("span", { class: "mmc-res-hint-text", text: t("Hardware Tensor Core AI upscaling ({sample}p → {edge}p in real-time).", { sample: curSampleEdge, edge: curEdge }) }),
+        ]),
+      ]);
+    } else {
+      contextPanel = el("div", { class: "mmc-res-card direct-card" }, [
+        el("div", { class: "mmc-res-hint-text", text: curEdge > NATIVE_SHORT_EDGE
+          ? t("⚠️ Generating directly at {edge}p is off-distribution for the open weights. Consider 2-Pass Refine or RTX VSR.", { edge: curEdge })
+          : t("✓ Native single-pass sampling at {width} × {height}.", { width, height })
+        }),
+      ]);
     }
 
-    // Tiled VAE Decoder Control
+    // =========================================================================
+    // ZONE 4: COLLAPSIBLE MEMORY & OUTPUT OPTIONS
+    // =========================================================================
     const isTiled = target.tiled_vae === true;
     const curTileSize = Number(target.vae_tile_size || 512);
 
-    rows.push(el("div", { class: "mmc-refine-row", style: { borderTop: "1px solid var(--mmc-line)", paddingTop: "8px", marginTop: "4px" } }, [
-      el("span", { class: "mmc-refine-label", text: t("tiled vae decoder") }),
-      el("button", {
-        class: `mmc-pill${isTiled ? " on" : ""}`,
-        title: t("Decodes latents in small spatial tiles to prevent high VRAM spikes and out-of-memory errors on high-resolution outputs."),
-        onclick: () => {
-          target.tiled_vae = !isTiled;
-          body?.repaint();
-          commit();
-        },
-      }, [icon("res", 13), el("span", { text: isTiled ? t("on (tiled)") : t("off") })]),
-    ]));
+    const memoryFold = el("details", { class: "mmc-pop-fold mmc-res-memory-fold" }, [
+      el("summary", { text: t("⚙️ Memory & Output Options") }),
+      el("div", { class: "mmc-res-fold-content" }, [
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Tiled VAE Decoder") }),
+          el("button", {
+            class: `mmc-pill${isTiled ? " on" : ""}`,
+            title: t("Decodes latents in spatial tiles to prevent VRAM spikes on large resolutions."),
+            onclick: () => {
+              target.tiled_vae = !isTiled;
+              render();
+              commit();
+            },
+          }, [el("span", { text: isTiled ? t("on (tiled)") : t("off") })]),
+        ]),
+        ...(isTiled ? [
+          el("div", { class: "mmc-res-row" }, [
+            el("span", { class: "mmc-refine-label", text: t("VAE Tile Size") }),
+            stepperPill({
+              value: curTileSize,
+              min: 256, max: 2048, step: 64, width: "52px",
+              title: t("Spatial tile size for VAE decoding. 512px is recommended."),
+              format: (n) => `${n}px`,
+              onChange: (next) => { target.vae_tile_size = next; render(); commit(); },
+            }),
+          ])
+        ] : []),
+        el("div", { class: "mmc-res-row" }, [
+          el("span", { class: "mmc-refine-label", text: t("Clean VRAM (Auto-Flush)") }),
+          el("button", {
+            class: `mmc-pill${target.clean_vram !== false ? " on" : ""}`,
+            title: t("Flushes PyTorch CUDA cache before upscaling to avoid memory fragmentation."),
+            onclick: () => {
+              target.clean_vram = target.clean_vram === false;
+              render();
+              commit();
+            },
+          }, [el("span", { text: target.clean_vram !== false ? t("auto-flush") : t("off") })]),
+        ]),
+        ...(activeStrategy === "two_pass" ? [
+          el("div", { class: "mmc-res-row" }, [
+            el("span", { class: "mmc-refine-label", text: t("Save Pass 1 (Base Video)") }),
+            el("button", {
+              class: `mmc-pill${target.save_pass1 ? " on" : ""}`,
+              title: t("Also save the original non-upscaled Pass 1 base video alongside the final upscaled video."),
+              onclick: () => {
+                target.save_pass1 = !target.save_pass1;
+                render();
+                commit();
+              },
+            }, [el("span", { text: target.save_pass1 ? t("on (save both)") : t("off") })]),
+          ])
+        ] : []),
+      ]),
+    ]);
 
-    if (isTiled) {
-      rows.push(el("div", { class: "mmc-refine-row" }, [
-        el("span", { class: "mmc-refine-label", text: t("vae tile size") }),
-        stepperPill({
-          value: curTileSize,
-          min: 256, max: 2048, step: 64, width: "52px",
-          title: t("Spatial tile size for VAE decoding. 512 is recommended."),
-          format: (n) => `${n}px`,
-          onChange: (next) => { target.vae_tile_size = next; body?.repaint(); commit(); },
-        }),
-      ]));
-    }
-
-    section.className = rows.length ? "mmc-twopass" : "";
-    section.replaceChildren(...rows);
+    pop.replaceChildren(
+      header,
+      targetChips,
+      sliderControl,
+      strategyBar,
+      contextPanel,
+      memoryFold
+    );
   };
 
-  body = edgeSlider({
-    min: MIN_SHORT_EDGE, max: MAX_SHORT_EDGE, step: CANVAS_MULTIPLE,
-    value: target.short_edge, mark: NATIVE_SHORT_EDGE, markLabel: "native",
-    apply: (edge) => { target.short_edge = edge; },
-    describe: () => {
-      renderSection();
-      const { width, height } = getGeometry();
-      const over = (target.short_edge || NATIVE_SHORT_EDGE) > NATIVE_SHORT_EDGE;
-      if (rtxVsr(target)) {
-        return {
-          size: `${width} × ${height}`,
-          warn: false,
-          note: t("Pass 1 sampled at {edge} px, upscaled to {width} × {height} via NVIDIA RTX VSR ({quality}).",
-                  { edge: sampleEdge(target), width, height, quality: target.rtx_quality || DEFAULT_RTX_QUALITY }),
-        };
-      }
-      if (twoPass(target)) {
-        return {
-          size: `${width} × ${height}`,
-          warn: false,
-          note: t("Pass 1 at {edge} px, then refined up to {width} × {height} ({steps} step @ {denoise}).",
-                  { edge: sampleEdge(target), width, height, steps: target.refine_steps ?? 1, denoise: (target.refine_denoise ?? DEFAULT_REFINE_DENOISE).toFixed(2) }),
-        };
-      }
-      return {
-        size: `${width} × ${height}`,
-        warn: over,
-        note: over
-          ? t("Above the trained {edge} px short edge — off-distribution, not just slower.", { edge: NATIVE_SHORT_EDGE })
-          : target.short_edge === NATIVE_SHORT_EDGE
-            ? t("Native. What the open weights were trained at.")
-            : t("{ratio}× smaller short edge than native — faster, softer.",
-                { ratio: (NATIVE_SHORT_EDGE / target.short_edge).toFixed(1) }),
-      };
-    },
-    commit,
-  });
-
-  pop.replaceChildren(body, section);
+  render();
   document.body.appendChild(pop);
   placeNear(pop, anchor);
   dismissable(pop);
 
-  loadCatalog(() => { if (pop.isConnected) renderSection(); }, false);
+  loadCatalog(() => { if (pop.isConnected) render(); }, false);
 }

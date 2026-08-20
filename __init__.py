@@ -19,6 +19,8 @@ from .timeline import (
 from .prestage import MiniMaxH3PreStage, MiniMaxH3SaveImage, MiniMaxH3StillLatent
 from .hires import MiniMaxH3RefinePass, MiniMaxH3RTXUpscale
 from .director_node import MiniMaxH3Director
+from .vram_patch import MiniMaxLowVRAMAttention, MiniMaxChunkFeedForward
+from .minimax_h3_speed_sampler import MiniMaxH3SPEEDSampler
 
 NODE_CLASS_MAPPINGS = {
     "MiniMaxH3Creator": MiniMaxH3Creator,
@@ -38,6 +40,9 @@ NODE_CLASS_MAPPINGS = {
     "MiniMaxH3RefinePass": MiniMaxH3RefinePass,
     "MiniMaxH3RTXUpscale": MiniMaxH3RTXUpscale,
     "MiniMaxH3Director": MiniMaxH3Director,
+    "MiniMaxLowVRAMAttention": MiniMaxLowVRAMAttention,
+    "MiniMaxChunkFeedForward": MiniMaxChunkFeedForward,
+    "MiniMaxH3SPEEDSampler": MiniMaxH3SPEEDSampler,
 }
 
 NODE_DISPLAY_NAME_MAPPINGS = {
@@ -48,6 +53,9 @@ NODE_DISPLAY_NAME_MAPPINGS = {
     "MiniMaxH3PreStage": "MiniMax H3 PreStage",
     "MiniMaxH3RTXUpscale": "MiniMax H3 RTX VSR Upscale",
     "MiniMaxH3Director": "MiniMax H3 AI Director",
+    "MiniMaxLowVRAMAttention": "MiniMax H3 Low VRAM Attention",
+    "MiniMaxChunkFeedForward": "MiniMax H3 Chunk FeedForward",
+    "MiniMaxH3SPEEDSampler": "MiniMax H3 SPEED — Progressive Sampler",
 }
 
 WEB_DIRECTORY = "./js"

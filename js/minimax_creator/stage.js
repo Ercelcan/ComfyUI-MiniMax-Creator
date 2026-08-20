@@ -501,6 +501,22 @@ export class Stage {
       onpointerdown: (e) => e.stopPropagation(),
     });
 
+    const downloadBtn = el("button", {
+      class: "mmc-stage-chip mmc-stage-download",
+      text: t("⬇ Download"),
+      title: t("Download this video directly to your computer"),
+      onclick: () => {
+        if (!this.result?.url) return;
+        const a = document.createElement("a");
+        a.href = this.result.url;
+        a.download = this.result.name || "minimax_video.mp4";
+        document.body.appendChild(a);
+        a.click();
+        a.remove();
+      },
+      onpointerdown: (e) => e.stopPropagation(),
+    });
+
     const delBtn = el("button", {
       class: "mmc-stage-chip mmc-stage-del",
       text: t("🗑"),
@@ -549,6 +565,7 @@ export class Stage {
       this.readout.replaceChildren(
         prevBtn,
         nextBtn,
+        downloadBtn,
         ...(this.onGallery ? [
           el("button", {
             class: "mmc-stage-chip mmc-stage-gallery",

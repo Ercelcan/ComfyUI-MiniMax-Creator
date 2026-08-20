@@ -11,6 +11,41 @@ import { invalidateCatalog } from "./minimax_creator/models.js";
 import * as S from "./minimax_creator/state.js";
 import { t } from "./minimax_creator/i18n.js";
 
+const WIDGET_DEFAULTS = {
+  seed: 0,
+  control_after_generate: "fixed",
+  steps: 20,
+  cfg: 1.0,
+  sampler_name: "res_multistep",
+  scheduler: "simple",
+  speed_preset: "off",
+  block_cache: "off",
+  spectrum: false,
+  spectrum_blend: 0.5,
+  low_vram_attn: false,
+  head_chunks: 4,
+  chunk_ffn: false,
+  ffn_chunks: 2,
+  ffn_seq_threshold: 4096,
+};
+
+function sanitizeWidgets(node) {
+  if (!node?.widgets) return;
+  for (const [name, defVal] of Object.entries(WIDGET_DEFAULTS)) {
+    const w = node.widgets.find((x) => x.name === name);
+    if (w) {
+      if (w.value === "" || w.value === null || w.value === undefined) {
+        w.value = defVal;
+      } else if (typeof defVal === "number") {
+        const num = parseFloat(w.value);
+        w.value = isNaN(num) ? defVal : num;
+      } else if (typeof defVal === "boolean" && typeof w.value !== "boolean") {
+        w.value = w.value === "true" || w.value === true;
+      }
+    }
+  }
+}
+
 function installInputGuard() {
   if (globalThis._mmcInputGuardInstalled) return;
   globalThis._mmcInputGuardInstalled = true;
@@ -36,7 +71,6 @@ function installInputGuard() {
     const inStudio = isTimelineStudioActive(active) || Boolean(document.querySelector(".mmc-nle-studio:hover"));
     const key = e.key?.toLowerCase();
 
-    // Hotkey "r" or "f5" refresh detection to invalidate models cache
     if ((e.ctrlKey || e.metaKey) && key === "r") {
       invalidateCatalog();
     }
@@ -316,6 +350,7 @@ function hideWidget(widget) {
 }
 
 function collectSampling(node) {
+  sanitizeWidgets(node);
   const widgets = {};
   for (const name of SAMPLING_WIDGETS) {
     const found = node.widgets?.find((w) => w.name === name);
@@ -340,6 +375,7 @@ function attach(node, build) {
   installStyles();
 
   if (!node) return null;
+  sanitizeWidgets(node);
   if (node.mmcBody) return node.mmcBody;
 
   const cls = getNodeClass(node);
@@ -349,6 +385,7 @@ function attach(node, build) {
   const doAttach = () => {
     if (node.mmcBody) return node.mmcBody;
     try {
+      sanitizeWidgets(node);
       const widget = node.widgets?.find((w) => w.name === targetWidgetName);
       if (!widget) return null;
 
@@ -518,6 +555,8 @@ app.registerExtension({
     const cls = getNodeClass(node);
     if (!MIN_SIZE[cls]) return;
 
+    sanitizeWidgets(node);
+
     const [minWidth, minHeight] = MIN_SIZE[cls];
     if (node.size) {
       node.size[0] = Math.max(node.size[0] || 0, minWidth);
@@ -537,6 +576,8 @@ app.registerExtension({
   loadedGraphNode(node) {
     const cls = getNodeClass(node);
     if (!MIN_SIZE[cls]) return;
+
+    sanitizeWidgets(node);
 
     const [minWidth, minHeight] = MIN_SIZE[cls];
     if (node.size) {

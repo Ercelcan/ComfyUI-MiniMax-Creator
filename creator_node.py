@@ -1,11 +1,26 @@
-"""The MiniMax H3 Creator node."""
+"""The MiniMax H3 Creator node with VRAM Protection and SPEED Progressive Sampler."""
+
+from __future__ import annotations
 
 import json
-
 from comfy_api.latest import ComfyExtension, io
 
-from . import (accel, canvas, director_node, hires, lora, media, models, outputs, prestage,
-               render, settings, timeline)
+from . import (
+    accel,
+    canvas,
+    director_node,
+    hires,
+    lora,
+    media,
+    models,
+    outputs,
+    prestage,
+    render,
+    settings,
+    timeline,
+    vram_patch,
+    minimax_h3_speed_sampler,
+)
 
 DEFAULT_DATA = json.dumps({
     "version": 1,
@@ -47,12 +62,24 @@ class MiniMaxH3Creator(io.ComfyNode):
                 io.Combo.Input("scheduler", options=comfy.samplers.KSampler.SCHEDULERS,
                                default="simple",
                                tooltip="The templates use 'simple'; for reference-heavy prompts they suggest 'beta' or 'normal' instead."),
-                io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off",
-                    tooltip="FirstBlockCache: skip the rest of the DiT on steps where the first block barely moved. 'fast' is the pack's recommended preset. Needs ComfyUI-MiniMaxH3-FirstBlockCache."),
-                io.Boolean.Input("spectrum", default=False,
-                    tooltip="Spectrum: forecast features across steps instead of evaluating every one. Needs ComfyUI-Spectrum-MiniMax-H3. Combines with block_cache; cannot be combined with EasyCache."),
-                io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01,
-                    tooltip="Spectrum's video spectral share. Higher is faster and further from a native render. Ignored unless 'spectrum' is on."),
+                io.Combo.Input("speed_preset", options=accel.SPEED_PRESETS, default="off", optional=True,
+                               tooltip="SPEED progressive-resolution sampler: denoises initial layout at lower resolution for +40% speedup. Auto-bypasses on I2V keyframes."),
+                io.Combo.Input("block_cache", options=accel.BLOCK_CACHE_MODES, default="off", optional=True,
+                               tooltip="FirstBlockCache: skip the rest of the DiT on steps where the first block barely moved. 'fast' is recommended. Needs ComfyUI-MiniMaxH3-FirstBlockCache."),
+                io.Boolean.Input("spectrum", default=False, optional=True,
+                                 tooltip="Spectrum: forecast features across steps instead of evaluating every one. Needs ComfyUI-Spectrum-MiniMax-H3."),
+                io.Float.Input("spectrum_blend", default=0.5, min=0.0, max=1.0, step=0.01, optional=True,
+                               tooltip="Spectrum's video spectral share. Higher is faster and further from a native render."),
+                io.Boolean.Input("low_vram_attn", default=False, optional=True,
+                                 tooltip="MiniMax Low VRAM Attention: chunks multi-head attention to prevent VRAM spikes during high-res generation."),
+                io.Int.Input("head_chunks", default=4, min=1, max=16, step=1, optional=True,
+                             tooltip="Number of attention head chunks (4 is recommended for 12GB/16GB VRAM GPUs)."),
+                io.Boolean.Input("chunk_ffn", default=False, optional=True,
+                                 tooltip="MiniMax Chunk FeedForward: chunks FFN (SwiGLU/MLP) layer evaluations along sequence length to stop peak memory crashes."),
+                io.Int.Input("ffn_chunks", default=2, min=1, max=8, step=1, optional=True,
+                             tooltip="Number of sequential chunks for FFN layers."),
+                io.Int.Input("ffn_seq_threshold", default=4096, min=256, max=65536, step=256, optional=True,
+                             tooltip="Sequence token threshold above which FFN chunking activates."),
             ],
             outputs=[
                 io.Image.Output("images", display_name="images"),
@@ -67,7 +94,7 @@ class MiniMaxH3Creator(io.ComfyNode):
         )
 
     @classmethod
-    def fingerprint_inputs(cls, creator_data, **kwargs):
+    def fingerprint_inputs(cls, creator_data: str, **kwargs) -> tuple:
         import os
 
         stamps = []
@@ -88,8 +115,10 @@ class MiniMaxH3Creator(io.ComfyNode):
         return (creator_data, tuple(stamps))
 
     @classmethod
-    def execute(cls, creator_data, seed, steps, cfg, sampler_name, scheduler,
-                block_cache="off", spectrum=False, spectrum_blend=0.5) -> io.NodeOutput:
+    def execute(cls, creator_data: str, seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str,
+                speed_preset: str = "off", block_cache: str = "off", spectrum: bool = False, spectrum_blend: float = 0.5,
+                low_vram_attn: bool = False, head_chunks: int = 4,
+                chunk_ffn: bool = False, ffn_chunks: int = 2, ffn_seq_threshold: int = 4096) -> io.NodeOutput:
         try:
             data = json.loads(creator_data)
         except json.JSONDecodeError as exc:
@@ -99,13 +128,29 @@ class MiniMaxH3Creator(io.ComfyNode):
         if data.get("prompt_override"):
             payload["prompt_override"] = data["prompt_override"]
 
+        try:
+            blend_val = float(spectrum_blend) if spectrum_blend not in (None, "") else 0.5
+        except (ValueError, TypeError):
+            blend_val = 0.5
+
+        acceleration = accel.Settings(
+            block_cache=str(block_cache or "off"),
+            spectrum=bool(spectrum),
+            spectrum_blend=blend_val,
+            speed_preset=str(speed_preset or "off"),
+            low_vram_attn=bool(low_vram_attn),
+            head_chunks=int(head_chunks or 4),
+            chunk_ffn=bool(chunk_ffn),
+            ffn_chunks=int(ffn_chunks or 2),
+            ffn_seq_threshold=int(ffn_seq_threshold or 4096),
+        )
+
         graph, result_links = render.emit(
             [payload], ["This generation"],
             models.Weights.from_blob(data),
             render.Sampling(seed=seed, steps=steps, cfg=cfg,
                             sampler_name=sampler_name, scheduler=scheduler),
-            accel.Settings(block_cache=block_cache, spectrum=spectrum,
-                           spectrum_blend=spectrum_blend),
+            acceleration,
             cls.hidden.unique_id,
             filename_prefix=outputs.video(data, settings.video_prefix()))
         return render.expanded(graph, result_links)
@@ -119,6 +164,8 @@ class MiniMaxCreatorExtension(ComfyExtension):
             *prestage.NODES,
             *hires.NODES,
             *director_node.NODES,
+            *vram_patch.NODES,
+            minimax_h3_speed_sampler.MiniMaxH3SPEEDSampler,
         ]
 
 

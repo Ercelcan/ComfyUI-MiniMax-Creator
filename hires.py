@@ -2,10 +2,11 @@
 
 Handles:
 - Loading 2D and 3D neural latent upscaler weights from models/latent_upscale_models/
-- Safe unbinding & repacking of ComfyUI NestedTensors (Video + Audio)
+- Dynamic architecture detection (2D vs 3D, arbitrary temporal kernels, channel dimensions)
+- Safe unbinding & repacking of ComfyUI NestedTensors (Video + Audio) with device synchronization
 - High-fidelity 2nd-pass refinement with custom denoise, steps, and Turbo LoRA overrides
-- Automatic VRAM cleaning & CUDA cache flushing before upscaling to prevent OOM errors
-- Hardware-accelerated NVIDIA RTX Video Super Resolution (VSR) pixel upscaling
+- Deep in-place VRAM cleaning, model eviction & CUDA cache flushing
+- Standalone MinimaxH3LatentUpscaler3D node + MiniMaxH3RefinePass + RTX VSR
 """
 
 from __future__ import annotations
@@ -14,6 +15,8 @@ import gc
 import glob
 import os
 import re
+from enum import Enum
+from typing import Any, TypedDict
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -40,6 +43,8 @@ if LATENT_UPSCALE_FOLDER not in folder_paths.folder_names_and_paths:
         os.path.join(folder_paths.models_dir, LATENT_UPSCALE_FOLDER)
     )
 
+VAE_DOWNSAMPLE = 16
+
 # ==========================================
 # MiniMax H3 24-Channel Latent Statistics
 # ==========================================
@@ -61,26 +66,37 @@ LATENTS_STD = [
 ]
 
 
-def _make_norm_tensors(device, dtype):
+def _make_norm_tensors(device: torch.device, dtype: torch.dtype) -> tuple[torch.Tensor, torch.Tensor]:
     mean = torch.tensor(LATENTS_MEAN, dtype=dtype, device=device).view(1, -1, 1, 1, 1)
     std = torch.tensor(LATENTS_STD, dtype=dtype, device=device).view(1, -1, 1, 1, 1)
     return mean, std
 
 
-def normalization(channels):
+def normalization(channels: int) -> nn.GroupNorm:
     return nn.GroupNorm(32, channels)
 
 
-def zero_module(module):
+def zero_module(module: nn.Module) -> nn.Module:
     for p in module.parameters():
         p.detach().zero_()
     return module
 
 
-def clean_gpu_vram():
-    """Flushes GPU VRAM cache, runs Python garbage collection, and notifies ComfyUI model management."""
+def clean_gpu_vram() -> None:
+    """Flushes GPU VRAM cache, evicts temporary upscaler models, and forces ComfyUI model management to reclaim memory."""
+    for k, up_m in list(MODEL_CACHE.items()):
+        try:
+            up_m.to("cpu")
+        except Exception:
+            pass
+    MODEL_CACHE.clear()
     gc.collect()
     if torch.cuda.is_available():
+        try:
+            dev = mm.get_torch_device()
+            mm.free_memory(25 * (1024 ** 3), dev)
+        except Exception:
+            pass
         torch.cuda.empty_cache()
         torch.cuda.ipc_collect()
         try:
@@ -90,10 +106,29 @@ def clean_gpu_vram():
 
 
 # ==========================================
-# Neural Latent Upscaler 3D Backbone
+# 3D Network Components & Dynamic Backbone
 # ==========================================
+class AttnBlock3D(nn.Module):
+    def __init__(self, in_channels: int):
+        super().__init__()
+        self.norm = normalization(in_channels)
+        self.q = nn.Conv3d(in_channels, in_channels, 1)
+        self.k = nn.Conv3d(in_channels, in_channels, 1)
+        self.v = nn.Conv3d(in_channels, in_channels, 1)
+        self.proj_out = nn.Conv3d(in_channels, in_channels, 1)
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        h = self.norm(x)
+        q = rearrange(self.q(h), "b c t h w -> b 1 (t h w) c")
+        k = rearrange(self.k(h), "b c t h w -> b 1 (t h w) c")
+        v = rearrange(self.v(h), "b c t h w -> b 1 (t h w) c")
+        h = F.scaled_dot_product_attention(q, k, v)
+        h = rearrange(h, "b 1 (t h w) c -> b c t h w", t=x.shape[2], h=x.shape[3], w=x.shape[4])
+        return x + self.proj_out(h)
+
+
 class ResBlockEmb3D(nn.Module):
-    def __init__(self, channels, emb_channels, dropout=0, out_channels=None):
+    def __init__(self, channels: int, emb_channels: int, dropout: float = 0, out_channels: int | None = None):
         super().__init__()
         self.out_channels = out_channels or channels
         self.in_layers = nn.Sequential(
@@ -113,7 +148,7 @@ class ResBlockEmb3D(nn.Module):
             if self.out_channels != channels else nn.Identity()
         )
 
-    def forward(self, x, emb):
+    def forward(self, x: torch.Tensor, emb: torch.Tensor) -> torch.Tensor:
         h = self.in_layers(x)
         emb_out = self.emb_layers(emb).type(h.dtype)
         while len(emb_out.shape) < len(h.shape):
@@ -125,7 +160,7 @@ class ResBlockEmb3D(nn.Module):
 
 
 class TemporalConv(nn.Module):
-    def __init__(self, channels, kernel_size=5):
+    def __init__(self, channels: int, kernel_size: int = 5):
         super().__init__()
         padding = kernel_size // 2
         self.norm = normalization(channels)
@@ -137,7 +172,7 @@ class TemporalConv(nn.Module):
         nn.init.zeros_(self.pwconv.weight)
         nn.init.zeros_(self.pwconv.bias)
 
-    def forward(self, x):
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
         identity = x
         h = self.norm(x)
         h = F.silu(h)
@@ -147,8 +182,9 @@ class TemporalConv(nn.Module):
 
 
 class LatentResizer3D(nn.Module):
-    def __init__(self, in_channels=24, in_blocks=12, out_blocks=12,
-                 channels=512, dropout=0.1, temporal_every=2, temporal_kernel=5):
+    def __init__(self, in_channels: int = 24, in_blocks: int = 12, out_blocks: int = 12,
+                 channels: int = 512, dropout: float = 0.1, attn: bool = False,
+                 temporal_every: int = 2, temporal_kernel: int = 5):
         super().__init__()
         self.conv_in = nn.Conv3d(in_channels, channels, 3, padding=1)
         embed_dim = 64
@@ -157,12 +193,16 @@ class LatentResizer3D(nn.Module):
 
         self.in_blocks = nn.ModuleList()
         for b in range(in_blocks):
+            if (b == 1 or b == in_blocks - 1) and attn:
+                self.in_blocks.append(AttnBlock3D(channels))
             self.in_blocks.append(ResBlockEmb3D(channels, embed_dim, dropout))
             if temporal_every > 0 and b % temporal_every == 0:
                 self.in_blocks.append(TemporalConv(channels, temporal_kernel))
 
         self.out_blocks = nn.ModuleList()
         for b in range(out_blocks):
+            if (b == 1 or b == out_blocks - 1) and attn:
+                self.out_blocks.append(AttnBlock3D(channels))
             self.out_blocks.append(ResBlockEmb3D(channels, embed_dim, dropout))
             if temporal_every > 0 and b % temporal_every == 0:
                 self.out_blocks.append(TemporalConv(channels, temporal_kernel))
@@ -170,7 +210,7 @@ class LatentResizer3D(nn.Module):
         self.norm_out = normalization(channels)
         self.conv_out = nn.Conv3d(channels, in_channels, 3, padding=1)
 
-    def forward(self, x, scale=None, target_size=None):
+    def forward(self, x: torch.Tensor, scale: float | None = None, target_size: tuple[int, int, int] | None = None) -> torch.Tensor:
         if target_size is not None:
             size = target_size
         elif scale is not None:
@@ -210,12 +250,12 @@ class LatentResizer3D(nn.Module):
 
 
 # ==========================================
-# Latent Upscaler Model Loader & Cache
+# Dynamic Model Loader & Cache
 # ==========================================
-MODEL_CACHE = {}
+MODEL_CACHE: dict[str, LatentResizer3D] = {}
 
 
-def list_latent_upscale_models():
+def list_latent_upscale_models() -> list[str]:
     files = []
     try:
         model_dir = folder_paths.get_folder_paths(LATENT_UPSCALE_FOLDER)[0]
@@ -226,7 +266,7 @@ def list_latent_upscale_models():
     return sorted(os.path.basename(f) for f in files)
 
 
-def _load_upscaler_sd(path):
+def _load_raw_sd(path: str) -> dict:
     if path.endswith(".safetensors"):
         from safetensors.torch import load_file
         sd = load_file(path, device="cpu")
@@ -234,12 +274,54 @@ def _load_upscaler_sd(path):
         sd = torch.load(path, map_location="cpu", weights_only=False)
     if isinstance(sd, dict) and "model" in sd:
         sd = sd["model"]
-    if any(k.startswith("upscaler.") for k in sd):
-        sd = {k[len("upscaler."):]: v for k, v in sd.items() if k.startswith("upscaler.")}
     return {k: v.to(torch.float16) if v.dtype == torch.float8_e4m3fn else v for k, v in sd.items()}
 
 
-def load_upscaler_model(model_name: str, device: torch.device, precision: str = "fp16"):
+def _extract_upscaler_sd(sd: dict) -> dict:
+    if any(k.startswith("upscaler.") for k in sd):
+        return {k[len("upscaler."):]: v for k, v in sd.items() if k.startswith("upscaler.")}
+    return sd
+
+
+def _detect_arch(sd: dict) -> dict:
+    cfg = {
+        "in_channels": 24, "in_blocks": 12, "out_blocks": 12, "channels": 512,
+        "dropout": 0.1, "attn": False, "temporal_every": 2, "temporal_kernel": 5,
+    }
+    conv_key = "conv_in.weight"
+    if conv_key in sd:
+        cfg["in_channels"] = sd[conv_key].shape[1]
+        cfg["channels"] = sd[conv_key].shape[0]
+
+    in_ids, out_ids = set(), set()
+    temporal_in_indices, temporal_out_indices = set(), set()
+    for k in sd.keys():
+        m = re.match(r"in_blocks\.(\d+)\.in_layers\.", k)
+        if m: in_ids.add(int(m.group(1)))
+        m = re.match(r"out_blocks\.(\d+)\.in_layers\.", k)
+        if m: out_ids.add(int(m.group(1)))
+        m = re.match(r"in_blocks\.(\d+)\.dwconv\.weight", k)
+        if m: temporal_in_indices.add(int(m.group(1)))
+        m = re.match(r"out_blocks\.(\d+)\.dwconv\.weight", k)
+        if m: temporal_out_indices.add(int(m.group(1)))
+
+    if in_ids: cfg["in_blocks"] = len(in_ids)
+    if out_ids: cfg["out_blocks"] = len(out_ids)
+
+    if temporal_in_indices or temporal_out_indices:
+        cfg["temporal_every"] = 2
+        for k in sd.keys():
+            if "dwconv.weight" in k and k.endswith("dwconv.weight"):
+                cfg["temporal_kernel"] = sd[k].shape[2]
+                break
+    else:
+        cfg["temporal_every"] = 0
+
+    cfg["attn"] = False  # force off at inference for stability/speed
+    return cfg
+
+
+def load_upscaler_model(model_name: str, device: torch.device, precision: str = "fp16") -> LatentResizer3D:
     cache_key = f"{model_name}::{device}::{precision}"
     if cache_key in MODEL_CACHE:
         return MODEL_CACHE[cache_key]
@@ -249,37 +331,21 @@ def load_upscaler_model(model_name: str, device: torch.device, precision: str = 
     if not os.path.exists(path):
         raise FileNotFoundError(f"Latent upscaler model not found: {path}")
 
-    sd = _load_upscaler_sd(path)
-
-    cfg = {
-        "in_channels": 24, "in_blocks": 12, "out_blocks": 12,
-        "channels": 512, "dropout": 0.1, "temporal_every": 2, "temporal_kernel": 5,
-    }
-
-    if "conv_in.weight" in sd:
-        cfg["in_channels"] = sd["conv_in.weight"].shape[1]
-        cfg["channels"] = sd["conv_in.weight"].shape[0]
-
-    in_ids = {int(m.group(1)) for k in sd if (m := re.match(r"in_blocks\.(\d+)\.in_layers\.", k))}
-    out_ids = {int(m.group(1)) for k in sd if (m := re.match(r"out_blocks\.(\d+)\.in_layers\.", k))}
-    if in_ids:
-        cfg["in_blocks"] = len(in_ids)
-    if out_ids:
-        cfg["out_blocks"] = len(out_ids)
+    raw_sd = _load_raw_sd(path)
+    up_sd = _extract_upscaler_sd(raw_sd)
+    cfg = _detect_arch(up_sd)
 
     model = LatentResizer3D(
-        in_channels=cfg["in_channels"],
-        in_blocks=cfg["in_blocks"],
-        out_blocks=cfg["out_blocks"],
-        channels=cfg["channels"],
-        dropout=cfg["dropout"],
-        temporal_every=cfg["temporal_every"],
-        temporal_kernel=cfg["temporal_kernel"],
+        in_channels=cfg["in_channels"], in_blocks=cfg["in_blocks"], out_blocks=cfg["out_blocks"],
+        channels=cfg["channels"], dropout=cfg["dropout"], attn=cfg["attn"],
+        temporal_every=cfg["temporal_every"], temporal_kernel=cfg["temporal_kernel"],
     )
-    model.load_state_dict(sd, strict=False)
-
+    model.load_state_dict(up_sd, strict=True)
     dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}.get(precision, torch.float16)
-    model = model.to(device=device, dtype=dtype).eval()
+    model = model.to(device).eval().requires_grad_(False)
+    if dtype != torch.float32:
+        model = model.to(dtype)
+
     MODEL_CACHE[cache_key] = model
     return model
 
@@ -287,34 +353,158 @@ def load_upscaler_model(model_name: str, device: torch.device, precision: str = 
 def upscale_video_latent_tensor(video: torch.Tensor, width: int, height: int,
                                 model_name: str = "", scale: float = 2.0,
                                 device: str = "cuda", precision: str = "fp16") -> torch.Tensor:
-    """Upscales video latent [B, C, T, H, W] using either neural upscaler or bicubic fallback."""
+    """Upscales video latent [B, C, T, H, W] using neural upscaler or bicubic fallback with in-place VRAM math."""
+    orig_device = video.device
+    orig_dtype = video.dtype
+
     if model_name and model_name.strip() and model_name != "bicubic":
         dev = torch.device(device if torch.cuda.is_available() else "cpu")
         model = load_upscaler_model(model_name, dev, precision)
         compute_dtype = {"fp32": torch.float32, "fp16": torch.float16, "bf16": torch.bfloat16}.get(precision, torch.float16)
 
-        orig_dtype = video.dtype
-        s = video.to(dev, compute_dtype)
         norm_mean, norm_std = _make_norm_tensors(dev, compute_dtype)
-        s = (s - norm_mean) / norm_std
+        s = video.to(dev, compute_dtype, copy=True)
 
-        with torch.no_grad():
+        with torch.inference_mode():
             T = s.shape[2]
             target_size = (T, height // 16, width // 16)
+            s.sub_(norm_mean).div_(norm_std)
             out = model(s, scale=scale, target_size=target_size)
+            del s
+            out.mul_(norm_std).add_(norm_mean)
+            res = out.to(device=orig_device, dtype=orig_dtype)
 
-        out = out * norm_std + norm_mean
-        return out.cpu().to(orig_dtype)
+        del out, norm_mean, norm_std
+        clean_gpu_vram()
+        return res
 
     # Bicubic Fallback
     batch, channels, frames = video.shape[0], video.shape[1], video.shape[2]
     flat = video.movedim(2, 1).reshape(batch * frames, channels, *video.shape[3:])
     flat = comfy.utils.common_upscale(flat, width // 16, height // 16, "bicubic", "disabled")
-    return flat.reshape(batch, frames, channels, *flat.shape[2:]).movedim(1, 2)
+    return flat.reshape(batch, frames, channels, *flat.shape[2:]).movedim(1, 2).to(device=orig_device, dtype=orig_dtype)
 
 
 # ==========================================
-# Refine Pass ComfyUI Node
+# Standalone Latent Upscaler Node (Direct)
+# ==========================================
+class UpscaleMode(str, Enum):
+    SCALE_BY = "scale by multiplier"
+    TARGET_DIMENSIONS = "target dimensions"
+    MEGAPIXELS = "megapixels"
+
+class UpscaleConfig(TypedDict):
+    mode: UpscaleMode
+    scale: float
+    width: int
+    height: int
+    megapixels: float
+
+class MinimaxH3LatentUpscaler3D(io.ComfyNode):
+    @classmethod
+    def define_schema(cls):
+        return io.Schema(
+            node_id="MinimaxH3LatentUpscaler3D",
+            display_name="Minimax H3 Latent Upscaler (3D)",
+            category="MiniMax",
+            description="Pure 3D/2D neural latent upscaler for MiniMax H3 24-channel joint AV latents.",
+            inputs=[
+                io.AnyType.Input("latent"),
+                io.Combo.Input("model_name", options=list_latent_upscale_models() or ["none"]),
+                io.DynamicCombo.Input(
+                    "mode",
+                    options=[
+                        io.DynamicCombo.Option(UpscaleMode.SCALE_BY, [
+                            io.Float.Input("scale", default=2.0, min=1.0, max=4.0, step=0.05),
+                        ]),
+                        io.DynamicCombo.Option(UpscaleMode.TARGET_DIMENSIONS, [
+                            io.Int.Input("width", default=1344, min=64, max=4096, step=16),
+                            io.Int.Input("height", default=768, min=64, max=4096, step=16),
+                        ]),
+                        io.DynamicCombo.Option(UpscaleMode.MEGAPIXELS, [
+                            io.Float.Input("megapixels", default=1.0, min=0.1, max=8.0, step=0.1),
+                        ]),
+                    ],
+                ),
+                io.Int.Input("align", default=32, min=1, max=512, step=1),
+                io.Boolean.Input("keep_proportion", default=True),
+                io.Combo.Input("device", options=["cuda", "cpu"], default="cuda"),
+                io.Combo.Input("precision", options=["fp16", "bf16", "fp32"], default="fp16"),
+            ],
+            outputs=[io.AnyType.Output("latent", display_name="LATENT")],
+        )
+
+    @classmethod
+    def execute(cls, latent: dict, model_name: str, mode: UpscaleConfig,
+                align: int = 32, keep_proportion: bool = True,
+                device: str = "cuda", precision: str = "fp16") -> io.NodeOutput:
+
+        selected_mode = mode["mode"]
+        samples = latent["samples"]
+
+        is_nested = getattr(samples, "is_nested", False) or not isinstance(samples, torch.Tensor)
+        if is_nested:
+            tensors = list(samples.unbind()) if hasattr(samples, "unbind") else list(samples)
+            video_tensor = tensors[0]
+            audio_tensors = tensors[1:]
+        else:
+            video_tensor = samples
+            audio_tensors = []
+
+        if video_tensor.ndim == 4:
+            video_tensor = video_tensor.unsqueeze(0)
+
+        b, c, t, h_in, w_in = video_tensor.shape
+
+        if selected_mode == UpscaleMode.SCALE_BY:
+            scale_val = mode["scale"]
+            w_pixel_target = w_in * VAE_DOWNSAMPLE * scale_val
+            h_pixel_target = h_in * VAE_DOWNSAMPLE * scale_val
+            effective_scale = scale_val
+        elif selected_mode == UpscaleMode.TARGET_DIMENSIONS:
+            w_pixel_target = float(mode["width"])
+            h_pixel_target = float(mode["height"])
+            effective_scale = (w_pixel_target / (w_in * VAE_DOWNSAMPLE) + h_pixel_target / (h_in * VAE_DOWNSAMPLE)) / 2.0
+        else:
+            mp = mode["megapixels"]
+            target_pixels = mp * 1024 * 1024
+            aspect_ratio = w_in / h_in
+            h_pixel_target = (target_pixels / aspect_ratio) ** 0.5
+            w_pixel_target = h_pixel_target * aspect_ratio
+            effective_scale = (w_pixel_target / (w_in * VAE_DOWNSAMPLE) + h_pixel_target / (h_in * VAE_DOWNSAMPLE)) / 2.0
+
+        alignment = max(1, align)
+        if keep_proportion:
+            w_pixel_aligned = round(w_pixel_target / alignment) * alignment
+            h_pixel_aligned = w_pixel_aligned / (w_in / h_in)
+        else:
+            w_pixel_aligned = round(w_pixel_target / alignment) * alignment
+            h_pixel_aligned = round(h_pixel_target / alignment) * alignment
+
+        w_pixel_final = round(w_pixel_aligned / VAE_DOWNSAMPLE) * VAE_DOWNSAMPLE
+        h_pixel_final = round(h_pixel_aligned / VAE_DOWNSAMPLE) * VAE_DOWNSAMPLE
+
+        target_w = max(1, int(w_pixel_final))
+        target_h = max(1, int(h_pixel_final))
+
+        out_v = upscale_video_latent_tensor(
+            video_tensor, target_w, target_h,
+            model_name=model_name, scale=effective_scale,
+            device=device, precision=precision,
+        )
+
+        if is_nested:
+            out_samples = comfy.nested_tensor.NestedTensor([out_v] + audio_tensors)
+        else:
+            out_samples = out_v
+
+        out_latent = dict(latent)
+        out_latent["samples"] = out_samples
+        return io.NodeOutput(out_latent)
+
+
+# ==========================================
+# Refine Pass ComfyUI Node (2-Pass Sampling)
 # ==========================================
 class MiniMaxH3RefinePass(io.ComfyNode):
     @classmethod
@@ -349,9 +539,9 @@ class MiniMaxH3RefinePass(io.ComfyNode):
         )
 
     @classmethod
-    def execute(cls, model, positive, negative, latent, width, height,
-                seed, steps, cfg, sampler_name, scheduler, denoise,
-                upscaler_model="", scale=2.0, clean_vram=True) -> io.NodeOutput:
+    def execute(cls, model: Any, positive: Any, negative: Any, latent: dict, width: int, height: int,
+                seed: int, steps: int, cfg: float, sampler_name: str, scheduler: str, denoise: float,
+                upscaler_model: str = "", scale: float = 2.0, clean_vram: bool = True) -> io.NodeOutput:
 
         if clean_vram:
             clean_gpu_vram()
@@ -376,14 +566,18 @@ class MiniMaxH3RefinePass(io.ComfyNode):
         if video.ndim == 4:
             video = video.unsqueeze(0)
 
-        # Upscale the video latent stream
+        target_device = "cpu"
+        video = video.to(target_device)
+        if audio is not None:
+            audio = audio.to(target_device)
+
         video = upscale_video_latent_tensor(
             video, width, height,
             model_name=upscaler_model,
             scale=scale,
             device="cuda" if torch.cuda.is_available() else "cpu",
             precision="fp16",
-        )
+        ).to(target_device)
 
         if clean_vram:
             clean_gpu_vram()
@@ -398,15 +592,19 @@ class MiniMaxH3RefinePass(io.ComfyNode):
 
         noise_video = torch.randn(
             video.size(), dtype=torch.float32, layout=video.layout,
-            generator=torch.manual_seed(seed), device="cpu").to(video.dtype)
+            generator=torch.manual_seed(seed), device=target_device).to(video.dtype)
 
         if audio is not None:
-            noise_audio = torch.zeros_like(audio, device="cpu")
+            audio = audio.to(target_device)
+            noise_audio = torch.zeros_like(audio, device=target_device)
             noise = comfy.nested_tensor.NestedTensor((noise_video, noise_audio))
-            start = comfy.nested_tensor.NestedTensor((video, audio / (1.0 - sigma0)))
+            start = comfy.nested_tensor.NestedTensor((video, (audio / (1.0 - sigma0)).to(audio.dtype)))
         else:
             noise = noise_video
             start = video
+
+        if clean_vram:
+            clean_gpu_vram()
 
         refined = comfy.sample.sample(
             model, noise, steps, cfg, sampler_name, scheduler,
@@ -418,12 +616,18 @@ class MiniMaxH3RefinePass(io.ComfyNode):
 
         if audio is not None:
             refined_video = refined.unbind()[0] if hasattr(refined, "unbind") else (refined[0] if isinstance(refined, (list, tuple)) else refined)
+            refined_video = refined_video.to(target_device)
+            audio = audio.to(target_device)
             out_samples = comfy.nested_tensor.NestedTensor((refined_video, audio))
         else:
             out_samples = refined
 
         out = dict(latent)
         out["samples"] = out_samples
+
+        if clean_vram:
+            clean_gpu_vram()
+
         return io.NodeOutput(out)
 
 
@@ -474,4 +678,4 @@ class MiniMaxH3RTXUpscale(io.ComfyNode):
         return io.NodeOutput(upscaled, int(upscaled.shape[2]), int(upscaled.shape[1]))
 
 
-NODES = [MiniMaxH3RefinePass, MiniMaxH3RTXUpscale]
+NODES = [MinimaxH3LatentUpscaler3D, MiniMaxH3RefinePass, MiniMaxH3RTXUpscale]

@@ -22,6 +22,13 @@ SYNTAX_MODES = ("media", "full", "off")
 DEFAULT_TILED_VAE = False
 DEFAULT_VAE_TILE_SIZE = 512
 
+DEFAULT_SPEED_PRESET = "off"
+DEFAULT_LOW_VRAM_ATTN = False
+DEFAULT_HEAD_CHUNKS = 4
+DEFAULT_CHUNK_FFN = False
+DEFAULT_FFN_CHUNKS = 2
+DEFAULT_FFN_SEQ_THRESHOLD = 4096
+
 DEFAULTS = {
     "video_crf": DEFAULT_CRF,
     "video_prefix": DEFAULT_VIDEO_PREFIX,
@@ -31,6 +38,12 @@ DEFAULTS = {
     "enable_linter": True,
     "tiled_vae": DEFAULT_TILED_VAE,
     "vae_tile_size": DEFAULT_VAE_TILE_SIZE,
+    "speed_preset": DEFAULT_SPEED_PRESET,
+    "low_vram_attn": DEFAULT_LOW_VRAM_ATTN,
+    "head_chunks": DEFAULT_HEAD_CHUNKS,
+    "chunk_ffn": DEFAULT_CHUNK_FFN,
+    "ffn_chunks": DEFAULT_FFN_CHUNKS,
+    "ffn_seq_threshold": DEFAULT_FFN_SEQ_THRESHOLD,
 }
 
 
@@ -66,6 +79,30 @@ def clean(raw: Any) -> dict:
         try:
             ts = int(raw["vae_tile_size"])
             clean_settings["vae_tile_size"] = max(64, min(4096, (ts // 64) * 64))
+        except (ValueError, TypeError):
+            pass
+    if "speed_preset" in raw and isinstance(raw["speed_preset"], str):
+        clean_settings["speed_preset"] = raw["speed_preset"].strip()
+    if "low_vram_attn" in raw and raw["low_vram_attn"] is not None:
+        clean_settings["low_vram_attn"] = bool(raw["low_vram_attn"])
+    if "head_chunks" in raw and raw["head_chunks"] is not None:
+        try:
+            hc = int(raw["head_chunks"])
+            clean_settings["head_chunks"] = max(1, min(16, hc))
+        except (ValueError, TypeError):
+            pass
+    if "chunk_ffn" in raw and raw["chunk_ffn"] is not None:
+        clean_settings["chunk_ffn"] = bool(raw["chunk_ffn"])
+    if "ffn_chunks" in raw and raw["ffn_chunks"] is not None:
+        try:
+            fc = int(raw["ffn_chunks"])
+            clean_settings["ffn_chunks"] = max(1, min(8, fc))
+        except (ValueError, TypeError):
+            pass
+    if "ffn_seq_threshold" in raw and raw["ffn_seq_threshold"] is not None:
+        try:
+            st = int(raw["ffn_seq_threshold"])
+            clean_settings["ffn_seq_threshold"] = max(256, min(65536, st))
         except (ValueError, TypeError):
             pass
     return clean_settings
@@ -129,3 +166,27 @@ def tiled_vae() -> bool:
 
 def vae_tile_size() -> int:
     return int(load().get("vae_tile_size", 512))
+
+
+def speed_preset() -> str:
+    return str(load().get("speed_preset", "off"))
+
+
+def low_vram_attn() -> bool:
+    return bool(load().get("low_vram_attn", False))
+
+
+def head_chunks() -> int:
+    return int(load().get("head_chunks", 4))
+
+
+def chunk_ffn() -> bool:
+    return bool(load().get("chunk_ffn", False))
+
+
+def ffn_chunks() -> int:
+    return int(load().get("ffn_chunks", 2))
+
+
+def ffn_seq_threshold() -> int:
+    return int(load().get("ffn_seq_threshold", 4096))
