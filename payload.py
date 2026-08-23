@@ -196,6 +196,17 @@ def _wrapper(executor, *args, **kwargs):
     return executor(*args, **kwargs)
 
 
+def native_payload_ready():
+    """True when core's own extra_conds handles AV-mask payload layout, making
+    the repair wrapper redundant overhead on every sampling step."""
+    try:
+        from .h3_mask_payload_compat import capability_status
+        status = capability_status()
+        return bool(status.get("native_av_mask_payload"))
+    except Exception:
+        return False
+
+
 def repair(model):
     """A clone of `model` whose seams survive core's payload assembly.
 

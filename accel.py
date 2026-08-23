@@ -1,12 +1,4 @@
-"""Optional sampling accelerators and VRAM protection modifiers for MiniMax H3.
-
-Supports:
-1. FirstBlockCache (ComfyUI-MiniMaxH3-FirstBlockCache)
-2. Spectrum Forecasting (ComfyUI-Spectrum-MiniMax-H3)
-3. MiniMax Low VRAM Attention (Head chunking)
-4. MiniMax Chunk FeedForward (FFN sequence chunking)
-5. MiniMax H3 SPEED Sampler (Progressive resolution DCT sampling)
-"""
+"""Optional sampling accelerators and VRAM protection modifiers for MiniMax H3."""
 
 from __future__ import annotations
 
@@ -32,7 +24,7 @@ BLOCK_CACHE_MODES = ["off", "safe", "fast", "aggressive"]
 SPEED_PRESETS = [
     "off",
     "Half -> Full (0.5x -> 1.0x) [Balanced / Recommended]",
-    "Three-Quarter -> Full (0.75x -> 1.0x) [Fastest]",
+    "Three-Quarter -> Full (0.75x -> 1.0x) [Fast]",
     "Quarter -> Half -> Full (3-Stage) [High Detail]",
 ]
 
@@ -116,12 +108,6 @@ def _spectrum_kwargs(node: Any, blend: float) -> dict[str, Any]:
 
 
 def plan(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
-    """Builds [(node_id, kwargs), ...] in strict pipeline order:
-    1. FirstBlockCache
-    2. Spectrum
-    3. Low VRAM Attention (Head chunking)
-    4. Chunk FeedForward (FFN chunking)
-    """
     steps = []
     if settings.block_cache != "off":
         node = _require(BLOCK_CACHE_NODE)
@@ -144,14 +130,12 @@ def plan(settings: Settings) -> list[tuple[str, dict[str, Any]]]:
 
 
 def graph_apply(graph: Any, model: Any, settings: Settings) -> Any:
-    """Applies accelerators and VRAM protection patches inside a GraphBuilder subgraph."""
     for node_id, kwargs in plan(settings):
         model = graph.node(node_id, model=model, **kwargs).out(0)
     return model
 
 
 def direct_apply(model: Any, settings: Settings) -> Any:
-    """Directly applies patches to a live MODEL object."""
     for node_id, kwargs in plan(settings):
         node = _require(node_id)
         model = getattr(node(), node.FUNCTION)(model=model, **kwargs)[0]

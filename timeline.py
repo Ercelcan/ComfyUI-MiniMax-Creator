@@ -384,7 +384,6 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
                 io.Audio.Input("master_audio", optional=True),
                 io.Image.Input("source_frames", optional=True),
                 io.Audio.Input("source_audio", optional=True),
-                io.Image.Input("prev_step", optional=True),
             ],
             outputs=[
                 io.Model.Output(display_name="model"),
@@ -407,8 +406,7 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
     def execute(cls, clip: Any, segment_data: str, vae: Any = None, audio_vae: Any = None,
                 model_fl2va: Any = None, model_ref2va: Any = None,
                 prev_image: Any = None, prev_audio: Any = None, prev_latent: Any = None,
-                master_audio: Any = None, source_frames: Any = None, source_audio: Any = None,
-                prev_step: Any = None) -> io.NodeOutput:
+                master_audio: Any = None, source_frames: Any = None, source_audio: Any = None) -> io.NodeOutput:
         payload = _parse(segment_data)
         progress = payload.get("progress")
         if progress:
@@ -432,6 +430,15 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
 
         loaded = media.load_all(compiled)
 
+        if getattr(compiled, "extend_video", None) and encoder.SOURCE_VIDEO not in loaded:
+            ext_frames, ext_audio = media.load_video(compiled.extend_video, want_audio=True)
+            if ext_frames is None or int(ext_frames.shape[0]) == 0:
+                raise ValueError(f"extend_video: {compiled.extend_video!r} has no decodable frames")
+            loaded[encoder.SOURCE_VIDEO] = {
+                "frames": ext_frames,
+                "audio": ext_audio,
+            }
+
         if prev_latent is not None and getattr(prev_latent, "get", None) and prev_latent.get("samples") is not None:
             loaded[encoder.PREV_LATENT] = {"latent": prev_latent}
 
@@ -451,18 +458,12 @@ class MiniMaxH3TimelineSegment(io.ComfyNode):
         if master_audio is not None:
             loaded[encoder.MASTER_AUDIO] = {"audio": master_audio}
 
-        if compiled.continues or compiled.continues_audio:
-            model = payload_repair.repair(model)
+        # Apply seam guide repair only for non-av_mask modes on runtimes lacking native payload assembly
+        if (compiled.continues or compiled.continues_audio) and getattr(compiled, "continuity_mode", "") != "av_mask":
+            if not payload_repair.native_payload_ready():
+                model = payload_repair.repair(model)
 
         cond, latent = encoder.encode(clip, vae, audio_vae, compiled, loaded)
-
-        try:
-            dev = mm.get_torch_device()
-            mm.free_memory(25 * (1024 ** 3), dev)
-            if torch.cuda.is_available():
-                torch.cuda.empty_cache()
-        except Exception:
-            pass
 
         clean_audio = None
         if encoder.MASTER_AUDIO in loaded:

@@ -113,6 +113,13 @@ export class PromptBox {
     this.root.addEventListener("keydown", (event) => this.onKeyDown(event), true);
     this.root.addEventListener("paste", (event) => this.onPaste(event));
     this.root.addEventListener("blur", () => setTimeout(() => this.closeMenu(), 150));
+    this.root.addEventListener("contextmenu", (event) => {
+      const chipEl = event.target.closest?.(".mmc-ref[data-handle]");
+      if (!chipEl) return;
+      event.preventDefault();
+      event.stopPropagation();
+      this.openChipMenu(chipEl.dataset.handle, chipEl);
+    });
 
     for (const name of ["keyup", "keydown", "copy", "cut", "paste", "pointerdown", "pointerup", "wheel"]) {
       this.root.addEventListener(name, (event) => event.stopPropagation());
@@ -277,7 +284,7 @@ export class PromptBox {
 
     const warnings = [];
 
-    const mentioned = [...new Set(Array.from(text.matchAll(/@([A-Za-z]+-\d+)/g), (m) => m[1]))];
+    const mentioned = [...new Set(Array.from(text.matchAll(/@([A-Za-z]+-?\d+)/g), (m) => m[1]))];
     const missing = mentioned.filter((h) => !attached.has(h));
     if (missing.length) {
       warnings.push({
@@ -385,6 +392,17 @@ export class PromptBox {
       },
     });
 
+    const helpBtn = el("button", {
+      class: "mmc-ghost mmc-prompt-tool-btn",
+      text: t("? Shortcuts"),
+      title: t("Keyboard shortcuts"),
+      onpointerdown: (e) => e.stopPropagation(),
+      onclick: (e) => {
+        e.stopPropagation();
+        this.openHelpPopover(helpBtn);
+      },
+    });
+
     const topBar = el("div", { class: "mmc-prompt-top-row" }, [
       toggleBtn,
       structureBtn,
@@ -392,6 +410,7 @@ export class PromptBox {
       el("span", { style: { flex: "1" } }),
       copyBtn,
       clearBtn,
+      helpBtn,
       this.wordCountEl,
     ]);
 
@@ -426,6 +445,7 @@ export class PromptBox {
   setValue(text) {
     if (this.getValue() === text) return;
     this.root.replaceChildren(...this.build(text));
+    this._lastHighlighted = this.getValue();
     this.updateWordCount();
     this.runLinter();
   }
@@ -446,8 +466,8 @@ export class PromptBox {
     let at = 0;
 
     const pattern = mode === "full"
-      ? /(@[A-Za-z]+-\d+)|(\[Shot\s+\d+\])|(At\s+\d{1,3}:\d{2}\.\d{3},?)|(<\s*(?:Subject|Picture|Video|Audio)\s+\d+\s*>)|(<d>[\s\S]*?<\/d>)/gi
-      : /@([A-Za-z]+-\d+)/g;
+      ? /(@[A-Za-z]+-?\d+)|(\[Shot\s+\d+\])|(At\s+\d{1,3}:\d{2}\.\d{3},?)|(<\s*(?:Subject|Picture|Video|Audio)\s+\d+\s*>)|(<d>[\s\S]*?<\/d>)/gi
+      : /@([A-Za-z]+-?\d+)/g;
 
     let match;
     while ((match = pattern.exec(text)) !== null) {
@@ -500,8 +520,61 @@ export class PromptBox {
   refresh() {
     if (document.activeElement === this.root) return;
     this.root.replaceChildren(...this.build(this.hooks.getState?.()?.prompt ?? ""));
+    this._lastHighlighted = this.getValue();
     this.updateWordCount();
     this.runLinter();
+  }
+
+  /* ---- live re-highlighting while typing ------------------------------- */
+
+  scheduleHighlight() {
+    clearTimeout(this._highlightTimer);
+    this._highlightTimer = setTimeout(() => {
+      // Wait for the mention menu to close so its rows aren't rebuilt mid-use.
+      if (this.menu) { this.scheduleHighlight(); return; }
+      this.rehighlightIfChanged();
+    }, 350);
+  }
+
+  rehighlightIfChanged() {
+    if (!this.root.isConnected || this.syntaxMode === "off") return;
+    const text = this.getValue();
+    if (text === this._lastHighlighted) return;
+    const caret = this.caretTextOffset();
+    this.root.replaceChildren(...this.build(text));
+    this._lastHighlighted = text;
+    if (caret >= 0 && document.activeElement === this.root) this.restoreCaret(caret);
+  }
+
+  caretTextOffset() {
+    const sel = window.getSelection();
+    if (!sel?.rangeCount || !this.root.contains(sel.getRangeAt(0).startContainer)) return -1;
+    const active = sel.getRangeAt(0);
+    const pre = active.cloneRange();
+    pre.selectNodeContents(this.root);
+    pre.setEnd(active.startContainer, active.startOffset);
+    return pre.toString().length;
+  }
+
+  restoreCaret(offset) {
+    try {
+      const walker = document.createTreeWalker(this.root, NodeFilter.SHOW_TEXT);
+      let remaining = offset;
+      let node;
+      while ((node = walker.nextNode())) {
+        const length = node.nodeValue.length;
+        if (remaining <= length) {
+          const selection = window.getSelection();
+          const range = document.createRange();
+          range.setStart(node, Math.max(0, remaining));
+          range.collapse(true);
+          selection.removeAllRanges();
+          selection.addRange(range);
+          return;
+        }
+        remaining -= length;
+      }
+    } catch {}
   }
 
   onEdit() {
@@ -509,6 +582,7 @@ export class PromptBox {
     const trigger = this.triggerRange();
     if (trigger) this.openMenu(trigger.query);
     else this.closeMenu();
+    this.scheduleHighlight();
   }
 
   onPaste(event) {
@@ -530,6 +604,14 @@ export class PromptBox {
       return;
     }
     event.stopPropagation();
+
+    if (event.key === "Enter" && (event.ctrlKey || event.metaKey)) {
+      // Ctrl/Cmd+Enter queues the prompt without leaving the keyboard.
+      event.preventDefault();
+      if (this.menu) this.choose(this.active);
+      else this.hooks.onQueue?.();
+      return;
+    }
 
     if (event.key === "Enter") {
       event.preventDefault();
@@ -623,6 +705,73 @@ export class PromptBox {
     this.active = 0;
     this.rows = null;
     this.signature = null;
+  }
+
+  openHelpPopover(anchor) {
+    const shortcuts = [
+      ["@", t("Attach or reference media from the prompt")],
+      ["↑ ↓", t("Move through the mention menu")],
+      ["Enter / Tab", t("Pick the highlighted mention")],
+      ["Esc", t("Close menus and popovers")],
+      ["Ctrl+Enter", t("Queue the prompt")],
+      ["Right-click @chip", t("Trim, switch sound, copy or remove")],
+    ];
+    const pop = el("div", { class: "mmc-pop mmc-help-pop" }, [
+      el("div", { class: "mmc-pop-title", text: t("Keyboard shortcuts") }),
+      ...shortcuts.map(([key, what]) => el("div", { class: "mmc-help-row" }, [
+        el("kbd", { class: "mmc-help-key", text: key }),
+        el("span", { class: "mmc-help-what", text: what }),
+      ])),
+    ]);
+    floatAbove(pop);
+    document.body.appendChild(pop);
+    placeNear(pop, anchor);
+    dismissable(pop);
+  }
+
+  defaultChipActions(handle) {
+    const state = this.hooks.getState?.() ?? {};
+    const attached = (state.assets ?? state.refs ?? []).find((a) => a.handle === handle);
+    const actions = [{
+      label: t(`Copy @${handle}`),
+      title: t("Copy the mention to the clipboard"),
+      run: () => { try { navigator.clipboard.writeText(`@${handle}`); } catch {} },
+    }];
+    if (attached && this.hooks.removeAsset) {
+      actions.push({
+        label: t("Remove attachment"),
+        danger: true,
+        run: () => this.hooks.removeAsset(handle),
+      });
+    }
+    return actions;
+  }
+
+  openChipMenu(handle, anchorEl) {
+    const actions = this.hooks.chipActions?.(handle) ?? this.defaultChipActions(handle);
+    if (!actions.length) return;
+    this.closeChipMenu();
+    const pop = el("div", { class: "mmc-pop mmc-chip-menu" },
+      actions.map((action) => el("button", {
+        class: `mmc-chip-menu-item${action.danger ? " danger" : ""}`,
+        text: action.label,
+        title: action.title || "",
+        onclick: (event) => {
+          event.stopPropagation();
+          this.closeChipMenu();
+          try { action.run?.(); } catch (error) { console.error("[minimax_creator] chip action failed:", error); }
+        },
+      }))
+    );
+    floatAbove(pop);
+    document.body.appendChild(pop);
+    placeNear(pop, anchorEl);
+    this.chipMenuCloser = dismissable(pop, () => { this.chipMenuCloser = null; });
+  }
+
+  closeChipMenu() {
+    this.chipMenuCloser?.();
+    this.chipMenuCloser = null;
   }
 
   place() {

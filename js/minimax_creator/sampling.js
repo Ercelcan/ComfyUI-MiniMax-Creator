@@ -157,7 +157,7 @@ export function samplingBar({ widgets = {}, value, set, perSegment = false, turb
   pills.push(el("button", {
     class: `mmc-pill${speedOn ? " accel-on" : ""}`,
     title: speedOn
-      ? t("SPEED Progressive Sampler Active (+40% speedup): Layout denoised at coarse resolution before DCT expanding to 100%. Auto-bypasses on I2V keyframes.")
+      ? t("SPEED Progressive Sampler Active: Early steps computed at coarse resolution or native anchor. Auto-bypasses on I2V keyframes.")
       : t("SPEED Progressive Sampler: Denoises coarse layout early for high-speed DiT evaluation, then spectral-expands to full resolution."),
     onpointerdown: (e) => e.stopPropagation(),
     onclick: (event) => {
@@ -233,7 +233,7 @@ export function samplingBar({ widgets = {}, value, set, perSegment = false, turb
         : t("Spectrum off. Click to turn on."),
       onpointerdown: (e) => e.stopPropagation(),
       onclick: (e) => {
-        e.stopPropagation();
+        event.stopPropagation();
         set("spectrum", !spectrumOn);
       },
     }, [el("span", { text: spectrumOn ? t("spectrum") : t("spectrum off") })]));

@@ -62,6 +62,9 @@ export class CreatorEditor {
       onAttach: (row) => this.attachFromMention(row),
       attachBlocked: (action) => S.blockedReason(this.state, action),
       getPool: () => this.state.pool ?? [],
+      onQueue: () => { try { app.queuePrompt(0); } catch {} },
+      removeAsset: (handle) => this.remove(handle),
+      chipActions: (handle) => this.chipMenuActions(handle),
     });
 
     this.refinePanel = new RefinePanel({
@@ -334,6 +337,40 @@ export class CreatorEditor {
   remove(handle, { silent = false } = {}) {
     this.state.assets = this.state.assets.filter((a) => a.handle !== handle);
     if (!silent) this.commit();
+  }
+
+  chipMenuActions(handle) {
+    const asset = this.state.assets.find((a) => a.handle === handle);
+    if (!asset) return [];
+    const actions = [{
+      label: t(`Copy @${handle}`),
+      title: t("Copy the mention to the clipboard"),
+      run: () => { try { navigator.clipboard.writeText(`@${handle}`); } catch {} },
+    }];
+    const isFrame = asset.role === "first_frame" || asset.role === "last_frame";
+    if (!isFrame && asset.kind !== "image") {
+      actions.push({
+        label: t("Trim / track…"),
+        title: trimLabel(asset),
+        run: () => this.editSegment(asset),
+      });
+      if (asset.kind === "video") {
+        const next = TRACK_CHIP[asset.track]?.next;
+        if (next) {
+          actions.push({
+            label: t("{from} → {to}", { from: TRACK_CHIP[asset.track].text, to: TRACK_CHIP[next].text }),
+            title: t("Switch what this clip contributes"),
+            run: () => this.setTrack(asset, next),
+          });
+        }
+      }
+    }
+    actions.push({
+      label: t(isFrame ? "Remove frame" : "Remove attachment"),
+      danger: true,
+      run: () => this.remove(asset.handle),
+    });
+    return actions;
   }
 
   probeKeyframe() {

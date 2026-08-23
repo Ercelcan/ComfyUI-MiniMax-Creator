@@ -900,7 +900,7 @@ export class DirectorBody {
 
   formatInlineTokens(rawText) {
     const frag = document.createDocumentFragment();
-    const tokenRegex = /(\*\*[^*]+\*\*)|(@[A-Za-z]+-\d+)|(\[Shot\s+\d+\])|(<d>[\s\S]*?<\/d>)/g;
+    const tokenRegex = /(\*\*[^*]+\*\*)|(@[A-Za-z]+-?\d+)|(\[Shot\s+\d+\])|(<d>[\s\S]*?<\/d>)/g;
     let at = 0;
     let match;
 

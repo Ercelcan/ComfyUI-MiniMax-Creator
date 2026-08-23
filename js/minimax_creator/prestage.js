@@ -100,6 +100,11 @@ export class PreStageEditor {
       onAttach: (row) => this.attachFromMention(row),
       attachBlocked: () => null,
       getPool: () => [],
+      onQueue: () => { try { app.queuePrompt(0); } catch {} },
+      removeAsset: (handle) => {
+        this.state.refs = (this.state.refs ?? []).filter((r) => r.handle !== handle);
+        this.commit();
+      },
     });
 
     this.refinePanel = new RefinePanel({

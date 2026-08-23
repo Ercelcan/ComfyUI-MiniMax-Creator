@@ -414,7 +414,7 @@ def chatml(system: str, message: str, images: int = 0, prefill: str = PREFILL) -
 
 
 LABEL_RE = re.compile(r"<\s*(Picture|Video|Audio)\s+(\d+)\s*>")
-HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
+HANDLE_RE = re.compile(r"@([A-Za-z]+-?\d+)")
 
 
 def normalize_handles(text: str, labels: dict) -> str:

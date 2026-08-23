@@ -30,6 +30,7 @@ from .h3_timing import (
     largest_h3_video_run,
     pixel_frames_to_latent_t,
     latent_t_to_pixel_frames,
+    is_exact_av_boundary,
 )
 from .h3_mask_compat import ensure_h3_mask_compat
 from .h3_mask_payload_compat import ensure_av_mask_payload_compat
@@ -206,14 +207,97 @@ def prepare_master_song_latent(target_latent_dict, audio_vae, master_audio, clip
     out_audio = target_a.clone()
     out_audio.copy_(audio_latent[:1].to(device=out_audio.device, dtype=out_audio.dtype))
 
-    v_mask = torch.ones((out_video.shape[0], 1, out_video.shape[2], out_video.shape[3], out_video.shape[4]), 
-                        device=out_video.device, dtype=out_video.dtype)
-    a_mask = torch.zeros((out_audio.shape[0], 1, 2, out_audio.shape[-1]), 
-                         device=out_audio.device, dtype=out_audio.dtype)
+    # Preserve existing video mask if already prepared by apply_av_mask_continuity
+    if "noise_mask" in target_latent_dict and target_latent_dict["noise_mask"] is not None:
+        existing_masks = (
+            list(target_latent_dict["noise_mask"].unbind())
+            if hasattr(target_latent_dict["noise_mask"], "unbind")
+            else list(target_latent_dict["noise_mask"])
+        )
+        v_mask = existing_masks[0].to(device=out_video.device, dtype=out_video.dtype)
+    else:
+        v_mask = torch.ones(
+            (out_video.shape[0], 1, out_video.shape[2], out_video.shape[3], out_video.shape[4]),
+            device=out_video.device,
+            dtype=out_video.dtype,
+        )
+
+    a_mask = torch.zeros(
+        (out_audio.shape[0], 1, 2, out_audio.shape[-1]),
+        device=out_audio.device,
+        dtype=out_audio.dtype,
+    )
 
     out = target_latent_dict.copy()
     out["samples"] = comfy.nested_tensor.NestedTensor((out_video, out_audio))
     out["noise_mask"] = comfy.nested_tensor.NestedTensor((v_mask, a_mask))
+    return out
+
+
+def _snap_to_exact_av_boundary(frames: int) -> int:
+    """Largest video-VAE run <= frames whose end also lands on the 40 Hz audio grid (39 / 90 / 141 / ...)."""
+    run = largest_h3_video_run(int(frames))
+    while run >= 39 and not is_exact_av_boundary(run):
+        run = largest_h3_video_run(run - 1)
+    return run if run >= 39 else 0
+
+
+def apply_av_mask_continuity(target_latent_dict, prev_latent, compiled):
+    """AV-masked continuation: splice the previous segment's joint video+audio
+    latent into the target as a protected prefix and give the sampler a
+    per-stream denoise mask so H3 generates only the future portion.
+    """
+    _require_mask_support()
+    prev_v, prev_a = _streams_from_latent(prev_latent)
+    target_v, target_a = _streams_from_latent(target_latent_dict)
+
+    boundary = _snap_to_exact_av_boundary(compiled.feather)
+    if boundary < 39:
+        raise ValueError(
+            "av_mask continuation needs at least 39 protected frames "
+            "(exact shared H3 AV boundaries are 39 / 90 / 141 / ... frames)"
+        )
+
+    latent_steps = pixel_frames_to_latent_t(boundary)
+    latent_steps = max(2, min(latent_steps, int(prev_v.shape[2]), int(target_v.shape[2]) - 1))
+    covered_frames = latent_t_to_pixel_frames(latent_steps)
+    prot_audio_ticks = max(1, int(round(covered_frames / FPS * AUDIO_HZ)))
+    prot_audio_ticks = min(prot_audio_ticks, int(prev_a.shape[-1]), int(target_a.shape[-1]))
+
+    feather_ticks = max(0, min(int(getattr(compiled, "audio_feather_ticks", 8) or 8), prot_audio_ticks))
+
+    out_v = target_v.clone()
+    out_a = target_a.clone()
+
+    pv = prev_v[:, :, -latent_steps:].to(device=out_v.device, dtype=out_v.dtype)
+    pv = _match_latent_spatial_size(pv, compiled.height, compiled.width)
+    pa = prev_a[..., -prot_audio_ticks:].to(device=out_a.device, dtype=out_a.dtype)
+
+    out_v[:, :, :latent_steps] = pv
+    out_a[..., :prot_audio_ticks] = pa
+
+    v_mask = torch.ones_like(out_v)
+    v_mask[:, :, :latent_steps] = 0.0
+
+    a_mask = torch.ones_like(out_a)
+    a_mask[..., :prot_audio_ticks] = 0.0
+    if feather_ticks > 0:
+        release = 0.5 - 0.5 * torch.cos(
+            torch.linspace(0.0, math.pi, feather_ticks, device=out_a.device, dtype=out_a.dtype)
+        )
+        a_mask[..., prot_audio_ticks - feather_ticks : prot_audio_ticks] = release.view(1, 1, 1, -1)
+
+    out = target_latent_dict.copy()
+    out["samples"] = comfy.nested_tensor.NestedTensor((out_v, out_a))
+    out["noise_mask"] = comfy.nested_tensor.NestedTensor((v_mask, a_mask))
+
+    _LOG.info(
+        "av_mask continuation: preserved %d frames (%d latent steps, %d audio ticks, %d feather ticks)",
+        covered_frames,
+        latent_steps,
+        prot_audio_ticks,
+        feather_ticks,
+    )
     return out
 
 
@@ -235,21 +319,33 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
     latent, frame_count = _empty_av_latent(compiled.width, compiled.height, compiled.frames)
     images = []
     keyframes = []
+    seam_audio_disabled = False
 
-    if compiled.continues:
-        if PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
-            prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
-            raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
-            if raw_v.ndim == 4:
-                raw_v = raw_v.unsqueeze(0)
-            
-            latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
-            raw_v_slice = raw_v[:, :, -latent_t_count:].to(
-                device=vae.device if hasattr(vae, "device") else "cuda", 
-                dtype=torch.bfloat16
-            )
-            raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
-            keyframes.extend(_context_keyframes_from_raw_latent(raw_v_slice))
+    if compiled.continues or SOURCE_VIDEO in loaded:
+        if compiled.continues and PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
+            if getattr(compiled, "continuity_mode", "") == "av_mask":
+                try:
+                    latent = apply_av_mask_continuity(latent, loaded[PREV_LATENT]["latent"], compiled)
+                    seam_audio_disabled = True
+                    av_mask_ok = True
+                except RuntimeError:
+                    av_mask_ok = False
+            else:
+                av_mask_ok = False
+
+            if not av_mask_ok:
+                prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
+                raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
+                if raw_v.ndim == 4:
+                    raw_v = raw_v.unsqueeze(0)
+
+                latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
+                raw_v_slice = raw_v[:, :, -latent_t_count:].to(
+                    device=vae.device if hasattr(vae, "device") else "cuda",
+                    dtype=torch.bfloat16,
+                )
+                raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
+                keyframes.extend(_context_keyframes_from_raw_latent(raw_v_slice))
 
         elif PREV_FRAME in loaded:
             tail = _resize(loaded[PREV_FRAME]["image"], compiled.width, compiled.height, "center")
@@ -276,7 +372,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
         images.append(image)
         keyframes.append({"resolved_frame_index": frame_count - 1, "image": image})
 
-    if compiled.continues_audio and compiled.feather == 1 and PREV_AUDIO in loaded:
+    if compiled.continues_audio and not seam_audio_disabled and compiled.feather == 1 and PREV_AUDIO in loaded:
         items = [{"type": "image", "data": img} for img in images]
         items.append({"type": "audio"})
         tokens = clip.tokenize(compiled.prompt, minimax_ref_items=items)
@@ -294,7 +390,7 @@ def _encode_frames(clip, vae, audio_vae, compiled, loaded):
             "minimax_frame_count": frame_count,
         })
 
-    if compiled.continues_audio and PREV_AUDIO in loaded:
+    if compiled.continues_audio and not seam_audio_disabled and PREV_AUDIO in loaded:
         cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": [_seam_audio(audio_vae, compiled, loaded)]})
 
     return cond, latent
@@ -319,6 +415,47 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
     items = []
     blocks = []
     pending_soundtrack = None
+    keyframes = []
+    seam_audio_disabled = False
+
+    if compiled.continues or SOURCE_VIDEO in loaded:
+        if compiled.continues and PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
+            if getattr(compiled, "continuity_mode", "") == "av_mask":
+                try:
+                    latent = apply_av_mask_continuity(latent, loaded[PREV_LATENT]["latent"], compiled)
+                    seam_audio_disabled = True
+                    av_mask_ok = True
+                except Exception as err:
+                    _LOG.warning(f"AV mask continuity fallback in REF2VA: {err}")
+                    av_mask_ok = False
+            else:
+                av_mask_ok = False
+
+            if not av_mask_ok:
+                prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
+                raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
+                if raw_v.ndim == 4:
+                    raw_v = raw_v.unsqueeze(0)
+
+                latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
+                raw_v_slice = raw_v[:, :, -latent_t_count:].to(
+                    device=vae.device if hasattr(vae, "device") else "cuda",
+                    dtype=torch.bfloat16,
+                )
+                raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
+                keyframes.extend(_context_keyframes_from_raw_latent(raw_v_slice))
+        elif PREV_FRAME in loaded:
+            tail = _resize(loaded[PREV_FRAME]["image"], compiled.width, compiled.height, "center")
+            feather_count = compiled.feather if compiled.feather > 1 else 1
+            keyframes.extend(_context_keyframes(vae, tail[-feather_count:], feather_count))
+        elif SOURCE_VIDEO in loaded:
+            src_frames = loaded[SOURCE_VIDEO]["frames"]
+            src_fps = getattr(compiled, "source_fps", 24.0)
+            idx = _cfr_index_map(int(src_frames.shape[0]), float(src_fps), src_frames.device, FPS)
+            feather_count = min(int(idx.numel()), compiled.feather if compiled.feather > 1 else 1)
+            tail_frames = src_frames.index_select(0, idx[-feather_count:])
+            tail_resized = _resize_images(tail_frames, compiled.width, compiled.height, "center")
+            keyframes.extend(_context_keyframes(vae, tail_resized, feather_count))
 
     for step in compiled.plan:
         asset = step["asset"]
@@ -329,7 +466,11 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
         if step["op"] == "image":
             image = entry["image"]
             height, width = image.shape[1], image.shape[2]
-            scale = min(1.0, math.sqrt((compiled.width * compiled.height) / (width * height))) if asset.ref_size == "match" else min(1.0, REF_IMAGE_SHORT_EDGE / min(width, height))
+            scale = (
+                min(1.0, math.sqrt((compiled.width * compiled.height) / (width * height)))
+                if asset.ref_size == "match"
+                else min(1.0, REF_IMAGE_SHORT_EDGE / min(width, height))
+            )
             target_w, target_h = _snap(width * scale), _snap(height * scale)
             resized = _resize(image, target_w, target_h, "disabled")
             items.append({"type": "image", "data": resized})
@@ -379,7 +520,7 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
             items.append({"type": "audio"})
             blocks.append({"kind": "audio", "ref_audio_t": ref_audio_t, "audio_latent": audio_latent})
 
-    if compiled.continues_audio and PREV_AUDIO in loaded:
+    if compiled.continues_audio and not seam_audio_disabled and PREV_AUDIO in loaded:
         blocks.append(_seam_audio(audio_vae, compiled, loaded))
 
     tokens = clip.tokenize(compiled.prompt, minimax_ref_items=items)
@@ -387,30 +528,10 @@ def _encode_references(clip, vae, audio_vae, compiled, loaded):
     if blocks:
         cond = node_helpers.conditioning_set_values(cond, {"minimax_refs": blocks})
 
-    if compiled.continues:
-        if PREV_LATENT in loaded and loaded[PREV_LATENT].get("latent") is not None:
-            prev_samples = loaded[PREV_LATENT]["latent"]["samples"]
-            raw_v = prev_samples.unbind()[0] if hasattr(prev_samples, "unbind") else prev_samples[0]
-            if raw_v.ndim == 4:
-                raw_v = raw_v.unsqueeze(0)
-            
-            latent_t_count = pixel_frames_to_latent_t(compiled.feather if compiled.feather > 1 else 1)
-            raw_v_slice = raw_v[:, :, -latent_t_count:].to(
-                device=vae.device if hasattr(vae, "device") else "cuda", 
-                dtype=torch.bfloat16
-            )
-            raw_v_slice = _match_latent_spatial_size(raw_v_slice, compiled.height, compiled.width)
-            cond = node_helpers.conditioning_set_values(cond, {
-                "minimax_keyframes": _context_keyframes_from_raw_latent(raw_v_slice),
-                "minimax_frame_count": frame_count,
-            })
-        elif PREV_FRAME in loaded:
-            tail = _resize(loaded[PREV_FRAME]["image"], compiled.width, compiled.height, "center")
-            feather_count = compiled.feather if compiled.feather > 1 else 1
-            keyframes = _context_keyframes(vae, tail[-feather_count:], feather_count)
-            cond = node_helpers.conditioning_set_values(cond, {
-                "minimax_keyframes": keyframes,
-                "minimax_frame_count": frame_count,
-            })
+    if keyframes:
+        cond = node_helpers.conditioning_set_values(cond, {
+            "minimax_keyframes": keyframes,
+            "minimax_frame_count": frame_count,
+        })
 
     return cond, latent

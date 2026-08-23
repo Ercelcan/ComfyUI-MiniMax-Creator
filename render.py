@@ -78,7 +78,7 @@ def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampl
     accel.plan(acceleration)
     payloads = [weights.routed(p) for p in payloads]
     if len(payloads) > 1:
-        payloads = [{**p, "progress": {"index": i + 1}} for i, p in enumerate(payloads)]
+        payloads = [{**p, "progress": {"index": i + 1, "segment_index": i}} for i, p in enumerate(payloads)]
 
     compiled = compile_all(payloads, labels)
     where = routed(compiled, labels)
@@ -127,10 +127,21 @@ def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampl
                 inputs["model_ref2va"] = links.model_ref2va
 
             # Continuity: Latent & Frame context from previous shot
+            prev_audio_needed = bool(
+                one.continues_audio
+                and source[1] is not None
+                and not (one.continuity_mode == "av_mask" and prev_latent_link is not None)
+            )
             if one.continues:
                 if prev_latent_link is not None:
                     inputs["prev_latent"] = prev_latent_link
-                if source[0] is not None:
+                if one.continuity_mode == "av_mask":
+                    # AV-masked continuation carries picture AND audio through the
+                    # joint prev_latent + denoise mask alone, so the prior clip is
+                    # not decoded into keyframes — skip frame/audio inputs entirely
+                    # to keep the sampler uncontended and decode only at save/join.
+                    pass
+                elif source[0] is not None:
                     inputs["prev_image"] = graph.node(
                         LAST_FRAME_NODE, image=source[0],
                         **({"count": max(1, one.feather)} if one.feather > 1 else {})
@@ -139,13 +150,10 @@ def emit(payloads: list[dict], labels: list[str], weights: models.Weights, sampl
                     if source[1] is not None:
                         inputs["source_audio"] = source[1]
 
-            if one.continues_audio and source[1] is not None:
+            if one.continues_audio and prev_audio_needed:
                 inputs["prev_audio"] = graph.node(
                     AUDIO_TAIL_NODE, audio=source[1], seconds=one.audio_tail_s
                 ).out(0)
-
-            if index > 0 and decoded_segments:
-                inputs["prev_step"] = decoded_segments[index - 1][0]
 
             segment = graph.node(SEGMENT_NODE, **inputs)
             against = graph.node("ConditioningZeroOut", conditioning=segment.out(1)).out(0)

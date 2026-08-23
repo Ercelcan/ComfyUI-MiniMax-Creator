@@ -22,7 +22,7 @@ MAX_SEGMENTS = 60
 DEFAULT_AUDIO_TAIL_S = 1.0
 MAX_AUDIO_TAIL_S = 4.0
 
-HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
+HANDLE_RE = re.compile(r"@([A-Za-z]+-?\d+)")
 UPSCALE_MODES = ("two_pass", "rtx_vsr", "direct")
 DEFAULT_REFINE_DENOISE = 0.25
 MIN_REFINE_DENOISE = 0.01
@@ -103,13 +103,14 @@ class Compiled:
     checkpoint_pinned: bool = False
     continues: bool = False
     feather: int = 1
-    continuity_mode: str = "latent_mask"
+    continuity_mode: str = "av_mask"
     continues_audio: bool = False
     audio_tail_s: float = 0.0
     master_audio_track: bool = False
     master_audio_file: str | None = None
     clip_start_seconds: float = 0.0
     start_mode: str = "t2v"
+    extend_video: str | None = None
     source_fps: float = 24.0
     crop: str = "disabled"
     refine: Refine | None = None
@@ -123,7 +124,7 @@ class Compiled:
     transition_type: str = "latent_mask_39f"
 
     def encodes_video(self):
-        return bool(self.continues or self.first_frame or self.last_frame or self.ref_images or self.ref_videos or self.start_mode == "load_video")
+        return bool(self.continues or self.first_frame or self.last_frame or self.ref_images or self.ref_videos or self.start_mode == "load_video" or self.extend_video)
 
     def encodes_audio(self):
         return bool(self.continues_audio or self.ref_audios or self.master_audio_track or bool(self.master_audio_file) or any(v.track == "picture+sound" for v in self.ref_videos))
@@ -454,9 +455,10 @@ def timeline_segments(data):
 
 def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=None,
                     continues_audio=False, shots=1, feather=1, locked=False,
-                    cached_video=None, continuity_mode="latent_mask",
+                    cached_video=None, continuity_mode="av_mask",
                     master_audio_track=False, master_audio_file=None, clip_start_seconds=0.0,
                     start_mode="t2v", source_fps=24.0, crop="disabled",
+                    extend_video=None,
                     gain=1.0, ducking=True, transition_type="latent_mask_39f"):
     if not isinstance(data, dict):
         raise CompileError("creator_data must be a JSON object")
@@ -478,7 +480,7 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
 
     mode = _derive_mode(first_frame, last_frame, ref_images, ref_videos, ref_audios, continues)
 
-    feather = int(feather or (39 if continuity_mode == "latent_mask" else 1))
+    feather = int(feather or (39 if continuity_mode in ("latent_mask", "av_mask") else 1))
     if feather not in FEATHER_GRID:
         feather = largest_h3_video_run(feather) or 39
 
@@ -605,6 +607,7 @@ def compile_request(data, image_size_lookup=None, continues=False, canvas_spec=N
         gain=float(gain),
         ducking=bool(ducking),
         transition_type=str(transition_type),
+        extend_video=(str(extend_video).strip() or None) if extend_video else None,
     )
 
 
@@ -674,8 +677,8 @@ def timeline_payloads(data, image_size_lookup=None):
                     + " — references cannot share a generation with start/end frames (FL2VA vs Ref2VA)."
                 )
 
-        continuity_mode = segment.get("continuity_mode", "latent_mask")
-        feather = int(segment.get("feather", 39 if continuity_mode == "latent_mask" else 1))
+        continuity_mode = segment.get("continuity_mode", "av_mask")
+        feather = int(segment.get("feather", 39 if continuity_mode in ("latent_mask", "av_mask") else 1))
 
         payloads.append({
             "request": request,
@@ -687,6 +690,7 @@ def timeline_payloads(data, image_size_lookup=None):
             "master_audio_file": master_audio_file,
             "clip_start_seconds": cumulative_time,
             "start_mode": data.get("start_mode", "t2v"),
+            "extend_video": str(segment.get("extend_video") or "").strip() or None,
             "locked": locked,
             "cached_video": cached_video,
             "gain": gain,
@@ -720,13 +724,14 @@ def compile_segment(payload, image_size_lookup=None):
         payload["request"],
         image_size_lookup,
         continues=bool(payload.get("continue")),
-        continuity_mode=payload.get("continuity_mode", "latent_mask"),
+        continuity_mode=payload.get("continuity_mode", "av_mask"),
         feather=int(payload.get("feather", 39)),
         continues_audio=bool(payload.get("continue_audio")),
         master_audio_track=bool(payload.get("master_audio_track", master_audio_file is not None)),
         master_audio_file=master_audio_file,
         clip_start_seconds=float(payload.get("clip_start_seconds", 0.0)),
         start_mode=payload.get("start_mode", "t2v"),
+        extend_video=payload.get("extend_video"),
         locked=bool(payload.get("locked")),
         cached_video=payload.get("cached_video"),
         canvas_spec=CanvasSpec(**spec) if spec else None,

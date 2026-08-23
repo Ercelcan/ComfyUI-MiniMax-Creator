@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import re
 import urllib.error
@@ -18,8 +19,10 @@ from server import PromptServer
 
 from . import media, preview, refine_api, refine_local
 
+log = logging.getLogger("minimax_creator.director")
+
 _DIRECTOR_SOCKETS = {}
-HANDLE_RE = re.compile(r"@([A-Za-z]+-\d+)")
+HANDLE_RE = re.compile(r"@([A-Za-z]+-?\d+)")
 
 # ==============================================================================
 # COMPLETE DIRECTORS' ROOM CONTEXT-IR ARCHITECTURE SYSTEM PROMPT
@@ -807,6 +810,7 @@ def _load_asset_image(filename_or_path: str) -> Image.Image | None:
                 img.thumbnail((768, 768), Image.BILINEAR)
             return img
     except Exception:
+        log.warning("Director could not open reference %r; continuing without it.", filename_or_path, exc_info=True)
         return None
 
 

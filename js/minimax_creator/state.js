@@ -18,7 +18,7 @@ export const MAX_REF_VIDEOS = 3;
 export const MAX_REF_AUDIOS = 3;
 export const MAX_REF_FILES = 12;
 
-const PREFIX = { image: "img", video: "vid", audio: "aud" };
+const PREFIX = { image: "picture", video: "video", audio: "audio" };
 
 export const TRACKS = ["picture", "picture+sound", "sound"];
 export const DEFAULT_TRACK = "picture";
@@ -198,7 +198,7 @@ export function serializeTurbo(turbo) {
 export const SPEED_PRESETS = [
   "off",
   "Half -> Full (0.5x -> 1.0x) [Balanced / Recommended]",
-  "Three-Quarter -> Full (0.75x -> 1.0x) [Fastest]",
+  "Three-Quarter -> Full (0.75x -> 1.0x) [Fast]",
   "Quarter -> Half -> Full (3-Stage) [High Detail]",
 ];
 export const DEFAULT_SPEED_PRESET = "off";
@@ -423,6 +423,7 @@ function serializeCommon(state) {
     ...(state.gain !== undefined && state.gain !== 1.0 ? { gain: round2(state.gain) } : {}),
     ...(state.ducking === false ? { ducking: false } : {}),
     ...(state.cached_video ? { cached_video: state.cached_video } : {}),
+    ...(state.extend_video ? { extend_video: state.extend_video } : {}),
     ...(state.locked ? { locked: true } : {}),
   };
 }
@@ -485,7 +486,7 @@ export function emptySegment() {
   delete state.version;
   state.continue = false;
   state.continue_audio = false;
-  state.continuity_mode = "latent_mask";
+  state.continuity_mode = "av_mask";
   state.feather = 39;
   state.locked = false;
   state.cached_video = null;
@@ -637,9 +638,10 @@ export function parseTimeline(raw) {
 
         segment.continue = idx > 0 ? (rawSeg?.continue === true) : false;
         segment.continue_audio = idx > 0 ? (rawSeg?.continue_audio === true) : false;
-        segment.continuity_mode = rawSeg?.continuity_mode || "latent_mask";
+        segment.continuity_mode = rawSeg?.continuity_mode || "av_mask";
         segment.locked = rawSeg?.locked === true;
         segment.cached_video = typeof rawSeg?.cached_video === "string" ? rawSeg.cached_video : null;
+        segment.extend_video = typeof rawSeg?.extend_video === "string" ? rawSeg.extend_video : null;
         segment.gain = typeof rawSeg?.gain === "number" ? rawSeg.gain : 1.0;
         segment.ducking = rawSeg?.ducking !== false;
 
@@ -695,8 +697,11 @@ export function serializeTimeline(timeline) {
       if (index > 0) {
         out.continue = segment.continue === true;
         out.continue_audio = segment.continue_audio === true;
-        out.continuity_mode = segment.continuity_mode || "latent_mask";
+        out.continuity_mode = segment.continuity_mode || "av_mask";
         out.feather = feather(segment);
+      }
+      if (segment.extend_video) {
+        out.extend_video = segment.extend_video;
       }
       if (segment.cached_video) {
         out.cached_video = segment.cached_video;
@@ -758,9 +763,9 @@ export const continues = (state) => state?.continue === true;
 export const continuesAudio = (state) => state?.continue_audio === true;
 export const isLocked = (segment) => segment?.locked === true && Boolean(segment?.cached_video);
 
-const TAG_OFFSET = { img: 0, vid: 1, aud: 2 };
+const TAG_OFFSET = { picture: 0, img: 0, video: 1, vid: 1, audio: 2, aud: 2 };
 export function tagIndex(handle) {
-  const match = /^([A-Za-z]+)-(\d+)$/.exec(handle || "");
+  const match = /^([A-Za-z]+)-?(\d+)$/.exec(handle || "");
   if (!match) return 0;
   return (Number(match[2]) - 1 + (TAG_OFFSET[match[1]] ?? 0)) % 8;
 }
@@ -769,15 +774,16 @@ export function nextHandle(state, kind) {
   const prefix = PREFIX[kind];
   const taken = new Set((state.assets || []).map((a) => a.handle));
   for (let n = 1; ; n += 1) {
-    const handle = `${prefix}-${n}`;
+    const handle = `${prefix}${n}`;
     if (!taken.has(handle)) return handle;
   }
 }
 
-export function nextPoolHandle(timeline) {
+export function nextPoolHandle(timeline, kind = "image") {
+  const prefix = PREFIX[kind] ?? "picture";
   const taken = new Set((timeline.assets ?? []).map((a) => a.handle));
   for (let n = 1; ; n += 1) {
-    const handle = `ref-${n}`;
+    const handle = `${prefix}${n}`;
     if (!taken.has(handle)) return handle;
   }
 }
@@ -877,7 +883,7 @@ export const refVideos = (state) => references(state).filter((a) => a.kind === "
 export const refAudios = (state) => references(state).filter((a) => a.kind === "audio" || soundOnly(a));
 export const frameAsset = (state, role) => (state.assets || []).find((a) => a.role === role) || null;
 
-export const HANDLE_RE = /@([A-Za-z]+-\d+)/g;
+export const HANDLE_RE = /@([A-Za-z]+-?\d+)/g;
 function citedHandles(texts) {
   const found = new Set();
   for (const text of texts) {
@@ -1102,7 +1108,7 @@ export function serializePreStage(state) {
 export function nextPreStageHandle(state) {
   const taken = new Set((state.refs || []).map((r) => r.handle));
   for (let n = 1; ; n += 1) {
-    const handle = `style-${n}`;
+    const handle = `picture${n}`;
     if (!taken.has(handle)) return handle;
   }
 }

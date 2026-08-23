@@ -168,7 +168,7 @@ def _plan(body: dict) -> tuple[str, list[dict], list[any], str | None, bool, dic
                         from PIL import Image
                         img = Image.open(media.resolve(fn))
                         pictures.append(img)
-                        slots.append({"handle": asset.get("handle", "img-1"), "what": "reference image", "picture": True})
+                        slots.append({"handle": asset.get("handle", "picture1"), "what": "reference image", "picture": True})
                     except Exception:
                         pass
         else:

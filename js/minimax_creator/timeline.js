@@ -40,6 +40,20 @@ const FILMSTRIP_CACHE = new Map();
 
 const TRANSITION_PRESETS = [
   {
+    id: "av_mask",
+    name: "AV Masked Continuity",
+    tag: "Lossless A+V",
+    badge: "Recommended",
+    color: "#4ade80",
+    desc: "Preserves the previous shot's video AND audio in latent space behind a denoise mask — zero roundtrip drift, the soundtrack hands over through an audio feather. Needs H3 mask support.",
+    apply: (seg) => {
+      seg.continue = true;
+      seg.feather = 39;
+      seg.continuity_mode = "av_mask";
+      seg.continue_audio = true;
+    },
+  },
+  {
     id: "latent_mask_39f",
     name: "Lossless Latent Mask",
     tag: "39f · 1.62s",
@@ -111,6 +125,9 @@ const TRANSITION_PRESETS = [
 
 function getActivePresetId(seg) {
   if (seg.continue) {
+    if (seg.continuity_mode === "av_mask") {
+      return "av_mask";
+    }
     if (seg.continuity_mode === "latent_mask") {
       return seg.feather === 22 ? "latent_mask_22f" : "latent_mask_39f";
     }
@@ -150,6 +167,18 @@ export class TimelineBody {
     this.trackAudioMuted = false;
     this.trackMusicMuted = false;
 
+    try { this.deckCollapsed = localStorage.getItem("mmc-nle-deck-collapsed") === "1"; }
+    catch { this.deckCollapsed = false; }
+    try { this.samplingOpen = localStorage.getItem("mmc-nle-sampling-open") === "1"; }
+    catch { this.samplingOpen = false; }
+    try { this.zoomScale = Number(localStorage.getItem("mmc-nle-zoom")) || 1.0; }
+    catch { this.zoomScale = 1.0; }
+    try { this.deckWidth = Number(localStorage.getItem("mmc-nle-deck-width")) || 0; }
+    catch { this.deckWidth = 0; }
+    try { this.lanesCollapsed = localStorage.getItem("mmc-nle-lanes-collapsed") === "1"; }
+    catch { this.lanesCollapsed = false; }
+    this.fitMode = false;
+
     this.undoStack = [];
     this.redoStack = [];
 
@@ -184,6 +213,12 @@ export class TimelineBody {
       onAttach: (row) => this.attachPoolFromMention(row),
       attachBlocked: () => null,
       getPool: () => this.timeline.assets || [],
+      onQueue: () => { try { app.queuePrompt(0); } catch {} },
+      removeAsset: (handle) => {
+        this.pushUndoSnapshot("Remove Reference");
+        this.timeline.assets = (this.timeline.assets || []).filter((a) => a.handle !== handle);
+        this.write(S.serializeTimeline(this.timeline));
+      },
     });
 
     this.promptBox.setValue(this.timeline.prompt || "");
@@ -201,6 +236,9 @@ export class TimelineBody {
     const events = ["mmc_segment", "mmc_segment_cached", "execution_start", "executed", "execution_error"];
     for (const name of events) api.addEventListener(name, this.onApiEvent);
 
+    this.onKeyDown = (event) => this.handleShortcutKey(event);
+    window.addEventListener("keydown", this.onKeyDown);
+
     loadCatalog(() => this.adoptWeights());
     this.render();
   }
@@ -209,6 +247,7 @@ export class TimelineBody {
     this.pause();
     const events = ["mmc_segment", "mmc_segment_cached", "execution_start", "executed", "execution_error"];
     for (const name of events) api.removeEventListener(name, this.onApiEvent);
+    window.removeEventListener("keydown", this.onKeyDown);
     this.stage?.destroy();
     if (this.audioCtx) {
       try { this.audioCtx.close(); } catch {}
@@ -307,17 +346,23 @@ export class TimelineBody {
     this.initAudioContext();
     if (!this.deckA || !this.deckB) return;
     this.isPlaying = true;
-    this.shuttleSpeed = 1.0;
     this.lastTime = performance.now();
     this.updatePlayBtnIcon();
 
     this.syncDualDecks(this.currentTime, true);
 
     const activeDeck = this.activeDeckName === "A" ? this.deckA : this.deckB;
-    if (activeDeck && activeDeck.src) {
-      activeDeck.playbackRate = Math.abs(this.shuttleSpeed);
-      activeDeck.muted = this.isMuted;
-      activeDeck.play().catch(() => {});
+    if (this.shuttleSpeed > 0) {
+      // Browsers cannot play <video> backwards; reverse is time-driven scrubbing.
+      if (activeDeck && activeDeck.src) {
+        activeDeck.playbackRate = Math.abs(this.shuttleSpeed);
+        activeDeck.muted = this.isMuted;
+        activeDeck.play().catch(() => {});
+      }
+    } else {
+      try { activeDeck?.pause(); } catch {}
+      try { this.deckA.pause(); } catch {}
+      try { this.deckB.pause(); } catch {}
     }
 
     const tick = (now) => {
@@ -332,12 +377,12 @@ export class TimelineBody {
         nextTime = loopStart;
         this.seek(nextTime, true);
         const curDeck = this.activeDeckName === "A" ? this.deckA : this.deckB;
-        if (curDeck && curDeck.src && this.isPlaying) {
+        if (this.shuttleSpeed > 0 && curDeck && curDeck.src && this.isPlaying) {
           curDeck.muted = this.isMuted;
           curDeck.play().catch(() => {});
         }
       } else if (nextTime < loopStart) {
-        nextTime = Math.max(loopStart, loopEnd - 0.04);
+        nextTime = Math.min(loopEnd - 0.04, S.timelineSeconds(this.timeline));
         this.seek(nextTime, true);
       } else {
         const prevShotIdx = this.getActiveShotInfo(this.currentTime).index;
@@ -348,8 +393,11 @@ export class TimelineBody {
         this.updateHUD();
         this.drawCinemaFrame();
 
-        if (prevShotIdx !== nextShotIdx) {
-          this.syncDualDecks(this.currentTime, true);
+        if (prevShotIdx !== nextShotIdx || this.shuttleSpeed < 0) {
+          // Forward: start the swapped-in deck. Reverse: the deck is paused, so
+          // pin it to the exact local time every frame (scrub-style instead of
+          // letting it free-run forward).
+          this.syncDualDecks(this.currentTime, this.shuttleSpeed > 0, this.shuttleSpeed < 0);
         }
       }
 
@@ -399,6 +447,11 @@ export class TimelineBody {
       }
       const curDeck = this.activeDeckName === "A" ? this.deckA : this.deckB;
       if (curDeck) curDeck.playbackRate = Math.abs(this.shuttleSpeed);
+      if (this.shuttleSpeed < 0) {
+        // Reverse is scrub-driven; stop the forward-running deck audio.
+        try { this.deckA?.pause(); } catch {}
+        try { this.deckB?.pause(); } catch {}
+      }
     }
   }
 
@@ -449,7 +502,7 @@ export class TimelineBody {
     };
   }
 
-  syncDualDecks(time = this.currentTime, startPlayback = false) {
+  syncDualDecks(time = this.currentTime, startPlayback = false, exact = false) {
     if (!this.deckA || !this.deckB) return;
     const { segment, index, localTime } = this.getActiveShotInfo(time);
     const segments = this.timeline.segments || [];
@@ -472,13 +525,41 @@ export class TimelineBody {
       if (activeDeck.src !== activeUrl) {
         activeDeck.src = activeUrl;
       }
-      if (Math.abs(activeDeck.currentTime - localTime) > 0.05) {
-        activeDeck.currentTime = localTime;
+      // In reverse-scrub mode pin exactly; otherwise tolerate small drift so
+      // normal playback isn't constantly interrupted by seeks.
+      if (exact || Math.abs(activeDeck.currentTime - localTime) > 0.05) {
+        try { activeDeck.currentTime = localTime; } catch {}
       }
-      activeDeck.muted = this.isMuted;
+      activeDeck.muted = this.isMuted || this.shuttleSpeed < 0;
       activeDeck.playbackRate = Math.abs(this.shuttleSpeed);
-      if (startPlayback && this.isPlaying) {
-        activeDeck.play().catch(() => {});
+      if (startPlayback && this.isPlaying && this.shuttleSpeed > 0) {
+        // Start the (possibly just-swapped) deck as soon as it's actually
+        // decodable and not mid-seek. Ready can arrive via several events and
+        // the deck may still be loading from the standby prefetch, so retry on
+        // any of them plus a rAF fallback, bounded by a timeout.
+        let timer = null;
+        const cleanup = () => {
+          if (timer) { clearTimeout(timer); timer = null; }
+          activeDeck.removeEventListener("seeked", tryStart);
+          activeDeck.removeEventListener("loadeddata", tryStart);
+          activeDeck.removeEventListener("canplay", tryStart);
+        };
+        const tryStart = () => {
+          if (!this.isPlaying || this.shuttleSpeed <= 0) { cleanup(); return; }
+          if (activeDeck.seeking) { return; }
+          if (activeDeck.readyState < 2) { return; }
+          cleanup();
+          const now = this.getActiveShotInfo(this.currentTime);
+          if (now.index === index) {
+            try { activeDeck.currentTime = now.localTime; } catch {}
+          }
+          activeDeck.play().catch(() => {});
+        };
+        activeDeck.addEventListener("seeked", tryStart);
+        activeDeck.addEventListener("loadeddata", tryStart);
+        activeDeck.addEventListener("canplay", tryStart);
+        timer = setTimeout(() => { cleanup(); tryStart(); }, 800);
+        tryStart();
       }
     }
 
@@ -498,12 +579,29 @@ export class TimelineBody {
 
   drawCinemaFrame() {
     if (!this.cinemaCanvas) return;
-    const { segment } = this.getActiveShotInfo();
+    const info = this.getActiveShotInfo();
+    const segment = info.segment;
     const activeDeck = this.activeDeckName === "A" ? this.deckA : this.deckB;
 
-    if (segment?.cached_video && activeDeck?.readyState >= 2 && activeDeck?.videoWidth > 0) {
+    if (segment?.cached_video) {
+      // While the deck is seeking, still loading, or — when paused/stepping —
+      // momentarily out of sync with the playhead, keep the last drawn frame
+      // instead of flashing a wrong one. Never applies during normal playback,
+      // where small deck/playhead drift is expected.
+      const deckReady = !!activeDeck
+        && !activeDeck.seeking
+        && activeDeck.readyState >= 2
+        && activeDeck.videoWidth > 0;
+      if (!deckReady) return;
+      if (!this.isPlaying
+          && Math.abs(activeDeck.currentTime - info.localTime) > 0.3) {
+        return;
+      }
       renderCinemaCanvas(this.cinemaCanvas, activeDeck);
-    } else {
+      return;
+    }
+
+    {
       const firstFrame = S.frameAsset(segment || {}, "first_frame");
       const lastFrame = S.frameAsset(segment || {}, "last_frame");
       const refImg = S.refImages(segment || {})[0];
@@ -574,10 +672,24 @@ export class TimelineBody {
   }
 
   handleApiEvent(type, detail) {
+    if (type === "execution_start") {
+      // Clear any stale highlight from a previous run before its detail check,
+      // so a queued re-roll never keeps the last run's clip lit.
+      this.activeSegment = null;
+      this.render();
+    }
     if (!detail) return;
     if (type === "mmc_segment") {
       if (this.ours(detail.node)) {
-        this.activeSegment = detail.index ?? null;
+        // Prefer the explicit zero-based segment_index; fall back to legacy 1-based index.
+        let n;
+        if (detail.segment_index !== undefined && detail.segment_index !== null) {
+          n = Number(detail.segment_index);
+        } else {
+          const one = Number(detail.index);
+          n = Number.isFinite(one) && one > 0 ? one - 1 : NaN;
+        }
+        this.activeSegment = Number.isFinite(n) && n >= 0 ? n : null;
         this.render();
       }
     } else if (type === "mmc_segment_cached") {
@@ -618,6 +730,68 @@ export class TimelineBody {
     else this.render();
   }
 
+  handleShortcutKey(event) {
+    // Never hijack typing in inputs, the prompt box, or any overlay.
+    const target = event.target;
+    if (target && (target.isContentEditable
+        || ["INPUT", "TEXTAREA", "SELECT"].includes(target.tagName))) return;
+    if (event.ctrlKey || event.metaKey || event.altKey) return;
+    if (!this.root?.isConnected) return;
+    if (document.querySelector(".mmc-overlay, .mmc-pop")) return;
+
+    const total = S.timelineSeconds(this.timeline);
+    switch (event.key) {
+      case " ":
+        event.preventDefault();
+        this.togglePlay();
+        break;
+      case "j": case "J":
+        this.shuttle(-1);
+        break;
+      case "l": case "L":
+        this.shuttle(1);
+        break;
+      case "k": case "K":
+        this.pause();
+        break;
+      case ",":
+        this.stepFrame(-1);
+        break;
+      case ".":
+        this.stepFrame(1);
+        break;
+      case "ArrowLeft":
+        event.preventDefault();
+        this.seek(Math.max(0, this.currentTime - 1));
+        break;
+      case "ArrowRight":
+        event.preventDefault();
+        this.seek(Math.min(total, this.currentTime + 1));
+        break;
+      case "[":
+        this.markIn = this.currentTime;
+        this.render();
+        break;
+      case "]":
+        this.markOut = this.currentTime;
+        this.render();
+        break;
+      case "s": case "S":
+        this.razorSplitAtPlayhead();
+        break;
+      case "d": case "D":
+        this.duplicateSelectedShot();
+        break;
+      case "Delete": case "Backspace":
+        if ((this.timeline.segments || [])[this.selectedShotIndex]) {
+          this.deleteSegment(this.selectedShotIndex);
+        }
+        break;
+      default:
+        return;
+    }
+  }
+
   reload() {
     this.timeline = S.parseTimeline(this.read());
     if (this.timeline.ai_seam_mode) {
@@ -629,12 +803,27 @@ export class TimelineBody {
     this.render();
   }
 
+  fitZoom() {
+    const vp = this.tracksViewport;
+    if (!vp || !vp.clientWidth) return;
+    const total = S.timelineSeconds(this.timeline);
+    if (total <= 0) return;
+    // content width is total * 45 * zoom + 160px of tail room; solve for zoom
+    const zoom = (vp.clientWidth - 200) / (total * 45);
+    this.zoomScale = Math.max(0.12, Math.min(3, Math.round(zoom * 100) / 100));
+    try { localStorage.setItem("mmc-nle-zoom", String(this.zoomScale)); } catch {}
+    if (this.zoomSliderEl) this.zoomSliderEl.value = String(this.zoomScale);
+    const readout = this.root?.querySelector(".mmc-nle-zoom-readout");
+    if (readout) readout.textContent = `${Math.round(this.zoomScale * 100)}%`;
+  }
+
   commit() {
     this.timeline.ai_seam_mode = this.aiSeamMode;
     S.syncTimeline(this.timeline);
     Turbo.sync(this.timeline, this.widgetIO());
     this.saveLocalCache();
     this.write(S.serializeTimeline(this.timeline));
+    if (this.fitMode && this.tracksViewport) this.fitZoom();
     this.render();
   }
 
@@ -656,7 +845,7 @@ export class TimelineBody {
   attachPoolFromMention(row) {
     this.pushUndoSnapshot("Attach Reference");
     const entry = {
-      handle: S.nextPoolHandle(this.timeline),
+      handle: S.nextPoolHandle(this.timeline, row.kind),
       kind: row.kind, role: "reference", filename: row.path, ref_size: "max",
     };
     if (row.kind === "video") entry.track = row.track ?? S.DEFAULT_TRACK;
@@ -892,8 +1081,6 @@ export class TimelineBody {
       this.root.replaceChildren(
         this.renderTopBar(),
         this.renderSplitBody(),
-        this.renderTimelineTracks(),
-        this.renderTransportToolbar(),
         this.renderSamplingDeck(),
       );
       this.updatePlayheadPosition();
@@ -911,29 +1098,11 @@ export class TimelineBody {
 
     const hasCached = (this.timeline.segments || []).some((s) => s.cached_video);
 
-    const cleanCacheBtn = hasCached ? el("button", {
-      class: "mmc-nle-btn",
-      title: t("Purge intermediate segment videos & .safetensors checkpoints from disk"),
-      onclick: () => this.clearAllCache(),
-    }, [icon("broom", 13), el("span", { text: t("Clean Cache") })]) : null;
-
-    const exportBtn = el("button", {
-      class: "mmc-nle-btn",
-      title: t("Export sequence to DaVinci Resolve or Premiere (.edl / .xml)"),
-      onclick: (e) => this.openExportPopover(e.currentTarget),
-    }, [icon("export", 13), el("span", { text: t("Export NLE") })]);
-
-    const settingsBtn = el("button", {
-      class: "mmc-nle-btn",
-      title: t("Preferences for this ComfyUI — output quality."),
-      onclick: () => openSettings(),
-    }, [icon("gear", 13), el("span", { text: t("Settings") })]);
-
     const galleryBtn = el("button", {
       class: "mmc-nle-btn",
       title: t("Browse finished renders and stills"),
       onclick: () => this.openGallery(),
-    }, [icon("gallery", 13), el("span", { text: t("Gallery") })]);
+    }, [icon("gallery", 13)]);
 
     const previewBtn = el("button", {
       class: `mmc-nle-btn${this.stage?.showing() ? " active" : ""}`,
@@ -942,20 +1111,13 @@ export class TimelineBody {
         this.stage?.toggleOpen();
         this.render();
       },
-    }, [icon("play", 13), el("span", { text: t("Preview") })]);
+    }, [icon("play", 13)]);
 
-    const seamModeBtn = el("button", {
-      class: `mmc-nle-btn${this.aiSeamMode === "auto" ? " active" : ""}`,
-      title: this.aiSeamMode === "auto"
-        ? t("AI Auto-Seams (Active): AI refiner automatically infers match-cuts & continuity and sets timeline seams.")
-        : t("User Seams: Your manually set cuts are preserved and sent as context to the AI."),
-      onclick: () => {
-        this.aiSeamMode = this.aiSeamMode === "auto" ? "context" : "auto";
-        this.timeline.ai_seam_mode = this.aiSeamMode;
-        try { localStorage.setItem("mmc-ai-seam-mode", this.aiSeamMode); } catch {}
-        this.commit();
-      },
-    }, [svg(ICONS.scissors, 12), el("span", { text: this.aiSeamMode === "auto" ? t("AI Seams: Auto") : t("AI Seams: User") })]);
+    const settingsBtn = el("button", {
+      class: "mmc-nle-btn",
+      title: t("Preferences for this ComfyUI — output quality."),
+      onclick: () => openSettings(),
+    }, [icon("gear", 13)]);
 
     const refined = S.twoPass(this.timeline);
     const rtxOn = S.rtxVsr(this.timeline);
@@ -985,21 +1147,93 @@ export class TimelineBody {
           class: `mmc-pill${activeLorasCount ? " on" : ""}`,
           onclick: () => openLoras({ state: this.timeline, targets: S.timelineCheckpoints(this.timeline), onChange: () => this.commit() }),
         }, [icon("effect", 14), el("span", { text: t(activeLorasCount ? "{n} LoRAs" : "LoRAs", { n: activeLorasCount }) })]),
-        seamModeBtn,
-        cleanCacheBtn,
-        exportBtn,
+      ]),
+      el("div", { class: "mmc-nle-top-right" }, [
         galleryBtn,
         previewBtn,
         settingsBtn,
-      ]),
-      el("div", { class: "mmc-nle-top-right" }, [
         el("button", {
-          class: "mmc-nle-btn primary",
-          text: t("GENERATE"),
-          onclick: () => { try { app.queuePrompt(0); } catch {} },
-        }),
+          class: `mmc-nle-btn${this.deckCollapsed ? "" : " active"}`,
+          title: this.deckCollapsed ? t("Show the project panel") : t("Hide the project panel to give the timeline full width"),
+          onclick: () => {
+            this.deckCollapsed = !this.deckCollapsed;
+            try { localStorage.setItem("mmc-nle-deck-collapsed", this.deckCollapsed ? "1" : "0"); } catch {}
+            this.render();
+          },
+        }, [svg(ICONS.panel ?? ICONS.edit, 13)]),
+        el("button", {
+          class: "mmc-nle-btn",
+          title: t("More: seams, cache & NLE export"),
+          onclick: (e) => this.openOverflowMenu(e.currentTarget),
+        }, [el("span", { text: "⋯" })]),
       ]),
     ]);
+  }
+
+  openOverflowMenu(anchor) {
+    const items = [
+      {
+        label: this.aiSeamMode === "auto" ? t("AI Seams: Auto") : t("AI Seams: User"),
+        title: this.aiSeamMode === "auto"
+          ? t("AI Auto-Seams (Active): AI refiner automatically infers match-cuts & continuity and sets timeline seams.")
+          : t("User Seams: Your manually set cuts are preserved and sent as context to the AI."),
+        run: () => {
+          this.aiSeamMode = this.aiSeamMode === "auto" ? "context" : "auto";
+          this.timeline.ai_seam_mode = this.aiSeamMode;
+          try { localStorage.setItem("mmc-ai-seam-mode", this.aiSeamMode); } catch {}
+          this.commit();
+        },
+      },
+      ...((this.timeline.segments || []).some((s) => s.cached_video) ? [{
+        label: t("Clean Cache"),
+        title: t("Purge intermediate segment videos & .safetensors checkpoints from disk"),
+        run: () => this.clearAllCache(),
+      }] : []),
+      {
+        label: t("Export NLE"),
+        title: t("Export sequence to DaVinci Resolve or Premiere (.edl / .xml)"),
+        run: (anchorEl) => this.openExportPopover(anchorEl),
+      },
+      {
+        label: (this.timeline.segments?.[0]?.extend_video) ? t("Remove extended video") : t("Extend video…"),
+        title: t("Use a video from the input folder as the timeline's opening shot and continue it with AI"),
+        run: async () => {
+          const seg = this.timeline.segments?.[0];
+          if (!seg) return;
+          if (seg.extend_video) {
+            this.pushUndoSnapshot("Remove Extended Video");
+            seg.extend_video = null;
+            this.commit();
+            return;
+          }
+          const chosen = await openPicker({
+            kinds: ["video"], kind: "video", single: true,
+            capacity: () => ({ used: 0, max: 1, filesLeft: 1 }),
+          });
+          if (!chosen?.length) return;
+          this.pushUndoSnapshot("Extend Video");
+          seg.extend_video = chosen[0].path;
+          this.commit();
+        },
+      },
+    ];
+    const pop = el("div", { class: "mmc-pop mmc-chip-menu" },
+      items.map((item) => el("button", {
+        class: "mmc-chip-menu-item",
+        text: item.label,
+        title: item.title || "",
+        onclick: (event) => {
+          event.stopPropagation();
+          // Run while this item is still attached so it can serve as a
+          // positioning anchor for any popover the action opens.
+          try { item.run(event.currentTarget); } catch (error) { console.error("[MiniMax Creator] menu action failed:", error); }
+          pop.remove();
+        },
+      }))
+    );
+    document.body.appendChild(pop);
+    placeNear(pop, anchor);
+    dismissable(pop);
   }
 
   openExportPopover(anchor) {
@@ -1022,19 +1256,84 @@ export class TimelineBody {
   }
 
   renderSplitBody() {
-    const savedDeckScroll = this.leftDeckEl?.scrollTop || 0;
     const segments = this.timeline.segments || [];
     const activeIdx = Math.max(0, Math.min(this.selectedShotIndex ?? 0, segments.length - 1));
     const selectedSeg = segments[activeIdx];
 
     const tabBible = el("button", {
       class: `mmc-nle-deck-tab${this.activeDeckTab === "bible" ? " active" : ""}`,
-      onclick: () => { this.activeDeckTab = "bible"; this.render(); },
+      onclick: () => { this.activeDeckTab = "bible"; this.updateLeftDeck(); },
     }, [icon("globe", 13), el("span", { text: t("Project Bible & Scene") })]);
 
     const tabShot = el("button", {
       class: `mmc-nle-deck-tab${this.activeDeckTab === "shot" ? " active" : ""}`,
-      onclick: () => { this.activeDeckTab = "shot"; this.render(); },
+      onclick: () => { this.activeDeckTab = "shot"; this.updateLeftDeck(); },
+    }, [icon("clapper", 13), el("span", { text: t("Shot {n} Inspector", { n: activeIdx + 1 }) })]);
+
+    if (!this.leftDeckEl) {
+      this.leftDeckEl = el("div", { class: "mmc-nle-left-deck" });
+    }
+    if (this.deckWidth) this.leftDeckEl.style.flex = `0 0 ${this.deckWidth}px`;
+    this.updateLeftDeck();
+
+    const splitter = this.deckCollapsed ? null : el("div", {
+      class: "mmc-nle-deck-splitter",
+      title: t("Drag to resize the project panel"),
+      onpointerdown: (e) => this.startDeckDrag(e),
+    });
+
+    const studio = el("div", { class: "mmc-nle-studio-zone" }, [
+      this.renderCinemaMonitor(),
+      this.renderTransportToolbar(),
+      this.renderTimelineTracks(),
+    ]);
+
+    return el("div", {
+      class: `mmc-nle-split-body${this.deckCollapsed ? " collapsed" : ""}`,
+    }, [this.leftDeckEl, ...(splitter ? [splitter] : []), studio]);
+  }
+
+  startDeckDrag(e) {
+    e.preventDefault();
+    const splitter = e.currentTarget;
+    const body = splitter.parentElement;
+    if (splitter.setPointerCapture) {
+      try { splitter.setPointerCapture(e.pointerId); } catch {}
+    }
+    const onMove = (ev) => {
+      const rect = body.getBoundingClientRect();
+      const max = rect.width * 0.7;
+      const width = Math.max(220, Math.min(max, ev.clientX - rect.left));
+      this.deckWidth = Math.round(width);
+      this.leftDeckEl.style.flex = `0 0 ${this.deckWidth}px`;
+    };
+    const onUp = (ev) => {
+      if (splitter.releasePointerCapture) {
+        try { splitter.releasePointerCapture(ev.pointerId); } catch {}
+      }
+      splitter.removeEventListener("pointermove", onMove);
+      splitter.removeEventListener("pointerup", onUp);
+      try { localStorage.setItem("mmc-nle-deck-width", String(this.deckWidth)); } catch {}
+    };
+    splitter.addEventListener("pointermove", onMove);
+    splitter.addEventListener("pointerup", onUp);
+  }
+
+  updateLeftDeck() {
+    if (!this.leftDeckEl) return;
+    const savedDeckScroll = this.leftDeckEl.scrollTop;
+    const segments = this.timeline.segments || [];
+    const activeIdx = Math.max(0, Math.min(this.selectedShotIndex ?? 0, segments.length - 1));
+    const selectedSeg = segments[activeIdx];
+
+    const tabBible = el("button", {
+      class: `mmc-nle-deck-tab${this.activeDeckTab === "bible" ? " active" : ""}`,
+      onclick: () => { this.activeDeckTab = "bible"; this.updateLeftDeck(); },
+    }, [icon("globe", 13), el("span", { text: t("Project Bible & Scene") })]);
+
+    const tabShot = el("button", {
+      class: `mmc-nle-deck-tab${this.activeDeckTab === "shot" ? " active" : ""}`,
+      onclick: () => { this.activeDeckTab = "shot"; this.updateLeftDeck(); },
     }, [icon("clapper", 13), el("span", { text: t("Shot {n} Inspector", { n: activeIdx + 1 }) })]);
 
     const hasRefined = Boolean(
@@ -1075,14 +1374,8 @@ export class TimelineBody {
       ]);
     }
 
-    if (!this.leftDeckEl) {
-      this.leftDeckEl = el("div", { class: "mmc-nle-left-deck" });
-    }
     this.leftDeckEl.replaceChildren(deckTabs, deckContent);
     this.leftDeckEl.scrollTop = savedDeckScroll;
-
-    const rightMonitor = this.renderCinemaMonitor();
-    return el("div", { class: "mmc-nle-split-body" }, [this.leftDeckEl, rightMonitor]);
   }
 
   renderShotInspector(seg, idx) {
@@ -1411,11 +1704,11 @@ export class TimelineBody {
         el("button", {
           class: `mmc-nle-overlay-btn${this.isMuted ? " active" : ""}`,
           title: t("Toggle audio mute"),
-          onclick: () => {
+          onclick: (e) => {
             this.isMuted = !this.isMuted;
             if (this.deckA) this.deckA.muted = this.isMuted;
             if (this.deckB) this.deckB.muted = this.isMuted;
-            this.render();
+            e.currentTarget?.classList?.toggle("active", this.isMuted);
           },
         }, [svg(this.isMuted ? ICONS.volumeMute : ICONS.volume, 13)]),
       ]),
@@ -1497,7 +1790,18 @@ export class TimelineBody {
     const contentWidth = Math.max(700, Math.round(totalDuration * pxPerSec) + 160);
 
     const headerCol = el("div", { class: "mmc-nle-track-headers" }, [
-      el("div", { class: "mmc-nle-header-cell ruler-head" }, [el("span", { text: "TRACKS" })]),
+      el("div", { class: "mmc-nle-header-cell ruler-head" }, [
+        el("span", { text: "TRACKS" }),
+        el("button", {
+          class: `mmc-track-btn${this.lanesCollapsed ? " active" : ""}`,
+          title: this.lanesCollapsed ? t("Show audio lanes") : t("Hide the audio lanes"),
+          onclick: () => {
+            this.lanesCollapsed = !this.lanesCollapsed;
+            try { localStorage.setItem("mmc-nle-lanes-collapsed", this.lanesCollapsed ? "1" : "0"); } catch {}
+            this.updateTimelineTracks();
+          },
+        }, [el("span", { text: this.lanesCollapsed ? "▸" : "▾" })]),
+      ]),
       el("div", { class: "mmc-nle-header-cell video-head" }, [
         el("div", { class: "mmc-nle-track-title-row" }, [
           icon("video", 13),
@@ -1568,10 +1872,18 @@ export class TimelineBody {
       this.drawClipFilmstrip(filmstripCanvas, seg, dur, widthPx);
 
       const vClip = el("div", {
-        class: `mmc-nle-video-clip${isLocked ? " locked" : ""}${isSelected ? " selected" : ""}${isNarrow ? " narrow" : ""}`,
+        class: `mmc-nle-video-clip${isLocked ? " locked" : ""}${isSelected ? " selected" : ""}${isNarrow ? " narrow" : ""}${this.activeSegment === idx ? " generating" : ""}`,
         style: { left: `${leftPx}px`, width: `${widthPx - 4}px` },
         onclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); },
         ondblclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); },
+        oncontextmenu: (e) => {
+          e.preventDefault();
+          e.stopPropagation();
+          const x = e.clientX;
+          const y = e.clientY;
+          this.selectShot(idx, false);
+          this.openClipMenu({ clientX: x, clientY: y }, idx, seg);
+        },
       }, [
         filmstripCanvas,
         el("div", {
@@ -1580,7 +1892,7 @@ export class TimelineBody {
           onpointerdown: (e) => this.startTrimDrag(e, idx, "left", pxPerSec),
         }),
         el("div", { class: `mmc-nle-clip-hud${idx === 0 ? " first-shot" : ""}` }, [
-          el("span", { class: "mmc-nle-clip-title", text: `Shot ${idx + 1} (${dur.toFixed(1)}s)` }),
+          el("span", { class: "mmc-nle-clip-title", text: `Shot ${idx + 1} (${dur.toFixed(1)}s)${seg.extend_video ? " · ⤷" : ""}` }),
           el("div", { class: "mmc-nle-clip-actions" }, [
             el("button", { class: "mmc-nle-clip-btn", title: t("Select & inspect shot"), onclick: (e) => { e.stopPropagation(); this.selectShot(idx, false); } }, [icon("edit", 11)]),
             el("button", {
@@ -1618,7 +1930,10 @@ export class TimelineBody {
         let seamText = "cut";
 
         if (seg.continue) {
-          if (seg.continuity_mode === "latent_mask") {
+          if (seg.continuity_mode === "av_mask") {
+            seamClass = "seam-av";
+            seamText = `${seg.feather}f AV`;
+          } else if (seg.continuity_mode === "latent_mask") {
             seamClass = seg.feather === 39 ? "seam-blend-39" : "seam-blend-22";
             seamText = seg.feather === 39 ? "39f" : "22f";
           } else {
@@ -1712,6 +2027,7 @@ export class TimelineBody {
       this.tracksViewport,
     ]);
 
+    this.tracksContainer.classList.toggle("lanes-hidden", !!this.lanesCollapsed);
     this.tracksContainer.replaceChildren(headerCol, tracksMain);
 
     requestAnimationFrame(() => {
@@ -1724,6 +2040,53 @@ export class TimelineBody {
     });
 
     this.updatePlayheadPosition();
+  }
+
+  openClipMenu(event, idx, seg) {
+    const isLocked = S.isLocked(seg);
+    const actions = [
+      { label: t("Inspect shot"), run: () => this.selectShot(idx, false) },
+      {
+        label: isLocked ? t("Unlock cache") : t("Lock cache"),
+        run: () => { this.pushUndoSnapshot("Toggle Shot Lock"); seg.locked = !seg.locked; this.commit(); },
+      },
+      { label: t("Duplicate shot (D)"), run: () => this.duplicateSelectedShot() },
+      { label: t("Re-roll this shot"), run: () => this.reRollSegment(idx) },
+    ];
+    // Split at playhead when the playhead sits inside this clip
+    let acc = 0;
+    const isSingle = S.isSingle(this.timeline);
+    for (let i = 0; i < idx; i++) acc += S.getEffectiveDuration((this.timeline.segments || [])[i], i, isSingle);
+    const clipEnd = acc + S.getEffectiveDuration(seg, idx, isSingle);
+    if (this.currentTime > acc + 0.2 && this.currentTime < clipEnd - 0.2) {
+      actions.push({ label: t("Split at playhead (S)"), run: () => this.razorSplitAtPlayhead() });
+    }
+    actions.push({
+      label: t("Delete shot (Del)"),
+      danger: true,
+      run: () => this.deleteSegment(idx),
+    });
+
+    const pop = el("div", { class: "mmc-pop mmc-chip-menu" },
+      actions.map((action) => el("button", {
+        class: `mmc-chip-menu-item${action.danger ? " danger" : ""}`,
+        text: action.label,
+        onclick: (e) => {
+          e.stopPropagation();
+          pop.remove();
+          try { action.run(); } catch (error) { console.error("[MiniMax Creator] clip menu action failed:", error); }
+        },
+      }))
+    );
+    document.body.appendChild(pop);
+    // Position at the cursor: the clip that was right-clicked may have been
+    // rebuilt by selectShot(), so its element is no longer a valid anchor.
+    const box = pop.getBoundingClientRect();
+    const left = Math.max(8, Math.min(event.clientX, window.innerWidth - box.width - 8));
+    const top = Math.max(8, Math.min(event.clientY, window.innerHeight - box.height - 8));
+    pop.style.left = `${Math.round(left)}px`;
+    pop.style.top = `${Math.round(top)}px`;
+    dismissable(pop);
   }
 
   drawClipFilmstrip(canvas, seg, dur, widthPx) {
@@ -1848,6 +2211,20 @@ export class TimelineBody {
       else if (pxPerSec < 40) stepSec = 5;
       else if (pxPerSec < 70) stepSec = 2;
 
+      // Loop / mark region shading
+      if (this.markIn !== null && this.markOut !== null) {
+        const x0 = Math.max(0, this.markIn * pxPerSec);
+        const x1 = Math.min(width, this.markOut * pxPerSec);
+        if (x1 > x0) {
+          ctx.fillStyle = "rgba(240,166,60,0.22)";
+          ctx.fillRect(x0, 0, x1 - x0, h);
+          ctx.fillStyle = "rgba(240,166,60,0.9)";
+          ctx.fillRect(x0 - 1, 0, 2, h);
+          ctx.fillRect(x1 - 1, 0, 2, h);
+          ctx.fillStyle = "rgba(255,255,255,0.45)";
+        }
+      }
+
       for (let s = 0; s <= totalDuration + 10; s += stepSec) {
         const x = s * pxPerSec;
         ctx.fillRect(x, h - 9, 1, 9);
@@ -1935,6 +2312,7 @@ export class TimelineBody {
       }
     });
 
+    this.activeSegment = null;
     this.commit();
     try { app.queuePrompt(0); } catch {}
   }
@@ -1948,15 +2326,32 @@ export class TimelineBody {
       onclick: () => this.togglePlay(),
     }, [svg(this.isPlaying ? ICONS.pause : ICONS.play, 14)]);
 
+    const zoomReadout = el("span", { class: "mmc-nle-zoom-readout", text: `${Math.round(this.zoomScale * 100)}%` });
     const zoomSlider = el("input", {
       class: "mmc-nle-zoom-slider",
-      type: "range", min: "0.5", max: "2.5", step: "0.1", value: String(this.zoomScale),
+      type: "range", min: "0.12", max: "3", step: "0.02", value: String(this.zoomScale),
       oninput: (e) => {
         this.zoomScale = Number(e.target.value);
+        this.fitMode = false;
+        e.target.style.setProperty("--fill", `${((this.zoomScale - 0.12) / 2.88) * 100}%`);
+        if (zoomReadout) zoomReadout.textContent = `${Math.round(this.zoomScale * 100)}%`;
+        try { localStorage.setItem("mmc-nle-zoom", String(this.zoomScale)); } catch {}
         this.updateTimelineTracks();
         this.updatePlayheadPosition();
       },
     });
+    this.zoomSliderEl = zoomSlider;
+    try { zoomSlider.style.setProperty("--fill", `${((this.zoomScale - 0.12) / 2.88) * 100}%`); } catch {}
+
+    const fitBtn = el("button", {
+      class: `mmc-nle-btn${this.fitMode ? " active" : ""}`,
+      title: t("Fit every clip into view — stays fitted as shots are added or trimmed"),
+      onclick: () => {
+        this.fitMode = !this.fitMode;
+        fitBtn.classList.toggle("active", this.fitMode);
+        if (this.fitMode) this.fitZoom();
+      },
+    }, [el("span", { text: "FIT" })]);
 
     return el("div", { class: "mmc-nle-transport-bar" }, [
       el("div", { class: "mmc-nle-transport-group" }, [
@@ -1965,6 +2360,8 @@ export class TimelineBody {
         this.playBtn,
         el("button", { class: "mmc-nle-btn", title: t("Fast Forward / Step Forward (L / >)"), onclick: () => this.shuttle(1) }, [icon("stepForward", 13)]),
         el("button", { class: "mmc-nle-btn", title: t("Jump to End (>|)"), onclick: () => this.seek(S.timelineSeconds(this.timeline)) }, [icon("skipEnd", 13)]),
+        el("button", { class: "mmc-nle-btn mono", title: t("Step back one frame (,)"), onclick: () => this.stepFrame(-1) }, [el("span", { text: "−1f" })]),
+        el("button", { class: "mmc-nle-btn mono", title: t("Step forward one frame (.)"), onclick: () => this.stepFrame(1) }, [el("span", { text: "+1f" })]),
       ]),
       this.timecodeDisplay,
       el("div", { class: "mmc-nle-transport-group" }, [
@@ -1976,13 +2373,20 @@ export class TimelineBody {
         el("div", { class: "mmc-nle-zoom-wrap" }, [
           el("span", { class: "mmc-nle-tag", text: "ZOOM" }),
           zoomSlider,
+          zoomReadout,
+          fitBtn,
         ]),
+        el("button", {
+          class: "mmc-nle-btn primary",
+          title: t("Queue every unlocked shot"),
+          onclick: () => { try { app.queuePrompt(0); } catch {} },
+        }, [el("span", { text: t("GENERATE") })]),
       ]),
     ]);
   }
 
   renderSamplingDeck() {
-    return samplingBar({
+    const bar = samplingBar({
       widgets: this.widgets,
       value: (name, fallback) => this.value(name, fallback),
       set: (name, val) => {
@@ -2007,5 +2411,21 @@ export class TimelineBody {
         turbo: { container: this.timeline, widgetIO: this.widgetIO() },
       })],
     });
+
+    return el("div", { class: `mmc-nle-sampling${this.samplingOpen ? " open" : ""}` }, [
+      el("button", {
+        class: "mmc-nle-sampling-toggle",
+        onclick: () => {
+          this.samplingOpen = !this.samplingOpen;
+          try { localStorage.setItem("mmc-nle-sampling-open", this.samplingOpen ? "1" : "0"); } catch {}
+          this.render();
+        },
+      }, [
+        svg(ICONS.edit ?? ICONS.gear, 12),
+        el("span", { text: t("Sampling") }),
+        el("span", { class: `mmc-nle-sampling-caret${this.samplingOpen ? " up" : ""}`, text: "▸" }),
+      ]),
+      el("div", { class: "mmc-nle-sampling-body" }, [bar]),
+    ]);
   }
 }

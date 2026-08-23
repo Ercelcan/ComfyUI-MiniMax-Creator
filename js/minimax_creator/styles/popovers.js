@@ -248,4 +248,28 @@ export const css = `
 
 .mmc-native { color: var(--mmc-dim); font-size: 11px; line-height: 1.45; min-height: 28px; }
 .mmc-native.over { color: #e0743c; }
+/* --- chip context menu ----------------------------------------------------- */
+.mmc-chip-menu {
+  display: flex; flex-direction: column; gap: 2px; min-width: 190px; padding: 5px;
+}
+.mmc-chip-menu-item {
+  text-align: left; border: 0; background: transparent; color: var(--mmc-text);
+  font: inherit; font-size: 12.5px; line-height: 1.3; padding: 8px 10px;
+  border-radius: 9px; cursor: pointer; white-space: nowrap;
+}
+.mmc-chip-menu-item:hover { background: var(--mmc-surface-2); }
+.mmc-chip-menu-item.danger { color: #e0743c; }
+.mmc-chip-menu-item.danger:hover { background: rgba(224,116,60,.12); }
+;
+
+/* --- shortcuts popover ----------------------------------------------------- */
+.mmc-help-pop { min-width: 260px; padding: 10px 12px; }
+.mmc-help-row { display: flex; align-items: center; gap: 10px; padding: 5px 0; font-size: 12px; color: var(--mmc-text); }
+.mmc-help-key {
+  flex: none; min-width: 74px; text-align: center; padding: 3px 7px;
+  background: var(--mmc-surface-2); border: 1px solid var(--mmc-line); border-radius: 6px;
+  font-family: ui-monospace, Menlo, monospace; font-size: 11px; color: var(--mmc-dim);
+}
+.mmc-help-what { color: var(--mmc-dim); line-height: 1.4; }
+
 `;
